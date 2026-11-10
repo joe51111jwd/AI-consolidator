@@ -35,11 +35,19 @@ function publicAccount(a) {
     'anthropic-api': [`api:${a.id}:key`], 'openai-compatible': [`api:${a.id}:key`],
     cursor: [`cursor:${a.id}:key`], gmail: [`gmail:${a.id}:client_id`, `gmail:${a.id}:refresh`],
   }[a.kind] || [];
-  return { ...a, secrets: Object.fromEntries(keys.map((k) => [k.split(':').pop(), secrets.has(k)])) };
+  const has = (k) => secrets.has(k) || (a.kind === 'gmail' && k.endsWith(':client_id') && !!db.get("SELECT 1 AS x FROM secrets WHERE key LIKE 'gmail:%:client_id'"));
+  return { ...a, secrets: Object.fromEntries(keys.map((k) => [k.split(':').pop(), has(k)])) };
 }
 
 function saveAccount(a) {
   const id = a.id || uid('a');
+  if (a.kind === 'claude-code') {
+    const dir = path.resolve(claudeCode.configDir(a));
+    const clash = accounts().find((b) => b.id !== id && b.kind === 'claude-code' && path.resolve(claudeCode.configDir(b)) === dir);
+    if (clash) throw new Error(`${clash.label} already uses ${a.config.configDir || '~/.claude'}. Give this account its own folder, like ~/.claude-2.`);
+    const prev = account(id);
+    if (prev && prev.config.auth && !a.config.auth && path.resolve(claudeCode.configDir(prev)) === dir) a.config.auth = prev.config.auth;
+  }
   const n = db.get('SELECT COUNT(*) AS n FROM accounts').n;
   const prev = account(id);
   db.exec(`INSERT INTO accounts(id, kind, label, color, config, created_at) VALUES(?,?,?,?,?,?)
@@ -54,7 +62,55 @@ function secretKey(kind, id, k) {
   if (kind === 'cursor') return `cursor:${id}:${k}`;
   return `api:${id}:${k}`;
 }
-function deleteAccount(id) { db.exec('DELETE FROM accounts WHERE id = ?', id); invalidate(); }
+function deleteAccount(id) {
+  db.exec('DELETE FROM accounts WHERE id = ?', id);
+  db.exec("DELETE FROM secrets WHERE key LIKE ?", `%:${id}:%`);
+  db.exec('DELETE FROM board_nodes WHERE id = ?', `ac:${id}`);
+  invalidate();
+}
+
+// ---------- Claude sign-ins (one per account card, each in its own config folder) ----------
+const logins = new Map(); // account id -> AbortController
+function setAuth(id, auth) {
+  const a = account(id); if (!a) return;
+  a.config.auth = auth;
+  db.exec('UPDATE accounts SET config = ? WHERE id = ?', JSON.stringify(a.config), id);
+}
+async function claudeStatus(id) {
+  const a = account(id);
+  if (!a || a.kind !== 'claude-code') throw new Error('Not a Claude account');
+  const st = await claudeCode.authStatus(a);
+  setAuth(id, st); invalidate();
+  emit({ type: 'auth', accountId: id, phase: 'status', status: st });
+  return st;
+}
+async function claudeLogin(id, { email } = {}) {
+  const a = account(id);
+  if (!a || a.kind !== 'claude-code') throw new Error('Not a Claude account');
+  if (logins.has(id)) logins.get(id).abort();
+  const ctl = new AbortController(); logins.set(id, ctl);
+  emit({ type: 'auth', accountId: id, phase: 'waiting' });
+  try {
+    const st = await claudeCode.login(a, {
+      email, signal: ctl.signal,
+      onOutput: (line) => { const m = line.match(/https:\/\/(?:claude\.ai|console\.anthropic\.com|platform\.claude\.com)\/\S+/); if (m) emit({ type: 'auth', accountId: id, phase: 'waiting', url: m[0] }); },
+    });
+    setAuth(id, st); invalidate();
+    emit({ type: 'auth', accountId: id, phase: 'done', status: st });
+    emit({ type: 'entities-changed' });
+    return st;
+  } catch (e) {
+    emit({ type: 'auth', accountId: id, phase: 'error', error: ctl.signal.aborted ? 'Sign-in cancelled' : e.message });
+    throw ctl.signal.aborted ? new Error('Sign-in cancelled') : e;
+  } finally { if (logins.get(id) === ctl) logins.delete(id); }
+}
+function claudeLoginCancel(id) { const c = logins.get(id); if (c) c.abort(); }
+async function claudeLogout(id) {
+  const a = account(id);
+  const st = await claudeCode.logout(a);
+  setAuth(id, st); invalidate(); emit({ type: 'auth', accountId: id, phase: 'status', status: st }); emit({ type: 'entities-changed' });
+  return st;
+}
 
 function firstRunSetup() {
   if (db.get('SELECT COUNT(*) AS n FROM accounts').n > 0) return;
@@ -185,6 +241,8 @@ function recordFlow(source, target, content, via = 'app') {
   if (!source || !target || source === target) return;
   const f = { id: uid('f'), source, target, preview: truncate(content, 140), content, via, ts: Date.now() };
   db.exec('INSERT INTO flows(id, source, target, preview, content, via, ts) VALUES(?,?,?,?,?,?,?)', f.id, f.source, f.target, f.preview, f.content, f.via, f.ts);
+  // The overall agent is the bar at the bottom, not a card, so its reads are logged without a line.
+  if (source === CHIEF_ID || target === CHIEF_ID) { emit({ type: 'flow', flow: f }); return f; }
   let edge = db.get("SELECT * FROM edges WHERE source = ? AND target = ?", source, target);
   if (!edge) {
     const eid = uid('e');
@@ -207,8 +265,13 @@ function saveEdge(e) {
 function deleteEdge(id) { db.exec('DELETE FROM edges WHERE id = ?', id); }
 
 // ---------- prompting ----------
+// Picks the account for new work: the first kind in the list that you have (so Claude accounts
+// come before Codex or API keys), and with "split usage" on, the one that has used the least
+// in the last 5 hours.
 function pickAccount(kinds = ['claude-code']) {
-  const cands = accounts().filter((a) => kinds.includes(a.kind));
+  const all = accounts();
+  const kind = kinds.find((k) => all.some((a) => a.kind === k));
+  const cands = all.filter((a) => a.kind === kind);
   if (!cands.length) return null;
   const pref = db.getSetting('defaultAccount', null);
   if (db.getSetting('splitUsage', true)) {
@@ -486,13 +549,14 @@ function mcpConfigPath() {
   if (!exists(sb)) return null;
   if (!mcpPathMemo) {
     mcpPathMemo = path.join(APP_DIR, 'mcp.json');
-    fs.writeFileSync(mcpPathMemo, JSON.stringify({ mcpServers: { switchboard: { command: sb, args: ['mcp'] } } }, null, 2));
+    fs.writeFileSync(mcpPathMemo, JSON.stringify({ mcpServers: { switchboard: { command: sb, args: ['mcp'], env: { SB_FROM: CHIEF_ID } } } }, null, 2));
   }
   return mcpPathMemo;
 }
 
 module.exports = {
   events, accounts, publicAccount, account, saveAccount, deleteAccount, firstRunSetup,
+  claudeStatus, claudeLogin, claudeLoginCancel, claudeLogout,
   entities, invalidate, transcriptFor, find, label,
   prompt, runs, recordFlow, flowsFor, edges, saveEdge, deleteEdge,
   brain, setBrain, appendBrain, saveOutput, saveNote, deleteEntity,

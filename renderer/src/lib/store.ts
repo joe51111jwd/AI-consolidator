@@ -18,10 +18,12 @@ interface State {
   attach: Record<string, Attach[]>;   // target entity id -> pending attachments
   activeEdges: Record<string, { until: number; preview: string }>;
   toast: string | null;
+  auth: Record<string, { phase: string; url?: string; error?: string }>;
   paletteOpen: boolean;
   chiefOpen: boolean;
   set: (p: Partial<State>) => void;
   refresh: (force?: boolean) => Promise<void>;
+  boardLoaded: boolean;
   refreshBoard: () => Promise<void>;
   refreshDue: () => Promise<void>;
   open: (id: string | null) => void;
@@ -32,7 +34,7 @@ interface State {
 
 export const useStore = create<State>((set, get) => ({
   view: 'board', entities: [], byId: {}, board: [], edges: [], runs: {}, liveByEntity: {}, accounts: [], due: [],
-  inspector: null, selected: [], attach: {}, activeEdges: {}, toast: null, paletteOpen: false, chiefOpen: false,
+  boardLoaded: false, inspector: null, selected: [], attach: {}, activeEdges: {}, toast: null, auth: {}, paletteOpen: false, chiefOpen: false,
   set: (p) => set(p as any),
   refresh: async (force = false) => {
     const [entities, accounts] = await Promise.all([api.entities(force), api.accounts()]);
@@ -42,7 +44,7 @@ export const useStore = create<State>((set, get) => ({
   },
   refreshBoard: async () => {
     const [board, edges] = await Promise.all([api.board(), api.edges()]);
-    set({ board, edges });
+    set({ board, edges, boardLoaded: true });
   },
   refreshDue: async () => { try { set({ due: await api.due() }); } catch {} },
   open: (id) => set({ inspector: id }),
@@ -59,11 +61,15 @@ export function wireEvents() {
   api.onEvent((e) => {
     const s = useStore.getState();
     if (e.type === 'entities-changed') { clearTimeout(t); t = setTimeout(() => { s.refresh(); }, 250); }
+    if (e.type === 'auth') {
+      useStore.setState((st) => ({ auth: { ...st.auth, [e.accountId]: { phase: e.phase, url: e.url ?? (e.phase === 'waiting' && st.auth[e.accountId]?.phase === 'waiting' ? st.auth[e.accountId]?.url : undefined), error: e.error } } }));
+      if (e.phase === 'done' || e.phase === 'status') s.refresh();
+    }
     if (e.type === 'run') {
       const r: Run = e.run;
       useStore.setState((st) => ({ runs: { ...st.runs, [r.id]: r }, liveByEntity: { ...st.liveByEntity, [r.entityId]: r } }));
     }
-    if (e.type === 'flow') {
+    if (e.type === 'flow' && e.edgeId) {
       const until = Date.now() + 6000;
       useStore.setState((st) => ({ activeEdges: { ...st.activeEdges, [e.edgeId]: { until, preview: e.flow.preview } } }));
       s.refreshBoard();

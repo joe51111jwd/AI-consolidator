@@ -10,6 +10,7 @@ export interface BoardRow { id: string; x: number; y: number; w?: number | null;
 export interface EdgeRow { id: string; source: string; target: string; kind: 'flow' | 'link'; data: any }
 export interface Flow { id: string; source: string; target: string; preview: string; content: string; via: string; ts: number }
 export interface Account { id: string; kind: string; label: string; color: string; config: any; secrets?: Record<string, boolean> }
+export interface ClaudeAuth { loggedIn: boolean; method?: string | null; email?: string | null; org?: string | null; orgId?: string | null; plan?: string | null; dir: string; cli: boolean; checkedAt: number }
 export interface Client {
   id: string; name: string; company?: string; emails: string[]; domains: string[]; status: string; value?: number | null;
   next_action?: string | null; due?: string | null; notes?: string | null; project_paths: string[]; updated_at?: number;
@@ -34,6 +35,10 @@ export const api = {
   deleteAccount: (id: string) => c('account:delete', id),
   loginAccount: (id: string): Promise<string> => c('account:login', id),
   detect: (): Promise<{ claude: string[] }> => c('account:detect'),
+  claudeStatus: (id: string): Promise<ClaudeAuth> => c('claude:status', id),
+  claudeLogin: (id: string, opts: { email?: string } = {}): Promise<ClaudeAuth> => c('claude:login', id, opts),
+  claudeLoginCancel: (id: string) => c('claude:loginCancel', id),
+  claudeLogout: (id: string): Promise<ClaudeAuth> => c('claude:logout', id),
   gmailConnect: (id: string): Promise<string> => c('gmail:connect', id),
   board: (): Promise<BoardRow[]> => c('board'),
   saveBoard: (rows: BoardRow[]) => c('board:save', rows),

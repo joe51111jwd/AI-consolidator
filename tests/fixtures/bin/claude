@@ -1,0 +1,61 @@
+#!/usr/bin/env node
+'use strict';
+// Test stand-in for Claude Code. Behaves like `claude -p --output-format stream-json --verbose`:
+// reads the prompt from stdin, prints stream-json events, and writes a session file the way the
+// real CLI does, under $CLAUDE_CONFIG_DIR (or ~/.claude). Every call is logged to $SB_TEST_LOG.
+// `claude auth status --json` reports the account stored by the fake login in tests.
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const crypto = require('crypto');
+
+const args = process.argv.slice(2);
+const dir = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
+const log = (o) => { if (process.env.SB_TEST_LOG) fs.appendFileSync(process.env.SB_TEST_LOG, JSON.stringify({ bin: 'claude', ...o }) + '\n'); };
+const val = (f) => { const i = args.indexOf(f); return i >= 0 ? args[i + 1] : null; };
+
+if (args[0] === 'auth' && args[1] === 'status') {
+  const f = process.env.CLAUDE_CONFIG_DIR ? path.join(dir, '.claude.json') : path.join(os.homedir(), '.claude.json');
+  let acct = null; try { acct = JSON.parse(fs.readFileSync(f, 'utf8')).oauthAccount || null; } catch {}
+  log({ args, configDir: process.env.CLAUDE_CONFIG_DIR || null });
+  process.stdout.write(JSON.stringify(acct ? { loggedIn: true, authMethod: 'claude.ai', email: acct.emailAddress, orgId: acct.organizationUuid || null, orgName: acct.organizationName, subscriptionType: acct.subscriptionType } : { loggedIn: false }) + '\n');
+  process.exit(acct ? 0 : 1);
+}
+if (args[0] === 'auth' && (args[1] === 'login' || args[1] === 'logout')) {
+  // Fake browser sign-in: $SB_TEST_LOGINS maps a config folder name to the account to sign in as.
+  const f = process.env.CLAUDE_CONFIG_DIR ? path.join(dir, '.claude.json') : path.join(os.homedir(), '.claude.json');
+  log({ args, configDir: process.env.CLAUDE_CONFIG_DIR || null });
+  let cur = {}; try { cur = JSON.parse(fs.readFileSync(f, 'utf8')); } catch {}
+  if (args[1] === 'logout') { delete cur.oauthAccount; fs.writeFileSync(f, JSON.stringify(cur)); console.log('Logged out'); process.exit(0); }
+  let map = {}; try { map = JSON.parse(fs.readFileSync(process.env.SB_TEST_LOGINS, 'utf8')); } catch {}
+  const who = map[path.basename(dir)] || { emailAddress: 'someone@example.com', organizationName: 'Personal', subscriptionType: 'pro' };
+  console.log('Opening browser to sign in... https://claude.ai/oauth/authorize?code=true&client_id=test');
+  // A ".slow-login" file in the folder keeps the sign-in waiting, like a browser left open.
+  const wait = fs.existsSync(path.join(dir, '.slow-login')) ? 60000 : 400;
+  setTimeout(() => { fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, JSON.stringify({ ...cur, oauthAccount: who })); console.log('Login successful'); process.exit(0); }, wait);
+  return;
+}
+if (args[0] === 'mcp') { log({ args, configDir: process.env.CLAUDE_CONFIG_DIR || null }); console.log('Added stdio MCP server switchboard'); process.exit(0); }
+
+let input = '';
+process.stdin.on('data', (d) => { input += d; });
+process.stdin.on('end', () => {
+  const resume = val('--resume');
+  const id = resume || crypto.randomUUID();
+  const cwd = process.cwd();
+  log({ args, cwd, configDir: process.env.CLAUDE_CONFIG_DIR || null, sessionId: id, prompt: input });
+  const first = input.trim().split('\n').pop().slice(0, 120);
+  const reply = process.env.SB_STUB_REPLY || `Done (${path.basename(dir)}): ${first}`;
+  const out = (o) => process.stdout.write(JSON.stringify(o) + '\n');
+  out({ type: 'system', subtype: 'init', session_id: id, cwd, model: 'claude-sonnet-5-5' });
+  const mid = 'msg_' + crypto.randomBytes(6).toString('hex');
+  out({ type: 'assistant', session_id: id, message: { id: mid, role: 'assistant', model: 'claude-sonnet-5-5', content: [{ type: 'text', text: reply }], usage: { input_tokens: 1200, output_tokens: 300 } } });
+  out({ type: 'result', subtype: 'success', session_id: id, result: reply, usage: { input_tokens: 1200, output_tokens: 300 }, total_cost_usd: 0.01 });
+  const file = path.join(dir, 'projects', cwd.replace(/[/.]/g, '-'), `${id}.jsonl`);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const ts = new Date().toISOString();
+  fs.appendFileSync(file, [
+    { type: 'user', sessionId: id, cwd, timestamp: ts, uuid: crypto.randomUUID(), message: { role: 'user', content: input } },
+    { type: 'assistant', sessionId: id, cwd, timestamp: ts, uuid: crypto.randomUUID(), message: { id: mid, role: 'assistant', model: 'claude-sonnet-5-5', content: [{ type: 'text', text: reply }], usage: { input_tokens: 1200, output_tokens: 300 } } },
+  ].map((r) => JSON.stringify(r)).join('\n') + '\n');
+});

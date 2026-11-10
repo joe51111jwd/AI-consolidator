@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { FolderOpen } from 'lucide-react';
 import { api } from '../lib/api';
 import { useStore } from '../lib/store';
@@ -12,8 +12,25 @@ export default function Brain() {
   const [file, setFile] = useState('');
   const [preview, setPreview] = useState(false);
   const notify = useStore((s) => s.notify);
-  useEffect(() => { api.brain().then(setText); api.brainPath().then(setFile); }, []);
-  const save = async () => { await api.setBrain(text); notify('Saved'); };
+  // `base` is the file as last loaded or saved. When an agent adds a note while you're editing,
+  // the new part is added to what you're typing instead of replacing it.
+  const base = useRef('');
+  const textRef = useRef('');
+  textRef.current = text;
+  useEffect(() => {
+    api.brain().then((t) => { base.current = t; setText(t); }); api.brainPath().then(setFile);
+    return window.sbBridge.onEvent(async (e) => {
+      if (e.type !== 'brain-changed') return;
+      const f = await api.brain();
+      if (f === base.current) return;
+      const cur = textRef.current;
+      if (f === cur) { base.current = f; return; }
+      if (cur === base.current) setText(f);
+      else if (f.startsWith(base.current)) setText(cur + f.slice(base.current.length));
+      base.current = f;
+    });
+  }, []);
+  const save = async () => { const t = textRef.current; await api.setBrain(t); base.current = t; notify('Saved'); };
   return (
     <div className="page">
       <div className="page-h">

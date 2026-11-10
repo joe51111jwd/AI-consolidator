@@ -4,7 +4,7 @@
 // Prompting runs the user's own `claude` CLI in print mode, so it uses that account's login.
 const fs = require('fs');
 const path = require('path');
-const { HOME, expand, exists, readJsonl, walk, truncate, run, which } = require('../util.cjs');
+const { HOME, APP_DIR, expand, exists, readJsonl, walk, truncate, run, which } = require('../util.cjs');
 
 const cache = new Map(); // file -> { mtimeMs, size, parsed }
 const DAY = 86400000;
@@ -82,6 +82,8 @@ function list(account, { days = 21, max = 60 } = {}) {
     let s;
     try { s = parseSession(f.path); } catch { continue; }
     if (!s.messages.length) continue;
+    // The overall agent runs Claude Code inside ~/.switchboard; those runs are not cards of their own.
+    if (s.cwd && path.resolve(s.cwd) === path.resolve(APP_DIR)) continue;
     out.push({
       id: `cc:${account.id}:${s.sessionId}`,
       kind: 'session', source: 'claude-code', accountId: account.id,
@@ -127,6 +129,82 @@ function detect() {
   return found;
 }
 
+// Environment for a `claude` process that runs as this account and nothing else.
+// Each account card has its own config folder, which Claude Code uses for that login's
+// credentials (its own Keychain entry on macOS), settings and session history. Variables that
+// would override the folder's login (an API key or token in your shell) are removed.
+const OVERRIDES = ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN', 'CLAUDE_CODE_OAUTH_REFRESH_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR', 'CCR_OAUTH_TOKEN_FILE', 'ANTHROPIC_BASE_URL', 'CLAUDE_CONFIG_DIR', 'CLAUDECODE', 'CLAUDE_CODE_ENTRYPOINT', 'CLAUDE_CODE_SESSION_ID'];
+function isDefaultDir(dir) { return path.resolve(dir) === path.resolve(path.join(HOME, '.claude')); }
+function childEnv(account) {
+  const env = {};
+  for (const k of OVERRIDES) env[k] = undefined;
+  const dir = configDir(account);
+  if (!isDefaultDir(dir)) env.CLAUDE_CONFIG_DIR = dir;
+  return env;
+}
+
+// Who this folder is signed in as. Uses `claude auth status` (JSON), and falls back to the
+// account details Claude Code keeps in .claude.json. Field names vary by version, so read loosely.
+function pick(obj, re) {
+  if (!obj || typeof obj !== 'object') return null;
+  for (const [k, v] of Object.entries(obj)) {
+    if (re.test(k) && (typeof v === 'string' || typeof v === 'number') && v !== '') return String(v);
+  }
+  for (const v of Object.values(obj)) { if (v && typeof v === 'object') { const r = pick(v, re); if (r) return r; } }
+  return null;
+}
+function readAccountFile(account) {
+  const dir = configDir(account);
+  const f = isDefaultDir(dir) ? path.join(HOME, '.claude.json') : path.join(dir, '.claude.json');
+  try { return JSON.parse(fs.readFileSync(f, 'utf8')).oauthAccount || null; } catch { return null; }
+}
+async function authStatus(account) {
+  const bin = account.config.bin || which('claude');
+  let j = null, loggedIn = null;
+  if (bin) {
+    const r = await run(bin, ['auth', 'status'], { env: childEnv(account), cwd: HOME, signal: AbortSignal.timeout(20000) }).catch(() => null);
+    if (r) {
+      try { j = JSON.parse(r.stdout.trim().split('\n').filter(Boolean).pop()); } catch {}
+      loggedIn = j && typeof j.loggedIn === 'boolean' ? j.loggedIn : (j && j.authMethod ? j.authMethod !== 'none' : r.code === 0);
+    }
+  }
+  const f = readAccountFile(account);
+  const status = {
+    loggedIn: loggedIn == null ? !!f : loggedIn,
+    method: (j && j.authMethod) || (f ? 'claude.ai' : null),
+    // `claude auth status` (Claude Code 2.x) prints email, orgId, orgName and subscriptionType
+    // for a claude.ai login. Older versions print less, so fall back to the folder's .claude.json.
+    email: (j && j.email) || pick(j, /email/i) || (f && f.emailAddress) || null,
+    org: (j && j.orgName) || pick(j, /^org(anization)?_?name$|organizationName/i) || (f && (f.organizationName || null)) || null,
+    orgId: (j && j.orgId) || (f && f.organizationUuid) || null,
+    plan: (j && (j.subscriptionType || j.planTier)) || pick(j, /subscription|plan|tier|billing/i) || (f && (f.subscriptionType || f.billingType || null)) || null,
+    dir: configDir(account), cli: !!bin, checkedAt: Date.now(),
+  };
+  if (status.loggedIn === false) { status.email = null; status.org = null; status.orgId = null; status.plan = null; }
+  return status;
+}
+
+// Sign this folder in. `claude auth login` opens the browser; on claude.ai you choose which
+// account and organization (for example your Team org or your personal plan) this card uses.
+function login(account, { email, onOutput, signal } = {}) {
+  const bin = account.config.bin || which('claude');
+  if (!bin) return Promise.reject(new Error('Claude Code (the `claude` command) was not found on this Mac. Install it first: npm install -g @anthropic-ai/claude-code'));
+  fs.mkdirSync(configDir(account), { recursive: true });
+  const args = ['auth', 'login'];
+  if (email) args.push('--email', email);
+  return run(bin, args, { env: childEnv(account), cwd: HOME, onLine: onOutput, signal }).then((r) => {
+    if (signal && signal.aborted) throw new Error('Sign-in cancelled');
+    if (r.code !== 0) throw new Error(truncate(r.stderr || r.stdout || 'Sign-in did not finish', 300));
+    return authStatus(account);
+  });
+}
+async function logout(account) {
+  const bin = account.config.bin || which('claude');
+  if (!bin) throw new Error('Claude Code was not found on this Mac');
+  await run(bin, ['auth', 'logout'], { env: childEnv(account), cwd: HOME });
+  return authStatus(account);
+}
+
 // Send a prompt. Resumes `sessionId` when given, otherwise starts a new session in cwd.
 async function prompt(account, { sessionId, cwd, text, onText, signal, extraArgs = [] }) {
   const bin = account.config.bin || which('claude');
@@ -136,9 +214,7 @@ async function prompt(account, { sessionId, cwd, text, onText, signal, extraArgs
   const mode = account.config.permissionMode;
   if (mode && mode !== 'default') args.push('--permission-mode', mode);
   args.push(...extraArgs);
-  const env = {};
-  const dir = configDir(account);
-  if (path.resolve(dir) !== path.resolve(path.join(HOME, '.claude'))) env.CLAUDE_CONFIG_DIR = dir;
+  const env = childEnv(account);
   let acc = '', final = null, newSession = sessionId, usageOut = null;
   const res = await run(bin, args, {
     cwd: cwd && exists(cwd) ? cwd : HOME, env, input: text, signal,
@@ -156,4 +232,4 @@ async function prompt(account, { sessionId, cwd, text, onText, signal, extraArgs
   return { text: final || acc, sessionId: newSession, usage: usageOut };
 }
 
-module.exports = { list, transcript, usage, detect, prompt, configDir };
+module.exports = { list, transcript, usage, detect, prompt, configDir, childEnv, authStatus, login, logout };

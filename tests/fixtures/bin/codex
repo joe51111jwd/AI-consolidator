@@ -1,0 +1,21 @@
+#!/usr/bin/env node
+'use strict';
+// Test stand-in for the Codex CLI: `codex exec --json [resume <id>] -` reads the prompt from stdin
+// and prints JSON events. `codex mcp add ...` just reports success. Calls are logged to $SB_TEST_LOG.
+const fs = require('fs');
+const crypto = require('crypto');
+const args = process.argv.slice(2);
+const log = (o) => { if (process.env.SB_TEST_LOG) fs.appendFileSync(process.env.SB_TEST_LOG, JSON.stringify({ bin: 'codex', ...o }) + '\n'); };
+if (args[0] === 'mcp') { log({ args }); console.log('Added MCP server'); process.exit(0); }
+let input = '';
+process.stdin.on('data', (d) => { input += d; });
+process.stdin.on('end', () => {
+  const i = args.indexOf('resume');
+  const id = i >= 0 ? args[i + 1] : crypto.randomUUID();
+  log({ args, cwd: process.cwd(), sessionId: id, prompt: input });
+  const reply = `Codex done: ${input.trim().split('\n').pop().slice(0, 100)}`;
+  const out = (o) => process.stdout.write(JSON.stringify(o) + '\n');
+  out({ type: 'thread.started', thread_id: id });
+  out({ type: 'item.completed', item: { type: 'agent_message', text: reply } });
+  out({ type: 'turn.completed', usage: { input_tokens: 900, output_tokens: 120 } });
+});

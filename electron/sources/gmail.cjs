@@ -8,45 +8,67 @@ const secrets = require('../secrets.cjs');
 const { truncate, pool } = require('../util.cjs');
 
 const SCOPE = 'https://www.googleapis.com/auth/gmail.readonly';
+// Overridable only so the tests can stand in for Google.
+const AUTH_URL = process.env.SB_GOOGLE_AUTH_URL || 'https://accounts.google.com/o/oauth2/v2/auth';
+const TOKEN_URL = process.env.SB_GOOGLE_TOKEN_URL || 'https://oauth2.googleapis.com/token';
+const API_URL = process.env.SB_GMAIL_API_URL || 'https://gmail.googleapis.com/gmail/v1/users/me';
+const db = require('../db.cjs');
+
+// One Google OAuth client can serve all your Gmail accounts, so a second Gmail card reuses the
+// client ID and secret you pasted for the first unless it has its own.
+function client(account, k) {
+  const own = secrets.get(`gmail:${account.id}:${k}`);
+  if (own) return own;
+  for (const r of db.all("SELECT key FROM secrets WHERE key LIKE 'gmail:%:' || ?", k)) { const v = secrets.get(r.key); if (v) return v; }
+  return null;
+}
+function openBrowser(url) {
+  if (process.env.SB_TEST_OPEN_LOG) { require('fs').appendFileSync(process.env.SB_TEST_OPEN_LOG, url + '\n'); return; }
+  shell.openExternal(url);
+}
 const tokenCache = new Map(); // accountId -> { access, exp }
 const threadCache = new Map(); // accountId -> { at, threads }
 
 function b64url(buf) { return buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''); }
 
 async function connect(account) {
-  const clientId = secrets.get(`gmail:${account.id}:client_id`);
-  const clientSecret = secrets.get(`gmail:${account.id}:client_secret`);
+  const clientId = client(account, 'client_id');
+  const clientSecret = client(account, 'client_secret');
   if (!clientId) throw new Error('Add your Google OAuth client ID first (see README, "Gmail").');
   const verifier = b64url(crypto.randomBytes(32));
   const challenge = b64url(crypto.createHash('sha256').update(verifier).digest());
   const state = b64url(crypto.randomBytes(16));
   const { code, redirect } = await new Promise((resolve, reject) => {
+    let port = 0, done = false;
+    const finish = (err, val) => { if (done) return; done = true; clearTimeout(timer); srv.close(); err ? reject(err) : resolve(val); };
     const srv = http.createServer((req, res) => {
       const u = new URL(req.url, 'http://127.0.0.1');
-      if (u.pathname !== '/oauth') { res.end(); return; }
-      res.setHeader('content-type', 'text/html');
+      if (u.pathname !== '/oauth') { res.statusCode = 404; res.end(); return; }
+      res.setHeader('content-type', 'text/html; charset=utf-8');
+      const page = (msg) => `<!doctype html><title>Switchboard</title><body style="font:15px -apple-system,sans-serif;display:grid;place-items:center;height:90vh;color:#1C1B19;background:#F3F1EC"><p>${msg}</p></body>`;
       if (u.searchParams.get('state') !== state || !u.searchParams.get('code')) {
-        res.end('<p style="font-family:sans-serif">Sign-in did not complete. You can close this tab.</p>');
-        srv.close(); return reject(new Error(u.searchParams.get('error') || 'Sign-in was cancelled'));
+        res.end(page('Sign-in did not complete. You can close this tab and try again in Switchboard.'));
+        return finish(new Error(u.searchParams.get('error') === 'access_denied' ? 'Google sign-in was cancelled' : (u.searchParams.get('error') || 'Sign-in did not complete')));
       }
-      res.end('<p style="font-family:sans-serif">Gmail is connected to Switchboard. You can close this tab.</p>');
-      srv.close();
-      resolve({ code: u.searchParams.get('code'), redirect: `http://127.0.0.1:${srv.address().port}/oauth` });
+      res.end(page('Gmail is connected to Switchboard. You can close this tab.'));
+      finish(null, { code: u.searchParams.get('code'), redirect: `http://127.0.0.1:${port}/oauth` });
     });
+    const timer = setTimeout(() => finish(new Error('Google sign-in timed out. Try again.')), 5 * 60000);
+    srv.on('error', (e) => finish(e));
     srv.listen(0, '127.0.0.1', () => {
-      const port = srv.address().port;
+      port = srv.address().port;
       const p = new URLSearchParams({
         client_id: clientId, redirect_uri: `http://127.0.0.1:${port}/oauth`, response_type: 'code', scope: SCOPE,
-        access_type: 'offline', prompt: 'consent', code_challenge: challenge, code_challenge_method: 'S256', state,
+        access_type: 'offline', prompt: 'consent select_account', code_challenge: challenge, code_challenge_method: 'S256', state,
       });
-      shell.openExternal(`https://accounts.google.com/o/oauth2/v2/auth?${p}`);
+      if (account.config.email) p.set('login_hint', account.config.email);
+      openBrowser(`${AUTH_URL}?${p}`);
     });
-    setTimeout(() => { srv.close(); reject(new Error('Sign-in timed out')); }, 5 * 60000);
   });
   const body = new URLSearchParams({ code, client_id: clientId, code_verifier: verifier, grant_type: 'authorization_code', redirect_uri: redirect });
   if (clientSecret) body.set('client_secret', clientSecret);
-  const r = await fetch('https://oauth2.googleapis.com/token', { method: 'POST', body });
-  const j = await r.json();
+  const r = await fetch(TOKEN_URL, { method: 'POST', body });
+  const j = await r.json().catch(() => ({}));
   if (!j.refresh_token) throw new Error(j.error_description || 'Google did not return a refresh token');
   secrets.set(`gmail:${account.id}:refresh`, j.refresh_token);
   tokenCache.set(account.id, { access: j.access_token, exp: Date.now() + (j.expires_in - 60) * 1000 });
@@ -59,16 +81,20 @@ async function accessToken(account) {
   if (c && c.exp > Date.now()) return c.access;
   const refresh = secrets.get(`gmail:${account.id}:refresh`);
   if (!refresh) throw new Error('Gmail is not connected');
-  const body = new URLSearchParams({ client_id: secrets.get(`gmail:${account.id}:client_id`), refresh_token: refresh, grant_type: 'refresh_token' });
-  const cs = secrets.get(`gmail:${account.id}:client_secret`); if (cs) body.set('client_secret', cs);
-  const j = await (await fetch('https://oauth2.googleapis.com/token', { method: 'POST', body })).json();
-  if (!j.access_token) throw new Error(j.error_description || 'Could not refresh Gmail access');
+  const body = new URLSearchParams({ client_id: client(account, 'client_id'), refresh_token: refresh, grant_type: 'refresh_token' });
+  const cs = client(account, 'client_secret'); if (cs) body.set('client_secret', cs);
+  const j = await (await fetch(TOKEN_URL, { method: 'POST', body })).json().catch(() => ({}));
+  if (!j.access_token) {
+    if (j.error === 'invalid_grant') { secrets.set(`gmail:${account.id}:refresh`, null); throw new Error('Gmail sign-in expired. Press Reconnect on the Accounts page.'); }
+    throw new Error(j.error_description || 'Could not refresh Gmail access');
+  }
   tokenCache.set(account.id, { access: j.access_token, exp: Date.now() + (j.expires_in - 60) * 1000 });
   return j.access_token;
 }
 
 async function api(account, p) {
-  const r = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/${p}`, { headers: { authorization: `Bearer ${await accessToken(account)}` } });
+  let r = await fetch(`${API_URL}/${p}`, { headers: { authorization: `Bearer ${await accessToken(account)}` } });
+  if (r.status === 401) { tokenCache.delete(account.id); r = await fetch(`${API_URL}/${p}`, { headers: { authorization: `Bearer ${await accessToken(account)}` } }); }
   if (!r.ok) throw new Error(`Gmail ${r.status}`);
   return r.json();
 }

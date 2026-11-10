@@ -37,22 +37,26 @@ Want to look around before connecting anything? `npm run demo` opens the app wit
 
 On first launch the app finds what's already on your Mac: Claude Code logins, Codex and Granola. Everything else is added under **Accounts**.
 
-### Claude (all three accounts)
+### Claude (all your accounts)
 
-claude.ai has no public API for chats, so the app works through **Claude Code**, which uses your normal Claude login. Each Claude account gets its own Claude Code folder:
+claude.ai has no public API for chats, so the app works through **Claude Code**, which uses your normal Claude login. Each Claude account gets its own Claude Code folder, so each card keeps its own sign-in and its own usage.
 
-```bash
-# first account (probably already set up)
-claude            # then type /login
+1. **Accounts → Add account → Claude account.** Give it a name and a folder. `~/.claude` is usually your first account; use `~/.claude-2`, `~/.claude-3` and so on for the others. The app won't let two cards share a folder.
+2. Press **Sign in** on the card. Your browser opens claude.ai's sign-in page. When you finish there, the card turns to **Signed in** and shows the email, organization and plan it's signed in to, for example `you@example.com · Acme Studio · Team`.
+3. Under **Edit** choose what Claude may do when you prompt it from the board: read and plan only (the default), edit files, or anything.
 
-# second and third accounts
-CLAUDE_CONFIG_DIR=~/.claude-2 claude   # then /login with account 2
-CLAUDE_CONFIG_DIR=~/.claude-3 claude   # then /login with account 3
-```
+If the browser never comes back to the app, press **Terminal** on the card instead: it opens Terminal in that card's folder, where you type `/login`.
 
-Or press **Add account → Claude account**, pick the folder, and press **Log in**: it opens Terminal ready for `/login`.
+#### Two plans on the same email (for example a personal Max plan and a Team plan)
 
-Each Claude card shows that account's usage, and prompting a card runs Claude Code with that account. Under **Edit** you choose what Claude may do when you prompt it from the board: read and plan only (the default), edit files, or anything.
+Both plans use one email, so the email alone doesn't say which plan a folder is signed in to. The organization does.
+
+1. Add two Claude cards with different folders, for example **Claude (personal)** on `~/.claude` and **Claude (Team)** on `~/.claude-4`.
+2. Press **Sign in** on the first card. On claude.ai's page, pick your personal organization when it asks which one.
+3. Press **Sign in** on the second card and pick the Team organization this time.
+4. Check that the two cards show different organizations and plans. If both show the same one, the Accounts page also warns **Same login as …**. Press **Sign out** on the wrong card and sign in again, picking the other organization.
+
+Every prompt you send from a card, and every new session the board starts on it, runs with that card's folder only. The app clears any Claude key or token set in your shell, so it can't quietly use a different account.
 
 If you'd rather use an Anthropic API key, add **Claude API key** instead.
 
@@ -134,6 +138,35 @@ Only programs running as you can use it: it listens on 127.0.0.1 and needs the t
 - `~/.switchboard/switchboard.db` holds the board, clients, outputs and settings.
 - `~/.switchboard/brain.md` is the shared brain.
 - API keys and Google sign-ins are encrypted with your Mac's Keychain.
+
+## Testing
+
+```bash
+npm test
+```
+
+This builds the app and runs `tests/e2e.cjs`, which starts the real app in a throwaway home folder with stand-in `claude`, `codex` and Grok Bot commands and a stand-in Google server, then clicks through it. On Linux run it under `xvfb-run -a npm test`. It checks 62 things, including:
+
+- **Board:** cards from every source show up; dragging, grouping by hand (⌘G, rename, ungroup), grouping by account, client and project; positions, groups and lines survive a restart.
+- **Lines and messages:** drawing a line, turning on auto-send, a reply flowing down it, `sb send --from grok-bot --wait` drawing and lighting a line.
+- **Drag and drop:** a message dragged onto a card goes with the next prompt; dropped on empty space it becomes an output card that can be saved to the brain, copied, opened, and dragged onto another agent.
+- **Prompting every kind of card:** a project starts a session in its folder; split usage picks the least-used Claude account; an account card uses that account; Codex resumes the right session; Grok Bot gets the text on the clipboard; Granola notes open.
+- **Overall agent:** answers, works on the selected cards, keeps history, and doesn't show its own runs as cards.
+- **Claude sign-in:** two plans on one email signed in to separate folders and shown with their own organization and plan; the same-login warning; signing out one card leaves the other signed in; cancelling a slow sign-in; agent tools added to every Claude folder.
+- **Gmail:** the Google consent link (read-only scope, PKCE, state check), a wrong state refused, the token stored encrypted, the token refreshed after it expires and after a restart, a revoked token asking you to reconnect, and removing the account deleting its keys.
+- **Clients:** replies owed, follow-ups, a suggested client from mail, adding and editing a client.
+- **Shared brain:** edits saved, and an agent's addition merged in while you're typing.
+
+### Check these yourself on your Mac
+
+The test can't sign in to real accounts, so check these once after installing:
+
+1. **Claude, both plans:** sign in on two cards as described above and confirm each shows its own organization and plan. Prompt each card once and check the answer comes back on that card.
+2. **Gmail:** set up the Google client, press **Sign in with Google**, and confirm your threads show on the board and under **Clients**.
+3. **Granola:** open a meeting card and check the notes are there.
+4. **Grok Bot:** turn on "Execution on this computer" in Grok Bot, press **Copy note for Grok Bot** on **Accounts** and paste it into Grok Bot, then ask Grok Bot to send something to a Claude card and watch the line light up.
+5. **Agent tools:** press **Add Switchboard tools to my agents**, then in any Claude session ask it to list your Switchboard cards.
+6. **App build:** `npm run dist`, open the app from `release`, and check it starts with your board.
 
 ## Development
 

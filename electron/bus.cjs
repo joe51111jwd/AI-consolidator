@@ -25,7 +25,8 @@ async function resolve(ref) {
   const list = await hub.entities();
   if (list.find((e) => e.id === ref)) return ref;
   const r = ref.toLowerCase();
-  const alias = { grok: 'grok-bot', grokbot: 'grok-bot', 'grok bot': 'grok-bot', claude: 'claude-code', codex: 'codex' }[r];
+  // "grok-bot", "grok", "codex" or "claude" mean that kind of account's card.
+  const alias = { grok: 'grok-bot', grokbot: 'grok-bot', 'grok bot': 'grok-bot', 'grok-bot': 'grok-bot', claude: 'claude-code', 'claude-code': 'claude-code', codex: 'codex', granola: 'granola' }[r];
   if (alias) { const a = list.find((e) => e.kind === 'account' && e.source === alias); if (a) return a.id; }
   const exact = list.find((e) => e.title && e.title.toLowerCase() === r);
   if (exact) return exact.id;

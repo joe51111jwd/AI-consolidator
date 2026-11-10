@@ -28,11 +28,14 @@ function fixPath() {
       encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'],
     });
     const m = out.match(/__SBPATH__(.*)__SBPATH__/);
-    if (m && m[1]) process.env.PATH = m[1];
+    // Keep what we were started with first, then add the login shell's PATH (an app opened from
+    // the Dock gets a bare PATH, so this is how we find `claude`, `codex`, `node` and `git`).
+    if (m && m[1]) process.env.PATH = [process.env.PATH || '', m[1]].filter(Boolean).join(':');
   } catch { /* keep existing PATH */ }
-  const extra = [path.join(HOME, '.local/bin'), path.join(HOME, '.claude/local'), '/opt/homebrew/bin', '/usr/local/bin'];
-  const parts = new Set((process.env.PATH || '').split(':'));
-  for (const e of extra) if (!parts.has(e)) process.env.PATH += ':' + e;
+  const extra = [path.join(HOME, '.local/bin'), path.join(HOME, '.claude/local'), path.join(HOME, '.npm-global/bin'), path.join(HOME, '.bun/bin'), path.join(HOME, '.volta/bin'), '/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin'];
+  const parts = (process.env.PATH || '').split(':').filter(Boolean);
+  for (const e of extra) if (!parts.includes(e)) parts.push(e);
+  process.env.PATH = [...new Set(parts)].join(':');
 }
 
 function which(cmd) {
@@ -88,7 +91,9 @@ function run(cmd, args, { cwd, env, input, onLine, signal } = {}) {
   return new Promise((resolve, reject) => {
     let child;
     try {
-      child = spawn(cmd, args, { cwd, env: { ...process.env, ...env }, stdio: ['pipe', 'pipe', 'pipe'] });
+      const full = { ...process.env, ...env };
+      for (const k of Object.keys(full)) if (full[k] === undefined) delete full[k];
+      child = spawn(cmd, args, { cwd, env: full, stdio: ['pipe', 'pipe', 'pipe'] });
     } catch (e) { return reject(e); }
     let stdout = '', stderr = '', buf = '';
     child.stdout.on('data', (d) => {

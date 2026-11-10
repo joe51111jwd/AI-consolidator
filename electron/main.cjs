@@ -84,8 +84,8 @@ async function addMcpToAgents() {
   const results = [];
   for (const a of hub.accounts()) {
     if (a.kind === 'claude-code') {
-      const bin = util.which('claude'); if (!bin) { results.push(`${a.label}: claude command not found`); continue; }
-      const env = { CLAUDE_CONFIG_DIR: claudeCode.configDir(a) };
+      const bin = a.config.bin || util.which('claude'); if (!bin) { results.push(`${a.label}: claude command not found`); continue; }
+      const env = claudeCode.childEnv(a);
       await util.run(bin, ['mcp', 'remove', '--scope', 'user', 'switchboard'], { env }).catch(() => {});
       const r = await util.run(bin, ['mcp', 'add', '--scope', 'user', 'switchboard', '-e', `SB_FROM=ac:${a.id}`, '--', sb, 'mcp'], { env });
       results.push(`${a.label}: ${r.code === 0 ? 'added' : util.truncate(r.stderr || r.stdout, 120)}`);
@@ -118,6 +118,10 @@ const handlers = {
   'account:save': (a) => { const id = hub.saveAccount(a); watchSources(); return id; },
   'account:delete': (id) => { hub.deleteAccount(id); watchSources(); },
   'account:login': (id) => openLoginTerminal(id),
+  'claude:status': (id) => hub.claudeStatus(id),
+  'claude:login': (id, opts) => hub.claudeLogin(id, opts),
+  'claude:loginCancel': (id) => hub.claudeLoginCancel(id),
+  'claude:logout': (id) => hub.claudeLogout(id),
   'account:detect': () => ({ claude: claudeCode.detect() }),
   'gmail:connect': (id) => hub.gmailConnect(id),
   'board': () => hub.board(),
@@ -159,6 +163,10 @@ for (const [ch, fn] of Object.entries(handlers)) {
 
 app.whenReady().then(() => {
   nativeTheme.themeSource = 'light';
+  // macOS always has the Keychain. On Linux without a keyring (only used for development and
+  // tests) fall back to Electron's built-in key so the app still runs.
+  const { safeStorage } = require('electron');
+  if (process.platform === 'linux' && !safeStorage.isEncryptionAvailable()) safeStorage.setUsePlainTextEncryption(true);
   hub.firstRunSetup();
   bus.start(Number(process.env.SB_PORT || 47821));
   try { installCli(); } catch {}

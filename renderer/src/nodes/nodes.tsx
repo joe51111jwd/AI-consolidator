@@ -87,7 +87,10 @@ export const AccountNode = memo(({ id }: NodeProps) => {
   const max = Math.max(1, ...allUsage);
   const running = sessions.filter((s) => s.status === 'running').length;
   const color = e.meta?.color || src.color;
-  const sub = e.source === 'claude-code' ? (e.meta?.config?.configDir || '~/.claude') : src.label;
+  const auth = e.meta?.config?.auth;
+  const sub = e.source === 'claude-code'
+    ? (auth?.loggedIn ? [auth.org, auth.plan && auth.plan[0].toUpperCase() + auth.plan.slice(1)].filter(Boolean).join(' · ') || auth.email || 'Signed in' : auth ? 'Not signed in' : (e.meta?.config?.configDir || '~/.claude'))
+    : src.label;
   return (
     <div className="card" style={{ width: 280 }}>
       <Handles />
@@ -95,7 +98,7 @@ export const AccountNode = memo(({ id }: NodeProps) => {
         <div className="avatar" style={{ background: color }}>{e.title.slice(0, 1)}</div>
         <div style={{ minWidth: 0 }}>
           <div className="t">{e.title}</div>
-          <div className="s mono">{sub}</div>
+          <div className={`s ${e.source === 'claude-code' && !auth ? 'mono' : ''}`} title={auth?.email || e.meta?.config?.configDir || ''}>{sub}</div>
         </div>
       </div>
       {u ? (
@@ -106,6 +109,7 @@ export const AccountNode = memo(({ id }: NodeProps) => {
       ) : e.source === 'grok-bot' ? (
         <div className="well">No public API. Grok Bot reaches your other agents with the <span className="mono">sb</span> command, and those messages show up here.</div>
       ) : null}
+      <LiveOrPreview id={id} title={e.title} />
       {(e.source === 'claude-code' || e.source === 'codex' || e.source === 'cursor' || e.source.endsWith('api') || e.source === 'openai-compatible' || e.source === 'gmail' || e.source === 'granola') && (
         <div className="stats"><span><b>{sessions.length}</b> {e.source === 'gmail' ? 'threads' : e.source === 'granola' ? 'meetings' : 'sessions'}</span>{running > 0 && <span className="status running"><i /><b>{running}</b>&nbsp;working</span>}</div>
       )}

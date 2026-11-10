@@ -41,6 +41,8 @@ export default function App() {
       if (e.key === 'Escape') set({ paletteOpen: false });
     };
     window.addEventListener('keydown', key);
+    // Used by the end-to-end tests after changing the board behind the window's back.
+    (window as any).__sbRefresh = async () => { await useStore.getState().refresh(true); await useStore.getState().refreshBoard(); };
     // Used by the screenshot mode in main.cjs to step through screens.
     (window as any).__sbScene = (i: number) => {
       const scenes: (() => void)[] = [

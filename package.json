@@ -9,7 +9,8 @@
     "start": "vite build --config vite.config.mjs && electron .",
     "dist": "vite build --config vite.config.mjs && electron-builder --mac",
     "typecheck": "tsc --noEmit",
-    "demo": "vite build --config vite.config.mjs && node scripts/demo.cjs"
+    "demo": "vite build --config vite.config.mjs && node scripts/demo.cjs",
+    "test": "vite build && node tests/e2e.cjs"
   },
   "author": "joe51111jwd",
   "license": "MIT",
@@ -20,6 +21,7 @@
     "concurrently": "^10.0.7",
     "electron": "^45.2.3",
     "electron-builder": "^26.18.0",
+    "playwright-core": "^1.65.0",
     "typescript": "^7.0.2",
     "vite": "^8.3.7",
     "wait-on": "^9.5.1"

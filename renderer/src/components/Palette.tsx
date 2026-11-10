@@ -38,6 +38,7 @@ export default function Palette() {
       notify('Added to the board');
     }
     set({ view: 'board' }); open(it.e.id);
+    setTimeout(() => (window as any).__sbCenter?.(it.e.id), 200);
   };
   return (
     <div className="overlay" onClick={() => set({ paletteOpen: false })}>

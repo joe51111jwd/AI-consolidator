@@ -35,7 +35,7 @@ function toNodes(rows: BoardRow[], byId: Record<string, Entity>): Node[] {
 const START_VIEW = { x: 40, y: 76, zoom: 0.78 };
 
 export default function Board() {
-  const { entities, byId, board, edges: edgeRows, accounts, refreshBoard, open, set, addAttach, notify } = useStore();
+  const { entities, byId, board, boardLoaded, edges: edgeRows, accounts, refreshBoard, open, set, addAttach, notify } = useStore();
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const [mode, setMode] = useState<GroupMode>('project');
@@ -48,7 +48,8 @@ export default function Board() {
 
   // Make sure every visible entity has a place on the board.
   useEffect(() => {
-    if (!entities.length || placing.current) return;
+    // Wait for the saved board, or a fresh layout would overwrite where you put things.
+    if (!boardLoaded || !entities.length || placing.current) return;
     const rowIds = new Set(board.map((r) => r.id));
     const fresh = entities.filter((e) => !rowIds.has(e.id) && defaultVisible(e));
     if (!fresh.length) return;
@@ -62,7 +63,7 @@ export default function Board() {
       placing.current = false;
       if (board.length === 0) setTimeout(() => rf.setViewport(START_VIEW, { duration: 300 }), 80);
     })();
-  }, [entities, board]);
+  }, [entities, board, boardLoaded]);
 
   useEffect(() => { setNodes((prev) => {
     const sel = new Set(prev.filter((n) => n.selected).map((n) => n.id));
@@ -213,7 +214,15 @@ export default function Board() {
     return () => window.removeEventListener('keydown', onKey);
   });
 
-  useEffect(() => { (window as any).__sbRegroup = regroup; });
+  useEffect(() => {
+    (window as any).__sbRegroup = regroup;
+    // Used by the palette and the end-to-end tests to bring a card into view.
+    (window as any).__sbCenter = (id: string, zoom = 0.9) => {
+      const n = rf.getInternalNode(id); if (!n) return false;
+      const p = n.internals.positionAbsolute; const w = n.measured?.width || 300, h = n.measured?.height || 200;
+      rf.setCenter(p.x + w / 2, p.y + h / 2, { zoom, duration: 0 }); return true;
+    };
+  });
 
   const viewport = useMemo<Viewport | undefined>(() => { try { return JSON.parse(localStorage.getItem('sb.viewport') || ''); } catch { return undefined; } }, []);
   const edgeRow = menu?.kind === 'edge' ? edgeRows.find((e) => e.id === menu.id) : null;

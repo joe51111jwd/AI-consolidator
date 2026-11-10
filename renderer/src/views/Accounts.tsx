@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
-import { Plus, LogIn, Trash2, Plug, Copy, X, KeyRound, Check } from 'lucide-react';
+import { Plus, LogIn, LogOut, Trash2, Plug, Copy, X, KeyRound, Check, RefreshCw, Terminal, ExternalLink, TriangleAlert } from 'lucide-react';
 import { useStore } from '../lib/store';
-import { api, Account } from '../lib/api';
+import { api, Account, ClaudeAuth } from '../lib/api';
 import { SOURCE, tokens } from '../lib/format';
 
 const KINDS: { kind: string; label: string; blurb: string }[] = [
@@ -23,20 +23,83 @@ function grokText(sb: string) {
   ].join('\n');
 }
 
+function freeClaudeDir(accounts: Account[]) {
+  const used = new Set(accounts.filter((a) => a.kind === 'claude-code').map((a) => (a.config.configDir || '~/.claude').replace(/\/$/, '')));
+  if (!used.has('~/.claude')) return '~/.claude';
+  for (let i = 2; ; i++) if (!used.has(`~/.claude-${i}`)) return `~/.claude-${i}`;
+}
+
+function planLabel(p?: string | null) {
+  if (!p) return null;
+  const k = p.toLowerCase();
+  const m: Record<string, string> = { max: 'Max', pro: 'Pro', team: 'Team', enterprise: 'Enterprise', free: 'Free' };
+  return m[k] || p.replace(/_/g, ' ').replace(/^\w/, (c) => c.toUpperCase());
+}
+
+// Sign-in state for one Claude account card. Each card has its own Claude Code folder, so two
+// plans on the same email (for example a Team org and a personal Max plan) stay separate.
+function ClaudeSignIn({ a, all }: { a: Account; all: Account[] }) {
+  const { notify } = useStore();
+  const live = useStore((s) => s.auth[a.id]);
+  const st: ClaudeAuth | undefined = a.config.auth;
+  const [busy, setBusy] = useState(false);
+  useEffect(() => { if (!st || Date.now() - st.checkedAt > 10 * 60000) api.claudeStatus(a.id).catch(() => {}); }, [a.id]);
+  const waiting = live?.phase === 'waiting';
+  const twin = st?.loggedIn && all.find((b) => b.id !== a.id && b.kind === 'claude-code' && b.config.auth?.loggedIn
+    && b.config.auth.email === st.email && (st.orgId && b.config.auth.orgId ? b.config.auth.orgId === st.orgId : (b.config.auth.org || '') === (st.org || '') && (b.config.auth.plan || '') === (st.plan || '')));
+  const signIn = async () => {
+    try { const r = await api.claudeLogin(a.id); notify(r.loggedIn ? `${a.label} is signed in` : 'Sign-in did not finish'); }
+    catch (e: any) { if (!/cancel/i.test(e.message)) notify(e.message); }
+  };
+  return (
+    <div className="signin" data-testid={`claude-auth-${a.id}`}>
+      {waiting ? (
+        <div className="signin-row"><span className="status running"><i /></span><span>Waiting for you to finish in the browser. Choose the organization this card should use.</span></div>
+      ) : st?.loggedIn ? (
+        <div className="signin-row">
+          <span className="chip green"><Check size={11} />Signed in</span>
+          <span className="who">{st.email || 'claude.ai account'}{st.org ? ` · ${st.org}` : ''}{st.plan ? ` · ${planLabel(st.plan)}` : ''}</span>
+        </div>
+      ) : st && !st.cli ? (
+        <div className="signin-row"><span className="chip amber"><TriangleAlert size={11} />Claude Code not found</span><span className="who">Install it, then press Check.</span></div>
+      ) : st ? (
+        <div className="signin-row"><span className="chip amber"><KeyRound size={11} />Not signed in</span></div>
+      ) : <div className="signin-row hint">Checking…</div>}
+      {twin && <div className="hint" style={{ color: 'var(--amber)' }}>Same login as {twin.label}. Sign this card out and sign in again, choosing the other organization.</div>}
+      {live?.phase === 'error' && live.error && !/cancel/i.test(live.error) && <div className="hint" style={{ color: 'var(--red)' }}>{live.error}</div>}
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+        {waiting ? (<>
+          {live?.url && <button className="btn" onClick={() => api.openExternal(live.url!)}><ExternalLink size={13} />Open sign-in page</button>}
+          <button className="btn" onClick={() => api.claudeLoginCancel(a.id)}>Cancel</button>
+        </>) : st?.loggedIn ? (<>
+          <button className="btn" disabled={busy} onClick={async () => { setBusy(true); await api.claudeStatus(a.id).catch(() => {}); setBusy(false); }}><RefreshCw size={13} />Check</button>
+          <button className="btn" onClick={async () => { await api.claudeLogout(a.id).catch((e) => notify(e.message)); }}><LogOut size={13} />Sign out</button>
+        </>) : (<>
+          <button className="btn accent" onClick={signIn}><LogIn size={13} />Sign in</button>
+          <button className="btn" disabled={busy} onClick={async () => { setBusy(true); await api.claudeStatus(a.id).catch(() => {}); setBusy(false); }}><RefreshCw size={13} />Check</button>
+          <button className="btn ghost" title="Open Terminal in this account's folder and type /login" onClick={async () => { const cmd = await api.loginAccount(a.id); notify(window.sbBridge.platform === 'darwin' ? 'Opened Terminal. Type /login there.' : `Run: ${cmd}`); }}><Terminal size={13} />Terminal</button>
+        </>)}
+      </div>
+    </div>
+  );
+}
+
 export default function Accounts() {
   const { accounts, entities, notify } = useStore();
   const [edit, setEdit] = useState<any | null>(null);
   const [split, setSplit] = useState(true);
   const [mcp, setMcp] = useState<{ sb: string; results: string[] } | null>(null);
   const [detected, setDetected] = useState<string[]>([]);
+  const [gmailBusy, setGmailBusy] = useState<string | null>(null);
+  const [confirmDel, setConfirmDel] = useState<string | null>(null);
   const [bus, setBus] = useState<{ tokenFile: string; port: string | null } | null>(null);
   const sbPath = '~/.switchboard/bin/sb';
-  useEffect(() => { api.getSetting('splitUsage', true).then(setSplit); api.detect().then((d) => setDetected(d.claude)); api.busInfo().then(setBus); }, []);
+  useEffect(() => { useStore.getState().refresh(true); api.getSetting('splitUsage', true).then(setSplit); api.detect().then((d) => setDetected(d.claude)); api.busInfo().then(setBus); }, []);
   const refresh = () => useStore.getState().refresh(true);
 
   const save = async () => {
     const { secretsIn, ...a } = edit;
-    await api.saveAccount({ ...a, secrets: secretsIn });
+    try { await api.saveAccount({ ...a, secrets: secretsIn }); } catch (e: any) { notify(e.message); return; }
     setEdit(null); await refresh(); notify('Saved');
   };
   const usageOf = (id: string) => entities.find((e) => e.id === `ac:${id}`)?.meta?.usage;
@@ -59,14 +122,16 @@ export default function Accounts() {
                 <div style={{ minWidth: 0 }}><div className="t">{a.label}</div><div className="s">{src.label}{a.config.configDir ? ` · ${a.config.configDir}` : ''}{a.config.email ? ` · ${a.config.email}` : ''}</div></div>
               </div>
               {u && <div className="stats"><span><b>{tokens(u.h5)}</b> last 5 hr</span><span><b>{tokens(u.d1)}</b> today</span><span><b>{tokens(u.d7)}</b> 7 days</span></div>}
+              {a.kind === 'claude-code' && <ClaudeSignIn a={a} all={accounts} />}
               {a.secrets && Object.keys(a.secrets).length > 0 && (
                 <div className="chips">{Object.entries(a.secrets).map(([k, v]) => <span key={k} className={`chip ${v ? 'green' : 'amber'}`}>{v ? <Check size={11} /> : <KeyRound size={11} />}{k === 'refresh' ? (v ? 'Signed in' : 'Not signed in') : k.replace('_', ' ')}</span>)}</div>
               )}
               <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                 <button className="btn" onClick={() => setEdit({ ...a, secretsIn: {} })}>Edit</button>
-                {a.kind === 'claude-code' && <button className="btn" onClick={async () => { const cmd = await api.loginAccount(a.id); notify(window.sbBridge.platform === 'darwin' ? 'Opened Terminal. Type /login there.' : `Run: ${cmd}`); }}><LogIn size={13} />Log in</button>}
-                {a.kind === 'gmail' && <button className="btn accent" onClick={async () => { try { const email = await api.gmailConnect(a.id); notify(`Connected ${email}`); refresh(); } catch (e: any) { notify(e.message); } }}><LogIn size={13} />{a.secrets?.refresh ? 'Reconnect' : 'Sign in with Google'}</button>}
-                <button className="btn ghost danger" style={{ marginLeft: 'auto' }} onClick={async () => { await api.deleteAccount(a.id); refresh(); }}><Trash2 size={13} /></button>
+                {a.kind === 'gmail' && <button className="btn accent" disabled={gmailBusy === a.id} onClick={async () => { setGmailBusy(a.id); try { const email = await api.gmailConnect(a.id); notify(`Connected ${email}`); refresh(); } catch (e: any) { notify(e.message); } setGmailBusy(null); }}><LogIn size={13} />{gmailBusy === a.id ? 'Waiting for Google…' : a.secrets?.refresh ? 'Reconnect' : 'Sign in with Google'}</button>}
+                {confirmDel === a.id
+                  ? <button className="btn danger" style={{ marginLeft: 'auto' }} onClick={async () => { await api.deleteAccount(a.id); setConfirmDel(null); refresh(); useStore.getState().refreshBoard(); }}>Remove {a.label}</button>
+                  : <button className="btn ghost danger" title="Remove account" style={{ marginLeft: 'auto' }} onClick={() => setConfirmDel(a.id)}><Trash2 size={13} /></button>}
               </div>
             </div>
           );
@@ -106,7 +171,7 @@ export default function Accounts() {
             <div style={{ display: 'flex' }}><h3>{edit.id ? `Edit ${edit.label}` : 'Add account'}</h3><button className="icon-btn" style={{ marginLeft: 'auto' }} onClick={() => setEdit(null)}><X size={16} /></button></div>
             {!edit.kind ? (
               <div className="due-list">{KINDS.map((k) => (
-                <button key={k.kind} className="due-item" style={{ gridTemplateColumns: '10px 1fr' }} onClick={() => setEdit({ ...edit, kind: k.kind, label: k.kind === 'openai-compatible' ? 'Grok API' : k.label.replace(/ \(.*\)/, ''), config: k.kind === 'openai-compatible' ? { baseUrl: 'https://api.x.ai/v1', model: 'grok-4' } : k.kind === 'claude-code' ? { configDir: '~/.claude-' + (accounts.filter((a) => a.kind === 'claude-code').length + 1) } : {} })}>
+                <button key={k.kind} className="due-item" style={{ gridTemplateColumns: '10px 1fr' }} onClick={() => setEdit({ ...edit, kind: k.kind, label: k.kind === 'openai-compatible' ? 'Grok API' : k.label.replace(/ \(.*\)/, ''), config: k.kind === 'openai-compatible' ? { baseUrl: 'https://api.x.ai/v1', model: 'grok-4' } : k.kind === 'claude-code' ? { configDir: freeClaudeDir(accounts) } : {} })}>
                   <i style={{ width: 8, height: 8, borderRadius: '50%', background: SOURCE[k.kind]?.color, marginTop: 5 }} />
                   <div><div className="t">{k.label}</div><div className="s">{k.blurb}</div></div>
                 </button>))}</div>
@@ -115,7 +180,7 @@ export default function Accounts() {
                 <div className="field"><label>Name on the board</label><input value={edit.label || ''} onChange={(e) => setEdit({ ...edit, label: e.target.value })} /></div>
                 {edit.kind === 'claude-code' && (<>
                   <div className="field"><label>Claude Code folder for this login</label><input className="mono" value={edit.config.configDir || ''} onChange={(e) => setEdit({ ...edit, config: { ...edit.config, configDir: e.target.value } })} />
-                    <span className="hint">Use ~/.claude for your main login and a new folder like ~/.claude-2 for each other account. Found on this Mac: {detected.join(', ') || 'none'}</span></div>
+                    <span className="hint">Each Claude account needs its own folder: that's what keeps two plans on the same email apart. Use ~/.claude for your main login and a new folder like ~/.claude-2 for each other one. After saving, press Sign in and pick the organization in the browser. Found on this Mac: {detected.join(', ') || 'none'}</span></div>
                   <div className="field"><label>When you prompt from Switchboard, Claude may</label>
                     <select value={edit.config.permissionMode || 'default'} onChange={(e) => setEdit({ ...edit, config: { ...edit.config, permissionMode: e.target.value } })}>
                       <option value="default">Read and plan only (safest)</option>
@@ -132,7 +197,7 @@ export default function Accounts() {
                 </>)}
                 {edit.kind === 'cursor' && <div className="field"><label>Cursor API key {edit.secrets?.key ? '(saved; type to replace)' : ''}</label><input type="password" value={edit.secretsIn.key || ''} onChange={(e) => setEdit({ ...edit, secretsIn: { ...edit.secretsIn, key: e.target.value } })} /><span className="hint">Cursor dashboard → API Keys. Grok Bot itself isn't reachable this way.</span></div>}
                 {edit.kind === 'gmail' && (<>
-                  <div className="field"><label>Google OAuth client ID {edit.secrets?.client_id ? '(saved)' : ''}</label><input value={edit.secretsIn.client_id || ''} onChange={(e) => setEdit({ ...edit, secretsIn: { ...edit.secretsIn, client_id: e.target.value } })} /></div>
+                  <div className="field"><label>Google OAuth client ID {edit.secrets?.client_id ? '(saved; leave empty to keep it)' : ''}</label><input value={edit.secretsIn.client_id || ''} onChange={(e) => setEdit({ ...edit, secretsIn: { ...edit.secretsIn, client_id: e.target.value } })} /></div>
                   <div className="field"><label>Client secret</label><input type="password" value={edit.secretsIn.client_secret || ''} onChange={(e) => setEdit({ ...edit, secretsIn: { ...edit.secretsIn, client_secret: e.target.value } })} /><span className="hint">Create a "Desktop app" OAuth client in Google Cloud with the Gmail API turned on. Steps are in the README. After saving, press Sign in with Google.</span></div>
                 </>)}
                 {edit.kind === 'grok-bot' && <p className="hint" style={{ lineHeight: 1.5 }}>Grok Bot has no public API. Prompts you send to this card are copied and Grok Bot opens so you can paste them. Its messages to your other agents arrive through the sb command and appear on the board.</p>}

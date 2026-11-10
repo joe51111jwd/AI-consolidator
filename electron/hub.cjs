@@ -1,0 +1,503 @@
+'use strict';
+// The hub: gathers every source into one list of "entities" (cards), routes prompts,
+// records flows between cards, and keeps the CRM, shared brain and usage.
+const fs = require('fs');
+const path = require('path');
+const { EventEmitter } = require('events');
+const { clipboard, shell } = require('electron');
+const db = require('./db.cjs');
+const secrets = require('./secrets.cjs');
+const { APP_DIR, HOME, exists, truncate, uid, run, which } = require('./util.cjs');
+const claudeCode = require('./sources/claudeCode.cjs');
+const codex = require('./sources/codex.cjs');
+const granola = require('./sources/granola.cjs');
+const gmail = require('./sources/gmail.cjs');
+const cursor = require('./sources/cursor.cjs');
+const apiChat = require('./sources/apiChat.cjs');
+
+const events = new EventEmitter();
+const emit = (e) => events.emit('event', e);
+const BRAIN = path.join(APP_DIR, 'brain.md');
+const runs = new Map();
+let entityCache = { at: 0, list: [] };
+const branchCache = new Map();
+
+const PALETTE = ['#C0603E', '#3F7A5E', '#7A5A8C', '#B08A2E', '#4E6E7E', '#9A4B5B', '#5E7F3A', '#8A6B52'];
+
+// ---------- accounts ----------
+function accounts() {
+  return db.all('SELECT * FROM accounts ORDER BY created_at').map((a) => ({ ...a, config: db.J(a.config, {}) }));
+}
+function account(id) { return accounts().find((a) => a.id === id); }
+
+function publicAccount(a) {
+  const keys = {
+    'anthropic-api': [`api:${a.id}:key`], 'openai-compatible': [`api:${a.id}:key`],
+    cursor: [`cursor:${a.id}:key`], gmail: [`gmail:${a.id}:client_id`, `gmail:${a.id}:refresh`],
+  }[a.kind] || [];
+  return { ...a, secrets: Object.fromEntries(keys.map((k) => [k.split(':').pop(), secrets.has(k)])) };
+}
+
+function saveAccount(a) {
+  const id = a.id || uid('a');
+  const n = db.get('SELECT COUNT(*) AS n FROM accounts').n;
+  const prev = account(id);
+  db.exec(`INSERT INTO accounts(id, kind, label, color, config, created_at) VALUES(?,?,?,?,?,?)
+    ON CONFLICT(id) DO UPDATE SET label = excluded.label, color = excluded.color, config = excluded.config`,
+  id, a.kind, a.label, a.color || (prev && prev.color) || PALETTE[n % PALETTE.length], JSON.stringify(a.config || {}), Date.now());
+  for (const [k, v] of Object.entries(a.secrets || {})) if (v) secrets.set(secretKey(a.kind, id, k), v);
+  invalidate();
+  return id;
+}
+function secretKey(kind, id, k) {
+  if (kind === 'gmail') return `gmail:${id}:${k}`;
+  if (kind === 'cursor') return `cursor:${id}:${k}`;
+  return `api:${id}:${k}`;
+}
+function deleteAccount(id) { db.exec('DELETE FROM accounts WHERE id = ?', id); invalidate(); }
+
+function firstRunSetup() {
+  if (db.get('SELECT COUNT(*) AS n FROM accounts').n > 0) return;
+  claudeCode.detect().forEach((dir, i) => saveAccount({ kind: 'claude-code', label: i === 0 ? 'Claude' : `Claude ${i + 1}`, config: { configDir: dir } }));
+  if (codex.detect().length) saveAccount({ kind: 'codex', label: 'Codex', config: {} });
+  if (granola.detect().length) saveAccount({ kind: 'granola', label: 'Granola', config: {} });
+  saveAccount({ kind: 'grok-bot', label: 'Grok Bot', config: {} });
+}
+
+// ---------- entities ----------
+function invalidate() { entityCache.at = 0; }
+
+async function sourceList(a) {
+  try {
+    switch (a.kind) {
+      case 'claude-code': return claudeCode.list(a);
+      case 'codex': return codex.list(a);
+      case 'granola': return granola.list(a);
+      case 'gmail': return await gmail.list(a);
+      case 'cursor': return await cursor.list(a);
+      case 'anthropic-api': case 'openai-compatible': return apiChat.listChats(a);
+      default: return [];
+    }
+  } catch (e) {
+    return [{ id: `err:${a.id}`, kind: 'error', source: a.kind, accountId: a.id, title: `${a.label}: ${e.message}`, updatedAt: Date.now(), meta: {} }];
+  }
+}
+
+function usageFor(a) {
+  try {
+    if (a.kind === 'claude-code') return claudeCode.usage(a);
+    if (a.kind === 'codex') return codex.usage(a);
+    if (a.kind === 'anthropic-api' || a.kind === 'openai-compatible') return apiChat.usage(a);
+  } catch {}
+  return null;
+}
+
+function gitBranches(cwd) {
+  const c = branchCache.get(cwd);
+  if (c && Date.now() - c.at < 120000) return c.value;
+  branchCache.set(cwd, { at: Date.now(), value: c ? c.value : null });
+  const git = which('git');
+  if (git && exists(path.join(cwd, '.git'))) {
+    run(git, ['-C', cwd, 'for-each-ref', '--sort=-committerdate', '--count=40', '--format=%(refname:short)|%(committerdate:unix)', 'refs/heads', 'refs/remotes'])
+      .then((r) => {
+        const seen = new Set(); const out = [];
+        for (const line of r.stdout.split('\n')) {
+          const [ref, t] = line.split('|'); if (!ref) continue;
+          const name = ref.replace(/^origin\//, ''); if (seen.has(name) || name === 'HEAD' || name === 'origin') continue; seen.add(name);
+          const agent = (name.match(/^(grok|claude|codex|cursor|copilot|devin)[/-]/i) || [])[1];
+          out.push({ name, at: Number(t) * 1000, agent: agent ? agent.toLowerCase() : null });
+        }
+        branchCache.set(cwd, { at: Date.now(), value: out.slice(0, 12) });
+        emit({ type: 'entities-changed' });
+      }).catch(() => {});
+  }
+  return c ? c.value : null;
+}
+
+async function entities({ force = false } = {}) {
+  if (!force && Date.now() - entityCache.at < 4000) return entityCache.list;
+  const accs = accounts();
+  const lists = await Promise.all(accs.map(sourceList));
+  const list = [];
+  const projects = new Map();
+  accs.forEach((a, i) => {
+    list.push({ id: `ac:${a.id}`, kind: 'account', source: a.kind, accountId: a.id, title: a.label, updatedAt: a.created_at, status: 'idle', meta: { usage: usageFor(a), color: a.color, config: a.config } });
+    for (const e of lists[i]) {
+      list.push(e);
+      const cwd = e.meta && e.meta.cwd;
+      if (cwd && cwd !== HOME && (e.source === 'claude-code' || e.source === 'codex')) {
+        const p = projects.get(cwd) || { sessions: [], updatedAt: 0 };
+        p.sessions.push(e.id); p.updatedAt = Math.max(p.updatedAt, e.updatedAt);
+        projects.set(cwd, p);
+        e.meta.project = `pj:${cwd}`;
+      }
+    }
+  });
+  for (const [cwd, p] of projects) {
+    list.push({ id: `pj:${cwd}`, kind: 'project', source: 'project', title: path.basename(cwd), preview: cwd.replace(HOME, '~'), updatedAt: p.updatedAt, status: 'idle', meta: { cwd, sessions: p.sessions, branches: gitBranches(cwd) } });
+  }
+  for (const c of clients()) {
+    list.push({ id: `cl:${c.id}`, kind: 'client', source: 'crm', title: c.name, preview: c.next_action || c.company || '', updatedAt: c.updated_at, status: c.status, meta: { client: c } });
+  }
+  for (const o of db.all('SELECT * FROM outputs ORDER BY ts DESC LIMIT 200')) {
+    list.push({ id: `out:${o.id}`, kind: 'output', source: 'output', title: o.title, preview: truncate(o.content, 300), updatedAt: o.ts, status: 'idle', meta: { from: o.source } });
+  }
+  for (const n of db.all('SELECT * FROM notes ORDER BY ts DESC LIMIT 200')) {
+    list.push({ id: `nt:${n.id}`, kind: 'note', source: 'note', title: truncate(n.text.split('\n')[0], 60) || 'Note', preview: n.text, updatedAt: n.ts, status: 'idle', meta: {} });
+  }
+  entityCache = { at: Date.now(), list };
+  return list;
+}
+
+function find(id) { return entityCache.list.find((e) => e.id === id); }
+
+// ---------- transcripts ----------
+async function transcriptFor(id) {
+  const [kind, accId, ...rest] = id.split(':');
+  const ref = rest.join(':');
+  const a = account(accId);
+  const e = find(id);
+  switch (kind) {
+    case 'cc': return claudeCode.transcript(a, e.meta.file);
+    case 'cx': return codex.transcript(a, e.meta.file);
+    case 'gr': return granola.transcript(a, ref);
+    case 'gm': return gmail.transcript(a, ref);
+    case 'cu': return cursor.transcript(a, ref);
+    case 'lc': return apiChat.transcript(ref);
+    case 'out': { const o = db.get('SELECT * FROM outputs WHERE id = ?', accId); return o ? [{ id: o.id, role: 'assistant', text: o.content, ts: o.ts }] : []; }
+    case 'nt': { const n = db.get('SELECT * FROM notes WHERE id = ?', accId); return n ? [{ id: n.id, role: 'user', text: n.text, ts: n.ts }] : []; }
+    case 'ac': {
+      const acct = account(accId);
+      if (acct && acct.kind === 'grok-bot') return flowsFor(id).map((f) => ({ id: f.id, role: f.source === id ? 'assistant' : 'user', text: `${f.source === id ? '→ ' + label(f.target) : '← ' + label(f.source)}\n\n${f.content}`, ts: f.ts }));
+      return [];
+    }
+    case 'cl': return [];
+    default: return [];
+  }
+}
+
+function label(id) { const e = find(id); return e ? e.title : id; }
+
+// ---------- flows & edges ----------
+function flowsFor(id) { return db.all('SELECT * FROM flows WHERE source = ? OR target = ? ORDER BY ts DESC LIMIT 100', id, id).reverse(); }
+
+function recordFlow(source, target, content, via = 'app') {
+  if (!source || !target || source === target) return;
+  const f = { id: uid('f'), source, target, preview: truncate(content, 140), content, via, ts: Date.now() };
+  db.exec('INSERT INTO flows(id, source, target, preview, content, via, ts) VALUES(?,?,?,?,?,?,?)', f.id, f.source, f.target, f.preview, f.content, f.via, f.ts);
+  let edge = db.get("SELECT * FROM edges WHERE source = ? AND target = ?", source, target);
+  if (!edge) {
+    const eid = uid('e');
+    db.exec('INSERT INTO edges(id, source, target, kind, data, created_at) VALUES(?,?,?,?,?,?)', eid, source, target, 'flow', JSON.stringify({ count: 0 }), Date.now());
+    edge = db.get('SELECT * FROM edges WHERE id = ?', eid);
+  }
+  const d = db.J(edge.data, {}); d.count = (d.count || 0) + 1; d.last = f.preview; d.lastTs = f.ts;
+  db.exec('UPDATE edges SET data = ? WHERE id = ?', JSON.stringify(d), edge.id);
+  emit({ type: 'flow', flow: f, edgeId: edge.id });
+  return f;
+}
+
+function edges() { return db.all('SELECT * FROM edges').map((e) => ({ ...e, data: db.J(e.data, {}) })); }
+function saveEdge(e) {
+  const id = e.id || uid('e');
+  db.exec(`INSERT INTO edges(id, source, target, kind, data, created_at) VALUES(?,?,?,?,?,?)
+    ON CONFLICT(id) DO UPDATE SET data = excluded.data, kind = excluded.kind`, id, e.source, e.target, e.kind || 'link', JSON.stringify(e.data || {}), Date.now());
+  return id;
+}
+function deleteEdge(id) { db.exec('DELETE FROM edges WHERE id = ?', id); }
+
+// ---------- prompting ----------
+function pickAccount(kinds = ['claude-code']) {
+  const cands = accounts().filter((a) => kinds.includes(a.kind));
+  if (!cands.length) return null;
+  const pref = db.getSetting('defaultAccount', null);
+  if (db.getSetting('splitUsage', true)) {
+    const scored = cands.map((a) => ({ a, u: (usageFor(a) || { h5: 0 }).h5 }));
+    scored.sort((x, y) => x.u - y.u);
+    return scored[0].a;
+  }
+  return cands.find((a) => a.id === pref) || cands[0];
+}
+
+function brain() { try { return fs.readFileSync(BRAIN, 'utf8'); } catch { return ''; } }
+function setBrain(text) { fs.writeFileSync(BRAIN, text); emit({ type: 'brain-changed' }); }
+function appendBrain(text, sourceLabel) {
+  const stamp = new Date().toISOString().slice(0, 16).replace('T', ' ');
+  fs.appendFileSync(BRAIN, `\n\n## ${stamp}${sourceLabel ? ' · ' + sourceLabel : ''}\n${text.trim()}\n`);
+  emit({ type: 'brain-changed' });
+}
+
+async function buildText(text, { attach = [], includeBrain = false } = {}) {
+  let pre = '';
+  if (includeBrain) { const b = brain().trim(); if (b) pre += `Shared notes (from Switchboard's shared brain):\n${truncate(b, 12000)}\n\n`; }
+  for (const a of attach) {
+    if (a.text) { pre += `Context from ${a.title || 'another card'}:\n"""\n${a.text}\n"""\n\n`; continue; }
+    const t = await transcriptFor(a.id).catch(() => []);
+    const body = t.slice(-12).map((m) => `${m.role}: ${m.text}`).join('\n\n');
+    pre += `Context from ${label(a.id)}:\n"""\n${truncate(body, 16000)}\n"""\n\n`;
+  }
+  return pre + text;
+}
+
+// Prompt any card. Returns a run id at once; progress arrives as events.
+function prompt(id, text, opts = {}) {
+  const runId = uid('r');
+  runs.set(runId, { id: runId, entityId: id, text: '', status: 'running', startedAt: Date.now() });
+  emit({ type: 'run', run: runs.get(runId) });
+  if (opts.from) recordFlow(opts.from, id, text, opts.via || 'app');
+  (async () => {
+    const full = await buildText(text, opts);
+    const onText = (t) => { const r = runs.get(runId); r.text = t; emit({ type: 'run', run: r }); };
+    const res = await dispatch(id, full, onText);
+    const r = runs.get(runId); r.text = res.text || r.text; r.status = 'done'; r.result = res;
+    emit({ type: 'run', run: r });
+    invalidate(); emit({ type: 'entities-changed' });
+    // Auto-forward along connections the user marked "send outputs".
+    const depth = opts.depth || 0;
+    if (depth < 3 && r.text) {
+      const resultId = res.entityId || id;
+      for (const e of edges().filter((e) => (e.source === id || e.source === resultId) && e.kind === 'link' && e.data.autoForward)) {
+        prompt(e.target, r.text, { from: resultId, depth: depth + 1, via: 'route' });
+      }
+    }
+  })().catch((err) => {
+    const r = runs.get(runId); r.status = 'error'; r.error = err.message; emit({ type: 'run', run: r });
+  });
+  return runId;
+}
+
+async function dispatch(id, text, onText) {
+  const [kind, accId, ...rest] = id.split(':');
+  const ref = rest.join(':');
+  const e = find(id) || { meta: {} };
+  if (kind === 'cc') { const a = account(accId); const r = await claudeCode.prompt(a, { sessionId: e.meta.sessionId, cwd: e.meta.cwd, text, onText }); return { ...r, entityId: `cc:${accId}:${r.sessionId}` }; }
+  if (kind === 'cx') { const a = account(accId); return codex.prompt(a, { sessionId: e.meta.sessionId, cwd: e.meta.cwd, text, onText }); }
+  if (kind === 'cu') return cursor.prompt(account(accId), { agentId: ref, text });
+  if (kind === 'lc') return apiChat.prompt(account(accId), { chatId: ref, text, onText });
+  if (kind === 'pj' || kind === 'ac' || kind === 'cl') {
+    let a, cwd = HOME;
+    if (kind === 'ac') a = account(accId);
+    if (kind === 'pj') { cwd = id.slice(3); a = pickAccount(['claude-code', 'codex', 'anthropic-api', 'openai-compatible']); }
+    if (kind === 'cl') { const c = clients().find((x) => x.id === accId); const p = c && c.project_paths[0]; if (p) cwd = p; a = pickAccount(['claude-code', 'anthropic-api', 'openai-compatible']); }
+    if (!a) throw new Error('Add a Claude account first');
+    if (a.kind === 'claude-code') { const r = await claudeCode.prompt(a, { cwd, text, onText }); return { ...r, entityId: `cc:${a.id}:${r.sessionId}` }; }
+    if (a.kind === 'codex') return codex.prompt(a, { cwd, text, onText });
+    if (a.kind === 'anthropic-api' || a.kind === 'openai-compatible') { const r = await apiChat.prompt(a, { text, onText }); return { ...r, entityId: `lc:${a.id}:${r.chatId}` }; }
+    if (a.kind === 'grok-bot') return grokHandoff(text);
+    throw new Error(`${a.label} can't take prompts`);
+  }
+  if (kind === 'out' || kind === 'nt') throw new Error('Drop this on an agent or chat to send it');
+  throw new Error('This card cannot take prompts');
+}
+
+// Grok Bot has no public API, so "sending" copies the text and opens the Grok Bot app.
+function grokHandoff(text) {
+  clipboard.writeText(text);
+  const appName = db.getSetting('grokAppName', 'Grok Bot');
+  if (process.platform === 'darwin') run('open', ['-a', appName]).catch(() => {});
+  return { text: `Copied to your clipboard and opened ${appName}. Paste it there. Replies Grok Bot sends back through the \`sb\` command show up here.` };
+}
+
+// ---------- outputs & notes ----------
+function saveOutput({ title, content, source }) {
+  const id = uid('o');
+  db.exec('INSERT INTO outputs(id, title, content, source, ts) VALUES(?,?,?,?,?)', id, title || truncate(content, 60), content, source || null, Date.now());
+  invalidate();
+  return `out:${id}`;
+}
+function deleteEntity(id) {
+  const [kind, a] = id.split(':');
+  if (kind === 'out') db.exec('DELETE FROM outputs WHERE id = ?', a);
+  if (kind === 'nt') db.exec('DELETE FROM notes WHERE id = ?', a);
+  if (kind === 'cl') db.exec('DELETE FROM clients WHERE id = ?', a);
+  db.exec('DELETE FROM board_nodes WHERE id = ?', id);
+  invalidate();
+}
+function saveNote({ id, text }) {
+  if (id) db.exec('UPDATE notes SET text = ?, ts = ? WHERE id = ?', text, Date.now(), id.replace(/^nt:/, ''));
+  else { id = 'nt:' + uid('n'); db.exec('INSERT INTO notes(id, text, ts) VALUES(?,?,?)', id.slice(3), text, Date.now()); }
+  invalidate();
+  return id;
+}
+
+// ---------- board layout ----------
+function board() { return db.all('SELECT * FROM board_nodes').map((n) => ({ ...n, data: db.J(n.data, {}) })); }
+function saveBoard(nodes) {
+  for (const n of nodes) {
+    db.exec(`INSERT INTO board_nodes(id, x, y, w, h, parent_id, data, hidden) VALUES(?,?,?,?,?,?,?,?)
+      ON CONFLICT(id) DO UPDATE SET x = excluded.x, y = excluded.y, w = excluded.w, h = excluded.h, parent_id = excluded.parent_id, data = excluded.data, hidden = excluded.hidden`,
+    n.id, n.x, n.y, n.w ?? null, n.h ?? null, n.parent_id ?? null, JSON.stringify(n.data || {}), n.hidden ? 1 : 0);
+  }
+}
+function deleteBoardNodes(ids) { for (const id of ids) db.exec('DELETE FROM board_nodes WHERE id = ?', id); }
+
+// ---------- CRM ----------
+function clients() {
+  return db.all('SELECT * FROM clients ORDER BY updated_at DESC').map((c) => ({ ...c, emails: db.J(c.emails, []), domains: db.J(c.domains, []), project_paths: db.J(c.project_paths, []) }));
+}
+function saveClient(c) {
+  const id = c.id || uid('cl');
+  const emails = (c.emails || []).map((x) => x.trim().toLowerCase()).filter(Boolean);
+  const domains = [...new Set([...(c.domains || []), ...emails.map((e) => e.split('@')[1])].map((d) => (d || '').trim().toLowerCase()).filter((d) => d && !GENERIC.has(d)))];
+  db.exec(`INSERT INTO clients(id, name, company, emails, domains, status, value, next_action, due, notes, project_paths, created_at, updated_at)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name = excluded.name, company = excluded.company, emails = excluded.emails,
+    domains = excluded.domains, status = excluded.status, value = excluded.value, next_action = excluded.next_action, due = excluded.due,
+    notes = excluded.notes, project_paths = excluded.project_paths, updated_at = excluded.updated_at`,
+  id, c.name, c.company || null, JSON.stringify(emails), JSON.stringify(domains), c.status || 'active', c.value ?? null, c.next_action || null, c.due || null, c.notes || null, JSON.stringify(c.project_paths || []), c.created_at || Date.now(), Date.now());
+  invalidate();
+  return id;
+}
+
+const GENERIC = new Set(['gmail.com', 'googlemail.com', 'yahoo.com', 'outlook.com', 'hotmail.com', 'icloud.com', 'me.com', 'aol.com', 'proton.me', 'protonmail.com', 'live.com']);
+
+function matchesClient(c, email) {
+  if (!email) return false;
+  email = email.toLowerCase();
+  return c.emails.includes(email) || c.domains.includes(email.split('@')[1]);
+}
+
+async function allThreads() {
+  const out = [];
+  for (const a of accounts().filter((a) => a.kind === 'gmail')) {
+    try { for (const t of await gmail.threads(a)) out.push({ ...t, accountId: a.id }); } catch {}
+  }
+  return out;
+}
+function allMeetings() {
+  const out = [];
+  for (const a of accounts().filter((a) => a.kind === 'granola')) { try { for (const d of granola.load(a)) out.push({ ...d, accountId: a.id }); } catch {} }
+  return out;
+}
+
+async function due() {
+  const items = [];
+  const now = Date.now();
+  const cs = clients();
+  const threads = await allThreads();
+  const meetings = allMeetings();
+  const myEmails = new Set(accounts().filter((a) => a.kind === 'gmail').map((a) => (a.config.email || '').toLowerCase()));
+  for (const c of cs) {
+    if (c.status === 'done' || c.status === 'lost') continue;
+    if (c.next_action) {
+      const d = c.due ? Date.parse(c.due) : null;
+      items.push({ id: `act:${c.id}`, clientId: c.id, client: c.name, kind: 'action', title: c.next_action, due: d, overdue: d ? d < now - 86400000 + 1 : false, ref: `cl:${c.id}` });
+    }
+    const theirs = threads.filter((t) => t.participants.some((p) => matchesClient(c, p)));
+    for (const t of theirs) {
+      if (!t.lastFromMe && now - t.updatedAt > 6 * 3600000) {
+        items.push({ id: `reply:${t.id}`, clientId: c.id, client: c.name, kind: 'reply', title: `Reply to ${t.last.fromName}: ${t.subject}`, due: t.updatedAt + 86400000, overdue: now - t.updatedAt > 2 * 86400000, ref: `gm:${t.accountId}:${t.id}` });
+      }
+    }
+    const lastOut = Math.max(0, ...theirs.flatMap((t) => t.messages.filter((m) => myEmails.has(m.from)).map((m) => m.ts)));
+    for (const m of meetings.filter((m) => now - m.at < 14 * 86400000 && m.at < now && m.attendees.some((a) => matchesClient(c, a.email)))) {
+      if (lastOut < m.at) items.push({ id: `fu:${m.id}:${c.id}`, clientId: c.id, client: c.name, kind: 'followup', title: `Follow up after "${m.title}"`, due: m.at + 2 * 86400000, overdue: now - m.at > 3 * 86400000, ref: `gr:${m.accountId}:${m.id}` });
+    }
+  }
+  items.sort((a, b) => (a.due || Infinity) - (b.due || Infinity));
+  return items;
+}
+
+// People you write back and forth with who aren't clients yet.
+async function suggestions() {
+  const cs = clients();
+  const me = new Set(accounts().filter((a) => a.kind === 'gmail').map((a) => (a.config.email || '').toLowerCase()));
+  const byKey = new Map();
+  for (const t of await allThreads()) {
+    const iReplied = t.messages.some((m) => me.has(m.from));
+    if (!iReplied) continue;
+    for (const p of t.participants) {
+      if (me.has(p) || /no-?reply|notifications?|mailer|support@|billing@|calendar/i.test(p)) continue;
+      if (cs.some((c) => matchesClient(c, p))) continue;
+      const dom = p.split('@')[1];
+      const key = GENERIC.has(dom) ? p : dom;
+      const s = byKey.get(key) || { key, email: p, domain: GENERIC.has(dom) ? null : dom, name: '', threads: 0, last: 0, subject: '' };
+      const msg = t.messages.find((m) => m.from === p);
+      if (msg && !s.name) s.name = msg.fromName;
+      s.threads++; if (t.updatedAt > s.last) { s.last = t.updatedAt; s.subject = t.subject; }
+      byKey.set(key, s);
+    }
+  }
+  return [...byKey.values()].filter((s) => s.threads >= 1).sort((a, b) => b.last - a.last).slice(0, 20);
+}
+
+// ---------- usage ----------
+function usageSummary() {
+  return accounts().map((a) => ({ id: a.id, label: a.label, kind: a.kind, color: a.color, usage: usageFor(a) }));
+}
+
+// ---------- the overall agent ----------
+const CHIEF_ID = 'chief';
+function chiefHistory() {
+  return db.all("SELECT id, role, content AS text, ts FROM chat_messages WHERE chat_id = 'chief' ORDER BY ts DESC LIMIT 30").reverse();
+}
+
+async function chiefContext(selected) {
+  const parts = [];
+  const items = await due().catch(() => []);
+  if (items.length) parts.push('What is due (from the CRM, Gmail and Granola):\n' + items.slice(0, 20).map((d) => `- ${d.client}: ${d.title}${d.due ? ` (due ${new Date(d.due).toDateString()})` : ''}`).join('\n'));
+  const b = brain().trim(); if (b) parts.push('Shared brain:\n' + truncate(b, 8000));
+  const cs = clients(); if (cs.length) parts.push('Clients:\n' + cs.map((c) => `- ${c.name}${c.company ? ` (${c.company})` : ''} [${c.status}]${c.next_action ? ` next: ${c.next_action}` : ''}`).join('\n'));
+  for (const id of selected || []) {
+    const t = await transcriptFor(id).catch(() => []);
+    parts.push(`Card "${label(id)}" (${id}), latest messages:\n` + truncate(t.slice(-10).map((m) => `${m.role}: ${m.text}`).join('\n\n'), 12000));
+  }
+  const ents = await entities();
+  parts.push('Cards on the board:\n' + ents.filter((e) => ['session', 'project', 'account', 'client'].includes(e.kind)).slice(0, 80).map((e) => `- ${e.id} · ${e.title}`).join('\n'));
+  return parts.join('\n\n');
+}
+
+const CHIEF_SYSTEM = `You are the overall agent inside Switchboard, a local whiteboard where the user sees all their AI agents, chats, code projects and clients.
+You can read the context below. Be brief and concrete: lead with the answer. When you compare outputs, say which is better and why in a few lines.
+When the user asks you to hand work to another card, use the switchboard tools if you have them (send_to_card), otherwise write the exact prompt they should send.
+Never send email or take actions outside Switchboard.`;
+
+function chief(question, { selected = [], accountId } = {}) {
+  const runId = uid('r');
+  runs.set(runId, { id: runId, entityId: CHIEF_ID, text: '', status: 'running', startedAt: Date.now() });
+  emit({ type: 'run', run: runs.get(runId) });
+  db.exec('INSERT INTO chat_messages(id, chat_id, role, content, ts) VALUES(?,?,?,?,?)', uid('m'), 'chief', 'user', question, Date.now());
+  (async () => {
+    const a = (accountId && account(accountId)) || pickAccount(['claude-code', 'anthropic-api', 'openai-compatible']);
+    if (!a) throw new Error('Add a Claude account or an API key so the overall agent can run');
+    const ctx = await chiefContext(selected);
+    const history = chiefHistory();
+    const onText = (t) => { const r = runs.get(runId); r.text = t; emit({ type: 'run', run: r }); };
+    let res;
+    if (a.kind === 'claude-code') {
+      const convo = history.slice(0, -1).slice(-10).map((m) => `${m.role === 'user' ? 'User' : 'You'}: ${m.text}`).join('\n\n');
+      const text = `${CHIEF_SYSTEM}\n\n${ctx}\n\n${convo ? 'Conversation so far:\n' + convo + '\n\n' : ''}User: ${question}`;
+      const mcp = mcpConfigPath();
+      const extra = mcp ? ['--mcp-config', mcp, '--allowedTools', 'mcp__switchboard'] : [];
+      res = await claudeCode.prompt(a, { cwd: APP_DIR, text, onText, extraArgs: extra });
+    } else {
+      const messages = history.map((m) => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: m.text }));
+      res = await apiChat.complete(a, { system: CHIEF_SYSTEM + '\n\n' + ctx, messages, onText });
+    }
+    db.exec('INSERT INTO chat_messages(id, chat_id, role, content, ts) VALUES(?,?,?,?,?)', uid('m'), 'chief', 'assistant', res.text, Date.now());
+    const r = runs.get(runId); r.text = res.text; r.status = 'done'; emit({ type: 'run', run: r });
+    for (const id of selected) recordFlow(id, CHIEF_ID, `Read by the overall agent: ${question}`, 'chief');
+  })().catch((err) => { const r = runs.get(runId); r.status = 'error'; r.error = err.message; emit({ type: 'run', run: r }); });
+  return runId;
+}
+
+let mcpPathMemo = null;
+function mcpConfigPath() {
+  const sb = path.join(APP_DIR, 'bin', 'sb');
+  if (!exists(sb)) return null;
+  if (!mcpPathMemo) {
+    mcpPathMemo = path.join(APP_DIR, 'mcp.json');
+    fs.writeFileSync(mcpPathMemo, JSON.stringify({ mcpServers: { switchboard: { command: sb, args: ['mcp'] } } }, null, 2));
+  }
+  return mcpPathMemo;
+}
+
+module.exports = {
+  events, accounts, publicAccount, account, saveAccount, deleteAccount, firstRunSetup,
+  entities, invalidate, transcriptFor, find, label,
+  prompt, runs, recordFlow, flowsFor, edges, saveEdge, deleteEdge,
+  brain, setBrain, appendBrain, saveOutput, saveNote, deleteEntity,
+  board, saveBoard, deleteBoardNodes,
+  clients, saveClient, due, suggestions, usageSummary, chief, chiefHistory, pickAccount,
+  gmailConnect: (id) => gmail.connect(account(id)).then((email) => { const a = account(id); a.config.email = email; saveAccount(a); return email; }),
+  BRAIN,
+};

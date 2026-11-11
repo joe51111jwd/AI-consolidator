@@ -2,6 +2,7 @@ import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { ArrowUp, Paperclip, X } from 'lucide-react';
 import { api, Attach } from '../lib/api';
 import { useStore } from '../lib/store';
+import { sendPrompt } from '../lib/send';
 import { AgentLogo } from './Logos';
 import './panels.css';
 
@@ -60,7 +61,7 @@ export default function Composer({ id, placeholder, multiline = false, from, aut
     try {
       const all = [...attach, ...(await Promise.all(usePins.map(pinAttach)))];
       const src = all.find((a) => a.sourceId)?.sourceId || from;
-      await api.prompt(id, t, { attach: all, from: src });
+      await sendPrompt(id, t, { attach: all, from: src });
       clearAttach(id);
       if (usePins.length) useStore.getState().set({ pins: [] });
       onSent?.(t);

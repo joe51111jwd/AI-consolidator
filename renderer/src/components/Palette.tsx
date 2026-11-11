@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Search, StickyNote, Sparkles, Inbox, Settings, Users, BookOpen, LayoutGrid, Tag, Plus, Check, X } from 'lucide-react';
+import { Search, StickyNote, Sparkles, Inbox, Settings, Users, BookOpen, LayoutGrid, Tag, Plus, Check, X, Shapes, Sun } from 'lucide-react';
 import { useStore } from '../lib/store';
 import { api, Entity, BoardRow } from '../lib/api';
 import { SOURCE, ago } from '../lib/format';
@@ -104,14 +104,35 @@ export default function Palette() {
 
   const { pre, text, rest } = parse(q);
   const commands: Cmd[] = [
+    { id: 'examples', label: 'Add example board', icon: Shapes, run: async () => {
+      try {
+        const r = await api.call<{ frameId: string }>('examples:add');
+        set({ view: 'board', settingsTab: null });
+        await (window as any).__sbRefresh?.();
+        if (r?.frameId) centre(r.frameId);
+        notify('Example board added');
+      } catch (err: any) { notify(err?.message || 'Could not add the examples'); }
+    } },
     { id: 'note', label: 'New note', icon: StickyNote, run: async () => { const id = await api.saveNote({ text: '' }); await placeOnBoard(id); await useStore.getState().refresh(true); centre(id); } },
+    { id: 'settings', label: 'Open settings', icon: Settings, keys: '⌘,', run: () => set({ settingsTab: 'accounts' }) },
     { id: 'chief', label: 'Ask across all agents', icon: Sparkles, keys: '⌘J', run: () => set({ chiefOpen: true, chiefMin: false }) },
     { id: 'outputs', label: 'Outputs', icon: Inbox, run: () => set({ outputsOpen: true }) },
     ...((window as any).__sbRegroup ? [{ id: 'smart', label: 'Smart group', icon: LayoutGrid, run: () => (window as any).__sbRegroup() }] : []),
     { id: 'accounts', label: 'Accounts', icon: Settings, run: () => set({ settingsTab: 'accounts' }) },
     { id: 'clients', label: 'Clients', icon: Users, run: () => set({ settingsTab: 'clients' }) },
     { id: 'brain', label: 'Shared brain', icon: BookOpen, run: () => set({ settingsTab: 'brain' }) },
+    { id: 'recap', label: 'Daily recap', icon: Sun, run: async () => {
+      notify('Writing your recap…');
+      try {
+        const text = await api.call<string>('proactive:recap');
+        if (!text?.trim()) { notify('Nothing to recap yet'); return; }
+        await api.saveOutput({ title: `Daily recap · ${new Date().toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}`, content: text });
+        await useStore.getState().refresh(true);
+        set({ outputsOpen: true });
+      } catch (err: any) { notify(err?.message || 'Recap failed'); }
+    } },
   ];
+  const STARTERS = ['examples', 'note', 'smart', 'recap', 'settings'];
 
   const rows = useMemo<Row[]>(() => {
     const local = localHits(entities, q);
@@ -124,6 +145,7 @@ export default function Palette() {
     const out: Row[] = order.flatMap((g) => groups[g].map((hit) => ({ type: 'hit' as const, hit })));
     const ql = text.toLowerCase();
     if (!pre && ql) for (const cmd of commands) if (cmd.label.toLowerCase().includes(ql)) out.push({ type: 'cmd', cmd });
+    if (!q) return [...STARTERS.map((id) => commands.find((c) => c.id === id)).filter((c): c is Cmd => !!c).map((cmd) => ({ type: 'cmd' as const, cmd })), ...out];
     return out;
   }, [q, remote, entities]);
 
@@ -228,6 +250,7 @@ export default function Palette() {
               </React.Fragment>
             );
           })}
+          {!q && <div className="pn-tip">Tip: ⌥Space opens this from anywhere in the app</div>}
         </div>
         <div className="pn-foot">
           {pins.length > 0 ? (
@@ -236,7 +259,7 @@ export default function Palette() {
               <button onClick={() => set({ pins: [] })} title="Clear tags"><X size={11} /></button>
             </span>
           ) : <span />}
-          <span className="pn-keys"><kbd>↵</kbd> open <kbd>⌘↵</kbd> add <kbd>⌘T</kbd> tag</span>
+          <span className="pn-keys"><kbd>↵</kbd> open · <kbd>⌘↵</kbd> add to board · <kbd>⌘T</kbd> tag</span>
         </div>
       </div>
     </div>

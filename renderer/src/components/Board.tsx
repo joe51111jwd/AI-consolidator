@@ -19,6 +19,12 @@ const edgeTypes = { flow: FlowEdge };
 // Opens at a readable zoom in the top-left corner; zoom out to see everything.
 const START_VIEW = { x: 48, y: 104, zoom: 0.78 };
 const isGroup = (id: string) => id.startsWith('grp:');
+// Cards deleted this session: never re-placed, even if a stale entity list still has them.
+const deleted = new Set<string>();
+const hiddenIds = new Map<string, number>();
+// Background saves (unoverlap, drags, placement) can race a hide or delete; they must never undo it.
+const guard = (rows: BoardRow[]) => rows.filter((r) => !deleted.has(r.id)).map((r) => (Date.now() - (hiddenIds.get(r.id) || 0) < 8000 ? { ...r, hidden: 1 } : r));
+const defaultW = (kind: string) => (kind === 'note' ? 260 : 300);
 
 function toNodes(rows: BoardRow[], byId: Record<string, Entity>, show: (e: Entity) => boolean): Node[] {
   const groups = rows.filter((r) => isGroup(r.id) && !r.hidden);
@@ -32,7 +38,7 @@ function toNodes(rows: BoardRow[], byId: Record<string, Entity>, show: (e: Entit
     const e = byId[r.id];
     if (r.hidden || !e || suppressed(e) || !show(e)) continue;
     if (parent) shown.set(parent, (shown.get(parent) || 0) + 1);
-    cards.push({ id: r.id, type: e.kind, position: { x: r.x, y: r.y }, data: {}, ...(parent ? { parentId: parent } : {}) });
+    cards.push({ id: r.id, type: e.kind, position: { x: r.x, y: r.y }, data: {}, style: { width: r.w || defaultW(e.kind), ...(r.h ? { height: r.h } : {}) }, ...(parent ? { parentId: parent } : {}) });
   }
   // A frame whose cards are all hidden (old project frames, filtered out) disappears with them.
   const frames: Node[] = groups.filter((g) => !kids.get(g.id) || shown.get(g.id)).map((g) => ({
@@ -43,11 +49,15 @@ function toNodes(rows: BoardRow[], byId: Record<string, Entity>, show: (e: Entit
   return [...frames, ...cards];
 }
 
+const same = (a: Node, b: Node) => a.type === b.type && a.parentId === b.parentId && a.position.x === b.position.x && a.position.y === b.position.y
+  && (a.style?.width ?? null) === (b.style?.width ?? null) && (a.style?.height ?? null) === (b.style?.height ?? null)
+  && (a.width == null || a.width === b.style?.width) && JSON.stringify(a.data) === JSON.stringify(b.data);
+
 export default function Board() {
   const { entities, byId, board, boardLoaded, edges: edgeRows, refreshBoard, open, set, addAttach, notify } = useStore();
   const [nodes, setNodes, onNodesChangeRaw] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
-  const [menu, setMenu] = useState<{ x: number; y: number; kind: 'node' | 'edge' | 'pane'; id?: string; at?: { x: number; y: number } } | null>(null);
+  const [menu, setMenu] = useState<{ x: number; y: number; kind: 'node' | 'edge' | 'pane'; id?: string; ids?: string[]; at?: { x: number; y: number } } | null>(null);
   const [off, setOffState] = useState<string[]>([]);
   const [busy, setBusyState] = useState(false);
   const busyRef = useRef(false);
@@ -106,13 +116,13 @@ export default function Board() {
     // Wait for the saved board, or a fresh layout would overwrite where you put things.
     if (!boardLoaded || !entities.length || placing.current) return;
     const rowIds = new Set(board.map((r) => r.id));
-    const fresh = entities.filter((e) => !rowIds.has(e.id) && defaultVisible(e));
+    const fresh = entities.filter((e) => !rowIds.has(e.id) && !deleted.has(e.id) && defaultVisible(e));
     if (!fresh.length) return;
     placing.current = true;
     const first = board.length === 0;
     (async () => {
       const rows = first ? frameLayout(heuristicGroups(fresh, byId), (id) => estH(byId[id])).rows : placeNew(fresh.map((e) => e.id), board, byId);
-      await api.saveBoard(rows);
+      await api.saveBoard(guard(rows));
       await refreshBoard();
       placing.current = false;
       if (first) { setTimeout(() => rf.setViewport(START_VIEW, { duration: 300 }), 80); smartGroup(true); }
@@ -123,10 +133,15 @@ export default function Board() {
   // (agents refresh the entities often, and a refresh mustn't yank a card out from under the cursor).
   useEffect(() => { setNodes((prev) => {
     const old = new Map(prev.map((n) => [n.id, n]));
-    return toNodes(board, byId, (e) => passesFilter(e, offSet)).map((n) => {
+    const next = toNodes(board, byId, (e) => passesFilter(e, offSet)).map((n) => {
       const o = old.get(n.id);
-      return o ? { ...n, selected: o.selected, measured: o.measured, ...(o.dragging ? { position: o.position, dragging: true } : {}) } : n;
+      if (!o) return n;
+      if (o.dragging || o.resizing) return o;
+      // Unchanged cards keep their node object so they don't re-render (and flash) on every refresh.
+      if (same(o, n)) return o;
+      return { ...n, selected: o.selected, measured: o.measured };
     });
+    return next.length === prev.length && next.every((n, i) => n === prev[i]) ? prev : next;
   }); }, [board, byId, offSet]);
 
   const nodeKey = nodes.map((n) => n.id).join('|');
@@ -144,7 +159,7 @@ export default function Board() {
     const t = setTimeout(() => {
       const ns = rf.getNodes();
       if (placing.current || busyRef.current || ns.some((n) => n.dragging)) return;
-      const rows = unoverlap(ns, useStore.getState().board);
+      const rows = guard(unoverlap(ns, useStore.getState().board));
       if (rows.length) api.saveBoard(rows).then(refreshBoard);
     }, 500);
     return () => clearTimeout(t);
@@ -196,12 +211,18 @@ export default function Board() {
       const g = board.find((b) => b.id === gid); if (!g) continue;
       const fit = fitFrame(g, ks); if (fit) rows.push(fit);
     }
-    await api.saveBoard(rows);
+    await api.saveBoard(guard(rows));
     await refreshBoard();
   }, [board, byId, rf]);
 
   const onConnect = useCallback(async (c: Connection) => {
     if (!c.source || !c.target || c.source === c.target) return;
+    if (c.source.startsWith('nt:') && PROMPTABLE(c.target)) {
+      await api.saveEdge({ source: c.source, target: c.target, kind: 'link', data: { instruction: true, label: 'Instruction' } });
+      await refreshBoard();
+      notify('This note now goes with every prompt to that agent. Use its clock to repeat it instead.');
+      return;
+    }
     await api.saveEdge({ source: c.source, target: c.target, kind: 'link', data: { autoForward: true } });
     await refreshBoard();
     notify('Connected. Outputs will flow along this line.');
@@ -213,7 +234,12 @@ export default function Board() {
 
   // One click opens a card; a drag only moves it.
   const onNodeClick = (ev: React.MouseEvent, n: Node) => {
-    if (n.type === 'group' || n.type === 'note' || ev.shiftKey || ev.metaKey || ev.ctrlKey) return;
+    if (n.type === 'note' && !ev.shiftKey && !ev.metaKey && !ev.ctrlKey) {
+      const ta = document.querySelector<HTMLTextAreaElement>(`.react-flow__node[data-id="${n.id}"] textarea`);
+      if (ta && document.activeElement !== ta && !(ev.target as HTMLElement).closest('button')) { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }
+      return;
+    }
+    if (n.type === 'group' || ev.shiftKey || ev.metaKey || ev.ctrlKey) return;
     if ((ev.target as HTMLElement).closest('input, textarea, button, a, select, [contenteditable], .composer, .grip, .nodrag, .react-flow__handle')) return;
     const d = down.current;
     if (d && Math.hypot(ev.clientX - d.x, ev.clientY - d.y) > 4) return;
@@ -243,6 +269,7 @@ export default function Board() {
     const pos = rf.screenToFlowPosition({ x: e.clientX, y: e.clientY });
     // An existing output (from the drawer or its own grip) moves there instead of being copied.
     if (payload.sourceId?.startsWith('out:') && byId[payload.sourceId]) {
+      hiddenIds.delete(payload.sourceId);
       await api.saveBoard([{ ...placeAt(payload.sourceId, pos.x - 150, pos.y - 40), hidden: 0 }]);
       await reload();
       return;
@@ -272,16 +299,20 @@ export default function Board() {
     const rows: BoardRow[] = [];
     for (const id of ids) {
       if (isGroup(id)) { await ungroup(id); continue; }
-      if (id.startsWith('nt:') || id.startsWith('out:')) { await api.deleteEntity(id); continue; }
-      const r = board.find((b) => b.id === id);
-      rows.push({ id, x: r?.x || 0, y: r?.y || 0, parent_id: r?.parent_id || null, data: {}, hidden: 1 });
+      if (id.startsWith('nt:') || id.startsWith('out:')) { deleted.add(id); await api.deleteEntity(id); continue; }
+      const r = useStore.getState().board.find((b) => b.id === id);
+      hiddenIds.set(id, Date.now());
+      rows.push({ ...(r || { x: 0, y: 0, data: {} }), id, parent_id: r?.parent_id || null, hidden: 1 });
     }
-    await api.saveBoard(rows);
-    await reload();
+    setNodes((ns) => ns.filter((n) => !ids.includes(n.id)));
+    if (rows.length) await api.saveBoard(rows);
+    // Entities first, so the placement pass never sees a deleted card without its row.
+    await useStore.getState().refresh(true);
+    await refreshBoard();
   };
 
-  const groupSelected = async () => {
-    const sel = rf.getNodes().filter((n) => n.selected && n.type !== 'group');
+  const groupSelected = async (ids?: string[]) => {
+    const sel = ids ? rf.getNodes().filter((n) => ids.includes(n.id) && n.type !== 'group') : rf.getNodes().filter((n) => n.selected && n.type !== 'group');
     if (sel.length < 2) { notify('Select two or more cards to group them'); return; }
     touched.current = true;
     const pts = sel.map((n) => ({ n, p: absPos(n), ...sizeOf(n) }));
@@ -314,11 +345,12 @@ export default function Board() {
         e.preventDefault();
         const g = rf.getNodes().find((n) => n.selected && n.type === 'group');
         if (e.shiftKey && g) ungroup(g.id); else groupSelected();
+        return;
       }
       if (typing) return;
       if (e.key === 'Backspace' || e.key === 'Delete') {
         const ids = rf.getNodes().filter((n) => n.selected).map((n) => n.id);
-        if (ids.length) hide(ids);
+        if (ids.length) { e.preventDefault(); hide(ids); }
         const eds = rf.getEdges().filter((x) => x.selected).map((x) => x.id);
         eds.forEach((id) => api.deleteEdge(id)); if (eds.length) refreshBoard();
       }
@@ -353,7 +385,11 @@ export default function Board() {
         onSelectionStart={() => { marquee.current = true; }} onSelectionEnd={() => { marquee.current = false; }}
         onNodeClick={onNodeClick}
         onNodeDoubleClick={(_, n) => n.type !== 'group' && n.type !== 'note' && open(n.id)}
-        onNodeContextMenu={(e, n) => { e.preventDefault(); setMenu({ x: e.clientX, y: e.clientY, kind: 'node', id: n.id }); }}
+        onNodeContextMenu={(e, n) => {
+          e.preventDefault();
+          const sel = rf.getNodes().filter((x) => x.selected).map((x) => x.id);
+          setMenu({ x: e.clientX, y: e.clientY, kind: 'node', id: n.id, ids: sel.includes(n.id) && sel.length > 1 ? sel : [n.id] });
+        }}
         onPaneContextMenu={(e) => { e.preventDefault(); setMenu({ x: e.clientX, y: e.clientY, kind: 'pane', at: rf.screenToFlowPosition({ x: e.clientX, y: e.clientY }) }); }}
         onEdgeClick={(e, ed) => { e.stopPropagation(); setMenu({ x: e.clientX, y: e.clientY, kind: 'edge', id: ed.id }); }}
         onMoveEnd={(_, vp) => localStorage.setItem('sb.viewport', JSON.stringify(vp))}
@@ -372,14 +408,27 @@ export default function Board() {
 
       {menu && (
         <div className="menu board-menu" style={{ left: menu.x, top: menu.y, position: 'fixed' }} onClick={(e) => e.stopPropagation()}>
-          {menu.kind === 'node' && menu.id && (<>
-            {!isGroup(menu.id) && <button onClick={() => { open(menu.id!); close(); }}><Maximize2 size={14} />Open</button>}
-            {!isGroup(menu.id) && <button onClick={() => { set({ chiefOpen: true, selected: [menu.id!] }); close(); }}><Sparkles size={14} />Ask the overall agent</button>}
-            {!isGroup(menu.id) && <button onClick={() => { groupSelected(); close(); }}><Group size={14} />Group selected <span className="hint" style={{ marginLeft: 'auto' }}>⌘G</span></button>}
-            {isGroup(menu.id) && <button onClick={() => { ungroup(menu.id!); close(); }}><Ungroup size={14} />Ungroup</button>}
-            <div className="sep" />
-            <button onClick={() => { hide([menu.id!]); close(); }}>{menu.id.startsWith('out:') || menu.id.startsWith('nt:') ? <><Trash2 size={14} />Delete</> : <><EyeOff size={14} />Hide from board</>}</button>
-          </>)}
+          {menu.kind === 'node' && menu.id && (() => {
+            const ids = menu.ids || [menu.id];
+            const cards = ids.filter((i) => !isGroup(i));
+            if (ids.length > 1) {
+              const allDel = cards.every((i) => i.startsWith('out:') || i.startsWith('nt:'));
+              return (<>
+                <div className="board-menu-h">{ids.length} selected</div>
+                {cards.length > 1 && <button onClick={() => { groupSelected(cards); close(); }}><Group size={14} />Group selected <span className="hint" style={{ marginLeft: 'auto' }}>⌘G</span></button>}
+                {cards.length > 0 && <button onClick={() => { set({ chiefOpen: true, chiefMin: false, selected: cards }); close(); }}><Sparkles size={14} />Ask the overall agent about these</button>}
+                <div className="sep" />
+                <button onClick={() => { hide(ids); close(); }}>{allDel ? <><Trash2 size={14} />Delete {ids.length}</> : <><EyeOff size={14} />Remove {ids.length} from board</>}</button>
+              </>);
+            }
+            return (<>
+              {!isGroup(menu.id) && <button onClick={() => { open(menu.id!); close(); }}><Maximize2 size={14} />Open</button>}
+              {!isGroup(menu.id) && <button onClick={() => { set({ chiefOpen: true, chiefMin: false, selected: [menu.id!] }); close(); }}><Sparkles size={14} />Ask the overall agent</button>}
+              {isGroup(menu.id) && <button onClick={() => { ungroup(menu.id!); close(); }}><Ungroup size={14} />Ungroup</button>}
+              <div className="sep" />
+              <button onClick={() => { hide([menu.id!]); close(); }}>{menu.id.startsWith('out:') || menu.id.startsWith('nt:') ? <><Trash2 size={14} />Delete</> : <><EyeOff size={14} />Hide from board</>}</button>
+            </>);
+          })()}
           {menu.kind === 'pane' && menu.at && (<>
             <button onClick={() => { addNote(menu.at!); close(); }}><StickyNote size={14} />Note here</button>
             <button onClick={() => { smartGroup(); close(); }}><Sparkles size={14} />Smart group</button>

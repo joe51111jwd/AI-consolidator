@@ -159,3 +159,43 @@
 .bt-row.on .bt-check { background: #18181B; box-shadow: none; color: #FFFFFF; }
 .bt-reset { width: 100%; margin-top: 4px; height: 30px; border-radius: 8px; font-size: 12px; color: #52525B; border-top: 1px solid #F0F0F2; }
 .bt-reset:hover { background: #F4F4F5; color: #18181B; }
+
+/* ---------- resizable cards ---------- */
+.board .react-flow__node > .card { width: 100%; height: 100%; box-sizing: border-box; }
+.board .card.sized { overflow: hidden; }
+.board .card.sized > .well, .board .card.sized > .md, .board .card.sized > textarea { flex: 1 1 auto; min-height: 0; overflow: auto; max-height: none; -webkit-line-clamp: unset; mask-image: none; }
+.board .card.sized.note-card textarea { min-height: 0; }
+.board .card-resize-line { border-color: transparent !important; }
+.board .card-resize-handle { width: 9px !important; height: 9px !important; border-radius: 3px; background: #FFFFFF !important; border: 1.5px solid #18181B !important; }
+
+/* ---------- notes: instruction badge, repeat clock ---------- */
+.board .note-card .card-top { gap: 6px; }
+.board .note-badge { height: 18px; padding: 0 7px; border-radius: 6px; display: inline-flex; align-items: center; font-size: 10.5px; font-weight: 600; background: #18181B; color: #FFFFFF; flex: none; }
+.board .note-clock { margin-left: auto; display: inline-flex; align-items: center; gap: 4px; height: 20px; padding: 0 5px; border-radius: 6px; color: #A1A1AA; font-size: 10.5px; font-weight: 550; opacity: 0; transition: opacity .15s; }
+.board .react-flow__node:hover .note-clock, .board .note-clock.on { opacity: 1; }
+.board .note-clock:hover { background: rgba(24, 24, 27, .06); color: #18181B; }
+.board .note-clock.on { color: #18181B; }
+.board .note-next { font-size: 10.5px; color: #8A8A93; font-variant-numeric: tabular-nums; }
+
+/* ---------- frame account ---------- */
+.board .frame-acc { margin-left: 6px; border: 0; outline: 0; background: rgba(24, 24, 27, .05); border-radius: 6px; height: 20px; font-size: 11px; color: #52525B; padding: 0 4px; cursor: pointer; max-width: 160px; }
+.board .frame-acc:hover { background: rgba(24, 24, 27, .09); color: #18181B; }
+
+/* ---------- context menu header ---------- */
+.board-menu-h { padding: 6px 10px 4px; font-size: 11px; font-weight: 600; color: #A1A1AA; }
+
+/* ---------- board switcher ---------- */
+.bt-boards { padding: 0 9px 0 12px; gap: 4px; }
+.bt-board-name { max-width: 140px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 550; }
+.bt-board-panel { min-width: 230px; }
+.bt-board-panel .bt-row { color: #3F3F46; cursor: pointer; }
+.bt-board-panel .bt-row.on { color: #18181B; font-weight: 600; }
+.bt-count { font-size: 11px; color: #A1A1AA; font-variant-numeric: tabular-nums; }
+.bt-del { width: 18px; height: 18px; border-radius: 5px; display: grid; place-items: center; color: #A1A1AA; opacity: 0; }
+.bt-saved:hover .bt-del { opacity: 1; }
+.bt-del:hover { background: #E4E4E7; color: #18181B; }
+.bt-name { display: flex; gap: 6px; padding: 4px; }
+.bt-name input { flex: 1; min-width: 0; height: 28px; border: 1px solid #E4E4E7; border-radius: 8px; padding: 0 9px; font-size: 12.5px; outline: 0; }
+.bt-name input:focus { border-color: #18181B; }
+.bt-mini { height: 28px; padding: 0 10px; border-radius: 8px; background: #18181B; color: #FFFFFF; font-size: 12px; font-weight: 550; }
+.bt-mini:disabled { opacity: .4; }

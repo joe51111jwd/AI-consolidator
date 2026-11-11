@@ -1,8 +1,8 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Inbox, ChevronRight, Check, ChevronDown, FileText } from 'lucide-react';
+import { Inbox, ChevronRight, Check, ChevronDown, FileText, Copy, Maximize2, Minimize2, ArrowUpRight } from 'lucide-react';
 import { useStore } from '../lib/store';
 import { api, Run } from '../lib/api';
-import { ago, SOURCE } from '../lib/format';
+import { ago, md, SOURCE } from '../lib/format';
 import { dragOutput } from '../nodes/nodes';
 import { AgentLogo } from './Logos';
 import './panels.css';
@@ -14,7 +14,9 @@ const RUN_WINDOW = 12 * 3600000;
 
 // Right-edge drawer: everything agents have produced, as a calm list you can tick off or drag onto a card.
 export default function Outputs() {
-  const { outputsOpen, set, entities, byId, accounts, runs, inspector, open } = useStore();
+  const { outputsOpen, set, entities, byId, accounts, runs, inspector, open, notify } = useStore();
+  const [wide, setWide] = useState(() => localStorage.getItem('sb.outputsWide') === '1');
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [done, setDone] = useState<string[]>([]);
   const [past, setPast] = useState<Run[]>([]);
   const [full, setFull] = useState<Record<string, string>>({});
@@ -24,6 +26,10 @@ export default function Outputs() {
     api.getSetting<string[]>('outputsDone', []).then((d) => setDone(Array.isArray(d) ? d : [])).catch(() => {});
     api.runs().then(setPast).catch(() => {});
   }, []);
+  useEffect(() => {
+    localStorage.setItem('sb.outputsWide', wide ? '1' : '0');
+    document.documentElement.style.setProperty('--out-w', wide ? '70vw' : '420px');
+  }, [wide]);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement;
@@ -82,22 +88,38 @@ export default function Outputs() {
   };
   const openItem = (x: Item) => { open(x.ref); (window as any).__sbCenter?.(x.ref); };
 
+  const copy = (x: Item) => { api.copy(x.text); notify('Copied'); };
+  const flip = (id: string) => setExpanded((m) => ({ ...m, [id]: !m[id] }));
+
   const row = (x: Item) => (
-    <div key={x.id} className={`pn-out ${doneSet.has(x.id) ? 'done' : ''}`} draggable={!!x.text} title={x.text ? 'Drag onto a card' : undefined}
-      onDragStart={(ev) => dragOutput(ev, { text: x.text, title: x.title, sourceId: x.sourceId })} onClick={() => openItem(x)}>
+    <div key={x.id} className={`pn-out ${doneSet.has(x.id) ? 'done' : ''} ${expanded[x.id] ? 'open' : ''}`} draggable={!!x.text} title={x.text ? 'Drag onto a card' : undefined}
+      onDragStart={(ev) => dragOutput(ev, { text: x.text, title: x.title, sourceId: x.sourceId })}>
       {x.working
         ? <span className="pn-check busy"><AgentLogo source={x.source} size={12} color={x.color} working /></span>
         : <button className="pn-check" onClick={(ev) => { ev.stopPropagation(); toggle(x.id); }} title={doneSet.has(x.id) ? 'Mark as not done' : 'Mark done'}><Check size={11} /></button>}
       <span className="pn-out-main">
-        <span className="t">{x.title}</span>
+        <span className="pn-out-top">
+          <span className="t" onClick={() => openItem(x)}>{x.title}</span>
+          <span className="pn-out-age">{ago(x.ts)}</span>
+        </span>
         {x.sub && <span className="s">{!x.working && (x.source === 'output' ? <FileText size={10} /> : <AgentLogo source={x.source} size={10} color={x.color} />)}<span className="ell">{x.sub}</span></span>}
+        {x.text.trim() && !x.working && (
+          <div className={`pn-out-prev md ${expanded[x.id] ? '' : 'clamp'}`} onClick={() => flip(x.id)} title={expanded[x.id] ? 'Collapse' : 'Expand'}
+            dangerouslySetInnerHTML={{ __html: md(x.text) }} />
+        )}
+        {!x.working && x.text.trim() && (
+          <span className="pn-out-acts">
+            <button onClick={() => flip(x.id)}>{expanded[x.id] ? 'Less' : 'More'}</button>
+            <button onClick={() => copy(x)} title="Copy"><Copy size={12} /></button>
+            <button onClick={() => openItem(x)} title="Open"><ArrowUpRight size={12} /></button>
+          </span>
+        )}
       </span>
-      <span className="pn-out-age">{ago(x.ts)}</span>
     </div>
   );
 
   return (
-    <div className={`pn-outputs ${outputsOpen ? 'open' : ''} ${inspector && !outputsOpen ? 'covered' : ''}`}>
+    <div className={`pn-outputs ${outputsOpen ? 'open' : ''} ${wide ? 'wide' : ''} ${inspector && !outputsOpen ? 'covered' : ''}`}>
       <button className="pn-out-face" onClick={() => set({ outputsOpen: true })} title="Outputs" tabIndex={outputsOpen ? -1 : 0}>
         <Inbox size={15} />
         {count > 0 && <span className="n">{count}</span>}
@@ -107,6 +129,7 @@ export default function Outputs() {
         <div className="pn-out-head">
           <span>Outputs</span>
           {count > 0 && <span className="n">{count}</span>}
+          <button className="icon-btn" onClick={() => setWide(!wide)} title={wide ? 'Narrow' : 'Expand'}>{wide ? <Minimize2 size={14} /> : <Maximize2 size={14} />}</button>
           <button className="icon-btn" onClick={() => set({ outputsOpen: false })} title="Close"><ChevronRight size={15} /></button>
         </div>
         <div className="pn-out-list">

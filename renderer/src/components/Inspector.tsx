@@ -63,7 +63,7 @@ function build(e: Entity, agent: Who, raw: Message[], rawFlows: Flow[], byId: Re
 
 function Avatar({ who, working }: { who: Who; working?: boolean }) {
   if (who.you) return <span className="pn-you"><User size={9} strokeWidth={2.6} /></span>;
-  return <AgentLogo source={who.source || 'note'} color={who.color} size={14} working={working} />;
+  return <AgentLogo source={who.source || 'note'} color={who.color} size={16} working={working} />;
 }
 
 const shortPath = (p: string) => p.replace(/^\/Users\/[^/]+/, '~').replace(/^\/home\/[^/]+/, '~');
@@ -80,6 +80,24 @@ export default function Inspector() {
   const [sendMenu, setSendMenu] = useState<{ text: string; x: number; y: number } | null>(null);
   const [loading, setLoading] = useState(false);
   const end = useRef<HTMLDivElement>(null);
+  const [width, setWidth] = useState(() => Number(localStorage.getItem('sb.inspectorW')) || 480);
+  const [resizing, setResizing] = useState(false);
+
+  // Notes edit inline on the board; they never open here.
+  useEffect(() => { if (e?.kind === 'note') open(null); }, [e?.kind]);
+
+  const startResize = (ev: React.PointerEvent) => {
+    ev.preventDefault();
+    const x0 = ev.clientX, w0 = width;
+    let w = w0;
+    setResizing(true);
+    const move = (m: PointerEvent) => { w = Math.round(Math.max(360, Math.min(window.innerWidth - 40, 1100, w0 + x0 - m.clientX))); setWidth(w); };
+    const up = () => {
+      setResizing(false); localStorage.setItem('sb.inspectorW', String(w));
+      window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up);
+    };
+    window.addEventListener('pointermove', move); window.addEventListener('pointerup', up);
+  };
 
   useEffect(() => { setMsgs([]); setFlows([]); setEcho(null); setSendMenu(null); }, [id]);
   useEffect(() => {
@@ -127,7 +145,7 @@ export default function Inspector() {
     return ids.slice(0, 6).map((x) => ({ id: x, who: cardWho(x, byId, accounts) }));
   }, [flows, id, byId, accounts]);
 
-  if (!id || !e) return null;
+  if (!id || !e || e.kind === 'note') return null;
   const working = live?.status === 'running' || e.status === 'running';
   const pinned = pins.includes(id);
   const spawned = live?.status === 'done' && live.result?.entityId && live.result.entityId !== id && byId[live.result.entityId] ? live.result.entityId as string : null;
@@ -193,7 +211,9 @@ export default function Inspector() {
   }
 
   return (
-    <div className={`inspector pn ${outputsOpen ? 'shift' : ''}`} onKeyDown={(ev) => { if (ev.key === 'Delete' || ev.key === 'Backspace') ev.stopPropagation(); }}>
+    <div className={`inspector pn ${outputsOpen ? 'shift' : ''} ${resizing ? 'resizing' : ''}`} style={{ width: Math.min(width, window.innerWidth - 24) }}
+      onKeyDown={(ev) => { if (ev.key === 'Delete' || ev.key === 'Backspace') ev.stopPropagation(); }}>
+      <div className="pn-resize" onPointerDown={startResize} onDoubleClick={() => { setWidth(480); localStorage.setItem('sb.inspectorW', '480'); }} title="Drag to resize" />
       <div className="insp-head">
         <div className="pn-bar">
           <span className="pn-src"><AgentLogo source={e.source} color={agent.color} working={working} size={14} />{agent.name}</span>

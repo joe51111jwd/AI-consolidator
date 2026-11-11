@@ -1,14 +1,15 @@
-.lg { flex: none; display: inline-block; vertical-align: middle; }
+.lg { flex: none; display: inline-block; vertical-align: middle; position: relative; line-height: 0; }
+.lg > svg { display: block; width: 100%; height: 100%; }
+.lg > img { display: block; width: 100%; height: 100%; border-radius: 24%; object-fit: cover; }
 .lg-dot { border-radius: 50%; }
-.lg-claude .lg-spin, .lg-codex .lg-spin { transform-origin: center; transform-box: fill-box; }
-.lg-claude.on .lg-spin { animation: lg-claude 2.4s cubic-bezier(.5, 0, .5, 1) infinite; }
-@keyframes lg-claude { 0% { transform: rotate(0) scale(1); } 50% { transform: rotate(90deg) scale(.82); } 100% { transform: rotate(180deg) scale(1); } }
-.lg-codex.on .lg-spin { animation: lg-spin 1.6s linear infinite; }
+
+.lg-claude.on > svg { animation: lg-claude 3.2s ease-in-out infinite; transform-origin: center; }
+@keyframes lg-claude { 0% { transform: rotate(0) scale(1); } 50% { transform: rotate(180deg) scale(.84); } 100% { transform: rotate(360deg) scale(1); } }
+.lg-openai.on > svg { animation: lg-spin 1.6s linear infinite; transform-origin: center; }
 @keyframes lg-spin { to { transform: rotate(360deg); } }
-.lg-grok.on .lg-slash { animation: lg-grok 1.1s ease-in-out infinite; transform-origin: 12px 12px; }
-@keyframes lg-grok { 0%, 100% { transform: rotate(0); } 50% { transform: rotate(90deg); } }
-.lg.on .lg-pulse { animation: lg-pulse 1.2s ease-in-out infinite; }
-@keyframes lg-pulse { 50% { opacity: .35; } }
-.lg-granola.on .lg-bar { animation: lg-bar .9s ease-in-out infinite; transform-origin: center; transform-box: fill-box; }
-@keyframes lg-bar { 50% { transform: scaleY(.45); } }
-.lg-dot.on { animation: lg-pulse 1.2s ease-in-out infinite; }
+.lg-cursor.on { animation: lg-blink 1s steps(1, end) infinite; }
+@keyframes lg-blink { 50% { opacity: .2; } }
+.lg-grok.on > img { animation: lg-ring 1.4s ease-in-out infinite; }
+@keyframes lg-ring { 0%, 100% { box-shadow: 0 0 0 0 rgba(24, 24, 27, .45); } 50% { box-shadow: 0 0 0 3px rgba(24, 24, 27, .12), 0 0 8px 2px rgba(24, 24, 27, .25); } }
+.lg-gmail.on, .lg-granola.on, .lg-dot.on { animation: lg-pulse 1.4s ease-in-out infinite; }
+@keyframes lg-pulse { 50% { opacity: .45; transform: scale(.9); } }

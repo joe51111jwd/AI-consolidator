@@ -1,5 +1,5 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { ArrowUp, Minus, X, GripVertical, Copy, FileOutput } from 'lucide-react';
+import { ArrowUp, ChevronDown, ChevronRight, X, GripVertical, Copy, FileOutput } from 'lucide-react';
 import { useStore } from '../lib/store';
 import { api, Message } from '../lib/api';
 import { md } from '../lib/format';
@@ -12,7 +12,7 @@ export interface Nudge {
 }
 
 const SHOWN = 3;
-const OPEN_W = 384;
+const OPEN_W = 420;
 
 // The Switchboard agent mark: a hub with three lines out. Orbits while it works.
 export function ChiefGlyph({ size = 18, working }: { size?: number; working?: boolean }) {
@@ -51,7 +51,7 @@ function useNudges() {
   return { items, dismiss };
 }
 
-const panelHeight = (vh: number) => Math.max(340, Math.min(540, vh - 120));
+const panelHeight = (vh: number) => Math.max(340, Math.min(600, Math.round(vh * 0.8)));
 
 // Keeps the corner agent clear of right-docked panels (open card, outputs drawer, anything marked
 // data-dock="right") that reach down into the space it needs: the small tab or the open panel.
@@ -86,11 +86,14 @@ function NudgeIcon({ n }: { n: Nudge }) {
 
 function Needs({ items, onAct, onDismiss }: { items: Nudge[]; onAct: (n: Nudge) => void; onDismiss: (id: string) => void }) {
   const [all, setAll] = useState(false);
+  const [hidden, setHidden] = useState(false);
   if (!items.length) return null;
-  const shown = all ? items : items.slice(0, SHOWN);
+  const shown = hidden ? [] : all ? items : items.slice(0, SHOWN);
   return (
     <div className="cf-needs">
-      <div className="cf-label">Needs you</div>
+      <button className="cf-label" onClick={() => setHidden(!hidden)} aria-expanded={!hidden}>
+        {hidden ? <ChevronRight size={12} /> : <ChevronDown size={12} />}Needs you<span className="cf-count">{items.length}</span>
+      </button>
       {shown.map((n) => (
         <div key={n.id} className={`cf-item ${n.tone || ''}`} role="button" tabIndex={0} onClick={() => onAct(n)} onKeyDown={(e) => { if (e.key === 'Enter') onAct(n); }}>
           <span className="cf-ico"><NudgeIcon n={n} /></span>
@@ -98,7 +101,7 @@ function Needs({ items, onAct, onDismiss }: { items: Nudge[]; onAct: (n: Nudge) 
           <button className="cf-x" title="Dismiss" onClick={(e) => { e.stopPropagation(); onDismiss(n.id); }}><X size={12} /></button>
         </div>
       ))}
-      {items.length > SHOWN && <button className="cf-more" onClick={() => setAll(!all)}>{all ? 'Show less' : `${items.length - SHOWN} more`}</button>}
+      {!hidden && items.length > SHOWN && <button className="cf-more" onClick={() => setAll(!all)}>{all ? 'Show less' : `${items.length - SHOWN} more`}</button>}
     </div>
   );
 }
@@ -144,6 +147,7 @@ export default function Chief() {
   const [q, setQ] = useState('');
   const [hist, setHist] = useState<Message[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
+  const [notes, setNotes] = useState<{ id: string; text: string; tone?: 'error' }[]>([]);
   const [unseen, setUnseen] = useState<'done' | 'error' | null>(null);
   const [peek, setPeek] = useState<Nudge | null>(null);
   const [tabW, setTabW] = useState(44);
@@ -155,7 +159,7 @@ export default function Chief() {
   const lastStatus = useRef(live?.status);
 
   useEffect(() => { if (open) api.chiefHistory().then(setHist).catch(() => {}); }, [open, live?.status]);
-  useEffect(() => { const el = msgs.current; if (el) el.scrollTop = el.scrollHeight; }, [hist.length, live?.text, open]);
+  useEffect(() => { const el = msgs.current; if (el) el.scrollTop = el.scrollHeight; }, [hist.length, live?.text, open, notes.length, busy]);
   useEffect(() => {
     if (!open) return;
     setUnseen(null); setPeek(null);
@@ -181,9 +185,16 @@ export default function Chief() {
   const status = running ? (live?.text ? tail(live.text) : 'Thinking…')
     : unseen === 'done' ? 'Answer ready' : unseen === 'error' ? "Couldn't answer"
     : !peek ? '' : peek.tone === 'error' ? `${peek.title} failed` : peek.kind === 'waiting' && peek.detail ? `${peek.detail} · ${peek.title}` : peek.title;
-  useLayoutEffect(() => { if (tabIn.current) setTabW(Math.min(320, tabIn.current.offsetWidth)); }, [streaming || status, items.length]);
+  useLayoutEffect(() => { if (tabIn.current) setTabW(Math.min(240, tabIn.current.offsetWidth)); }, [streaming || status, items.length]);
 
   const close = () => { input.current?.blur(); set({ chiefOpen: false }); };
+  useEffect(() => {
+    if (!open) return;
+    const esc = (e: KeyboardEvent) => { if (e.key === 'Escape' && !useStore.getState().settingsTab) close(); };
+    document.addEventListener('keydown', esc);
+    return () => document.removeEventListener('keydown', esc);
+  }, [open]);
+  const note = (text: string, tone?: 'error') => setNotes((n) => [...n.slice(-4), { id: 'n' + Date.now(), text, tone }]);
   const ask = async (text: string) => {
     if (!text.trim() || running) return;
     set({ chiefOpen: true }); setQ('');
@@ -197,19 +208,21 @@ export default function Chief() {
     setTimeout(() => (window as any).__sbCenter?.(n.ref), 60);
   };
   const withBusy = async (key: string, fn: () => Promise<void>) => {
-    setBusy(key);
-    try { await fn(); } catch (e: any) { notify(e.message); } finally { setBusy(null); }
+    setBusy(key); set({ chiefOpen: true });
+    try { await fn(); } catch (e: any) { note(e.message || 'Something went wrong', 'error'); } finally { setBusy(null); }
   };
   const recap = () => withBusy('recap', async () => {
     const text = await api.call<string>('proactive:recap');
     const h = await api.chiefHistory().catch(() => [] as Message[]);
     const last = [...h].reverse().find((m) => m.role === 'assistant');
+    if (!text && !last) { note('Nothing to recap yet.'); return; }
     setHist(!text || last?.text === text ? h : [...h, { id: 'recap' + Date.now(), role: 'assistant', text, ts: Date.now() }]);
   });
   const organize = () => withBusy('organize', async () => {
     const fn = (window as any).__sbRegroup;
     if (!fn) throw new Error('Open the board first');
-    await fn();
+    const r = await fn();
+    note(typeof r === 'string' && r ? r : 'Board organized.');
   });
   const needsMe = () => {
     const flagged = items.slice(0, 8).map((i) => `- ${i.title}${i.detail ? ` (${i.detail})` : ''}`).join('\n');
@@ -227,9 +240,10 @@ export default function Chief() {
         { key: 'recap', label: 'Daily recap', run: recap },
         { key: 'organize', label: 'Organize board', run: organize }];
 
+  const busyLabel = busy === 'recap' ? 'Writing your daily recap' : busy === 'organize' ? 'Organizing the board' : '';
   const late = items.some((i) => i.tone === 'error');
   const panelH = panelHeight(vh);
-  const empty = !hist.length && !live && !items.length;
+  const empty = !hist.length && !live && !items.length && !notes.length && !busy;
   return (
     <div className={`sb-chief ${open ? 'open' : ''} ${running ? 'working' : ''}`} style={{ right: inset, width: open ? OPEN_W : tabW, height: open ? panelH : 44 }}
       onKeyDown={(e) => { if (e.key === 'Escape' && open) close(); }}>
@@ -241,11 +255,11 @@ export default function Chief() {
         </span>
       </button>
       <div className="chief-panel" style={{ height: panelH }}>
-        <div className="cf-head">
-          <ChiefGlyph size={16} working={running} />
+        <div className="cf-head" onClick={(e) => { if (e.target === e.currentTarget) close(); }}>
+          <ChiefGlyph size={16} working={running || !!busy} />
           <span className="cf-title">Agent</span>
           <span className="cf-sub">{selected.length ? `${selected.length} card${selected.length > 1 ? 's' : ''}` : 'everything'}</span>
-          <button className="icon-btn" title="Minimize  ⌘J" onClick={close}><Minus size={15} /></button>
+          <button className="icon-btn" title="Minimize  (Esc, ⌘J)" aria-label="Minimize" onClick={close}><ChevronDown size={17} /></button>
         </div>
         <Needs items={items} onAct={act} onDismiss={dismiss} />
         <div className="cf-msgs" ref={msgs}>
@@ -254,6 +268,8 @@ export default function Chief() {
           {running && (live?.text ? <ChiefMsg m={{ id: 'live', role: 'assistant', text: live.text, ts: Date.now() }} />
             : <div className="cf-thinking"><i /><i /><i /></div>)}
           {live?.status === 'error' && <div className="cf-err">{live.error}</div>}
+          {notes.map((n) => <div key={n.id} className={n.tone === 'error' ? 'cf-err' : 'cf-note'}>{n.text}</div>)}
+          {busy && busyLabel && <div className="cf-progress"><ChiefGlyph size={13} working /><span>{busyLabel}…</span></div>}
         </div>
         {selected.length > 0 && (
           <div className="cf-ctx">

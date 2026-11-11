@@ -157,7 +157,7 @@ const handlers = {
 };
 // Feature modules in electron/ext/*.cjs each export { handlers, start? } and plug in here.
 const extDir = path.join(__dirname, 'ext');
-const exts = fs.existsSync(extDir) ? fs.readdirSync(extDir).filter((f) => f.endsWith('.cjs')).sort().map((f) => require(path.join(extDir, f))) : [];
+const exts = fs.existsSync(extDir) ? fs.readdirSync(extDir).filter((f) => f.endsWith('.cjs')).sort().map((f) => { try { return require(path.join(extDir, f)); } catch (e) { console.error(`ext ${f} failed to load:`, e.message); return {}; } }) : [];
 for (const x of exts) Object.assign(handlers, x.handlers || {});
 for (const [ch, fn] of Object.entries(handlers)) {
   ipcMain.handle('sb:' + ch, async (_e, ...args) => {

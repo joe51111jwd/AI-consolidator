@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Plus, ArrowUp, StickyNote, X } from 'lucide-react';
+import { Plus, ArrowUp, StickyNote, X, Zap } from 'lucide-react';
 import { useStore } from '../lib/store';
 import { api, Account } from '../lib/api';
 import { AgentLogo } from './Logos';
@@ -24,6 +24,7 @@ export default function Dock() {
   const { set, notify } = useStore();
   const { rows, budgets } = useUsage();
   const [pick, setPick] = useState<string | null>(null);
+  const [menu, setMenu] = useState(false);
   const [text, setText] = useState('');
   const wrap = useRef<HTMLDivElement>(null);
   const input = useRef<HTMLInputElement>(null);
@@ -43,28 +44,31 @@ export default function Dock() {
     return s;
   }, [entities, live, byId]);
 
+  const pct = useMemo(() => {
+    const m: Record<string, number> = {};
+    for (const a of accounts) { const r = rows.find((x) => x.id === a.id); if (r) m[a.id] = Math.round(weeklyPct(r, accounts, budgets)); }
+    return m;
+  }, [accounts, rows, budgets]);
+
   const least = useMemo(() => {
     if (!claude.length) return null;
     const ready = claude.filter((a) => a.config?.auth?.loggedIn !== false);
-    const scored = (ready.length ? ready : claude).map((a) => {
-      const r = rows.find((x) => x.id === a.id);
-      return { a, p: r ? weeklyPct(r, accounts, budgets) : 0 };
-    });
-    return scored.sort((x, y) => x.p - y.p)[0].a;
-  }, [accounts, rows, budgets]);
+    return [...(ready.length ? ready : claude)].sort((x, y) => (pct[x.id] || 0) - (pct[y.id] || 0))[0];
+  }, [accounts, pct]);
 
   const target = pick === AUTO ? least : accounts.find((a) => a.id === pick) || null;
 
+  useEffect(() => { if (pick) requestAnimationFrame(() => input.current?.focus()); }, [pick]);
   useEffect(() => {
-    if (!pick) return;
-    requestAnimationFrame(() => input.current?.focus());
-    const away = (e: MouseEvent) => { if (!wrap.current?.contains(e.target as Node)) setPick(null); };
+    if (!pick && !menu) return;
+    const away = (e: MouseEvent) => { if (!wrap.current?.contains(e.target as Node)) { setPick(null); setMenu(false); } };
     document.addEventListener('mousedown', away);
     return () => document.removeEventListener('mousedown', away);
-  }, [pick]);
+  }, [pick, menu]);
   useEffect(() => { if (pick && pick !== AUTO && !accounts.some((a) => a.id === pick)) setPick(null); }, [accounts]);
 
-  const choose = (id: string) => setPick(pick === id ? null : id);
+  const choose = (id: string) => { setMenu(false); setPick(pick === id ? null : id); };
+  const tip = (a: Account, off: boolean) => off ? `${a.label} · not signed in` : pct[a.id] != null ? `${a.label} · ${pct[a.id]}% this week` : a.label;
   const send = async () => {
     const t = text.trim();
     if (!t || !target) return;
@@ -73,10 +77,11 @@ export default function Dock() {
     try {
       await api.prompt(`ac:${target.id}`, t, attach.length ? { attach } : {});
       if (attach.length) set({ pins: [] });
-      notify(target.kind === 'grok-bot' ? 'Copied for Grok Bot' : `Started on ${target.label}`);
+      notify(target.kind === 'grok-bot' ? 'Sent to Grok Bot' : `Started on ${target.label}`);
     } catch (e: any) { notify(e.message); }
   };
   const addNote = async () => {
+    setMenu(false);
     await api.saveNote({ text: '' });
     await useStore.getState().refresh(true); await useStore.getState().refreshBoard();
     notify('Note added');
@@ -89,20 +94,33 @@ export default function Dock() {
         const off = a.kind === 'claude-code' && auth && auth.loggedIn === false;
         return (
           <button key={a.id} className={`dock-b ${pick === a.id ? 'on' : ''} ${off ? 'off' : ''}`} style={{ '--ring': a.color } as React.CSSProperties}
-            data-tip={off ? `${a.label} · not signed in` : a.label} aria-label={a.label} data-testid={`dock-${a.id}`} onClick={() => choose(a.id)}>
+            data-tip={tip(a, !!off)} aria-label={a.label} data-testid={`dock-${a.id}`} onClick={() => choose(a.id)}>
             <AgentLogo source={a.kind} size={18} color={a.kind === 'claude-code' ? undefined : '#18181B'} working={busy.has(a.id)} />
             {off && <i className="warn" />}
           </button>
         );
       })}
-      {least ? (
-        <button className={`dock-b add ${pick === AUTO ? 'on' : ''}`} data-tip={`New session · ${least.label}`} aria-label="New session" data-testid="dock-new" onClick={() => choose(AUTO)}>
-          <Plus size={18} strokeWidth={2.2} />
-        </button>
-      ) : (
-        <button className="dock-b add" data-tip="Add a Claude account" aria-label="Add a Claude account" onClick={() => set({ settingsTab: 'accounts' })}>
-          <Plus size={18} strokeWidth={2.2} />
-        </button>
+      <button className={`dock-b add ${menu ? 'on' : ''}`} data-tip={menu ? undefined : 'New…'} aria-label="New" aria-expanded={menu} data-testid="dock-plus"
+        onClick={() => { setPick(null); setMenu(!menu); }}>
+        <Plus size={18} strokeWidth={2.2} />
+      </button>
+      {menu && (
+        <div className="dock-menu" role="menu">
+          <button role="menuitem" onClick={addNote}><StickyNote size={14} /><span>New note</span></button>
+          <div className="dm-label">New chat on…</div>
+          {claude.map((a) => (
+            <button key={a.id} role="menuitem" onClick={() => choose(a.id)}>
+              <AgentLogo source={a.kind} size={14} /><span>{a.label}</span><em>{pct[a.id] != null ? `${pct[a.id]}%` : ''}</em>
+            </button>
+          ))}
+          {!claude.length && <button role="menuitem" onClick={() => { setMenu(false); set({ settingsTab: 'accounts' }); }}><Plus size={14} /><span>Add a Claude account</span></button>}
+          {least && (
+            <>
+              <div className="dm-sep" />
+              <button role="menuitem" data-testid="dock-new" onClick={() => choose(AUTO)}><Zap size={14} /><span>Least-used account</span><em>{least.label}</em></button>
+            </>
+          )}
+        </div>
       )}
       <div className="dock-in" aria-hidden={!target}>
         {pins.length > 0 && (
@@ -114,10 +132,6 @@ export default function Dock() {
           onKeyDown={(e) => { if (!e.metaKey && !e.ctrlKey) e.stopPropagation(); if (e.key === 'Enter' && !e.nativeEvent.isComposing) { e.preventDefault(); send(); } if (e.key === 'Escape') setPick(null); }} />
         <button className="send" disabled={!text.trim()} onClick={send} title="Start (Enter)" tabIndex={target ? 0 : -1}><ArrowUp size={15} /></button>
       </div>
-      {!target && <span className="dock-sep" />}
-      {!target && (
-        <button className="dock-b ghost" data-tip="Note" aria-label="Add a note" onClick={addNote}><StickyNote size={16} /></button>
-      )}
     </div>
   );
 }

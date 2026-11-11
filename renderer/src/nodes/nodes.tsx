@@ -1,10 +1,11 @@
 import React, { memo, useEffect, useRef, useState } from 'react';
 import { Handle, Position, NodeResizer, NodeProps } from '@xyflow/react';
-import { GripVertical, FolderGit2, FileText, StickyNote, AlertTriangle, Target, Play } from 'lucide-react';
+import { GripVertical, FolderGit2, FileText, StickyNote, AlertTriangle, Target, Play, Clock } from 'lucide-react';
 import { useStore } from '../lib/store';
 import { useShallow } from 'zustand/react/shallow';
 import { api, BoardRow, Entity } from '../lib/api';
 import { ago, tokens, md, SOURCE, dueLabel, categoryOf, baseName, colorOf, PROMPTABLE } from '../lib/format';
+import { sendPrompt } from '../lib/send';
 import Composer from '../components/Composer';
 import { AgentLogo } from '../components/Logos';
 
@@ -33,9 +34,21 @@ export function dragOutput(ev: React.DragEvent, payload: { text: string; title?:
 let focusNext: string | null = null;
 export const focusNote = (id: string) => { focusNext = id; };
 
-function Card({ w = 300, stripe, className = '', children }: { w?: number; stripe?: string; className?: string; children: React.ReactNode }) {
+// Saves a card's new size (and position, since resizing from the left/top moves it) locally and to disk.
+function saveSize(id: string, p: { x: number; y: number; width: number; height: number }) {
+  const s = useStore.getState();
+  const r = s.board.find((b) => b.id === id); if (!r) return;
+  const row = { ...r, x: p.x, y: p.y, w: Math.round(p.width), h: Math.round(p.height) };
+  useStore.setState({ board: s.board.map((b) => (b.id === id ? row : b)) });
+  api.saveBoard([row]);
+}
+
+function Card({ id, selected, stripe, className = '', minW = 220, minH = 110, children }: { id: string; selected?: boolean; stripe?: string; className?: string; minW?: number; minH?: number; children: React.ReactNode }) {
+  const sized = useStore((s) => !!s.board.find((b) => b.id === id)?.h);
   return (
-    <div className={`card ${className}`} style={{ width: w, ['--stripe' as any]: stripe }}>
+    <div className={`card ${sized ? 'sized' : ''} ${className}`} style={{ ['--stripe' as any]: stripe }}>
+      <NodeResizer isVisible={!!selected} minWidth={minW} minHeight={minH} lineClassName="card-resize-line" handleClassName="card-resize-handle"
+        onResizeEnd={(_, p) => saveSize(id, p)} />
       {stripe && <span className="card-stripe" />}
       <Handles />
       {children}
@@ -84,13 +97,13 @@ function LiveOrPreview({ id, preview, title }: { id: string; preview?: string; t
   );
 }
 
-export const SessionNode = memo(({ id }: NodeProps) => {
+export const SessionNode = memo(({ id, selected }: NodeProps) => {
   const e = useEntity(id); if (!e) return <Gone />;
   const cat = categoryOf(e);
   const folder = cat === 'coding' ? baseName(e.meta?.cwd) : '';
   const branch = e.meta?.gitBranch && !['main', 'master', 'HEAD'].includes(e.meta.gitBranch) ? e.meta.gitBranch : '';
   return (
-    <Card stripe={colorOf(e, useStore.getState().accounts)}>
+    <Card id={id} selected={selected} stripe={colorOf(e, useStore.getState().accounts)}>
       <Top e={e} />
       <div className="card-title">{e.title}</div>
       {cat && (
@@ -107,7 +120,7 @@ export const SessionNode = memo(({ id }: NodeProps) => {
 
 const PROMPT_ACCOUNTS = ['claude-code', 'codex', 'anthropic-api', 'openai-compatible', 'grok-bot'];
 
-export const AccountNode = memo(({ id }: NodeProps) => {
+export const AccountNode = memo(({ id, selected }: NodeProps) => {
   const e = useEntity(id);
   const week = useStore(useShallow((s) => s.entities.filter((x) => x.kind === 'account').map((x) => x.meta?.usage?.d7 || 0)));
   const running = useStore((s) => s.entities.filter((x) => x.accountId === e?.accountId && x.kind === 'session' && x.status === 'running').length);
@@ -119,33 +132,35 @@ export const AccountNode = memo(({ id }: NodeProps) => {
   const sub = e.source === 'claude-code'
     ? (auth?.loggedIn ? [auth.org, auth.plan && auth.plan[0].toUpperCase() + auth.plan.slice(1)].filter(Boolean).join(' · ') || auth.email || 'Signed in' : auth ? 'Not signed in' : '')
     : e.source === 'grok-bot' ? 'Reaches your agents through sb' : src.label;
-  const max = Math.max(1, ...week);
+  const total = week.reduce((a, b) => a + b, 0);
+  const pct = u?.weekPct != null ? Math.round(u.weekPct) : total ? Math.round(((u?.d7 || 0) / total) * 100) : 0;
+  const promptable = PROMPT_ACCOUNTS.includes(e.source);
   return (
-    <Card stripe={color} className="account-card">
+    <Card id={id} selected={selected} stripe={color} className="account-card">
       <div className="acc-head">
         <div className="avatar" style={{ background: color }}><AgentLogo source={e.source} size={17} color="#fff" working={running > 0} /></div>
         <div className="acc-id">
           <div className="t">{e.title}</div>
-          {sub && <div className="s" title={auth?.email || e.meta?.config?.configDir || ''}>{sub}</div>}
+          <div className="s" title={[sub, auth?.email || e.meta?.config?.configDir].filter(Boolean).join(' · ')}>{promptable && e.source !== 'grok-bot' ? 'New chats start here' : sub}</div>
         </div>
         {running > 0 && <span className="status running"><i />Working</span>}
       </div>
       {u && (u.d7 > 0 || u.h5 > 0) && (
-        <div className="acc-usage" title={`${tokens(u.h5)} in the last 5 hours · ${tokens(u.d1)} today · ${tokens(u.d7)} this week`}>
-          <div className="bar"><i style={{ width: `${Math.max(2, (u.d7 / max) * 100)}%`, background: color }} /></div>
-          <span>{tokens(u.d7)}</span>
+        <div className="acc-usage" title={`${tokens(u.h5)} in the last 5 hours · ${tokens(u.d1)} today · ${tokens(u.d7)} this week${u.weekPct == null ? ' (share of all accounts)' : ''}`}>
+          <div className="bar"><i style={{ width: `${Math.max(2, pct)}%`, background: color }} /></div>
+          <span>{pct}% this week</span>
         </div>
       )}
       <LiveOrPreview id={id} title={e.title} />
-      {PROMPT_ACCOUNTS.includes(e.source) && <Composer id={id} placeholder={e.source === 'grok-bot' ? 'Hand off to Grok Bot…' : 'New session…'} />}
+      {promptable && <Composer id={id} placeholder={e.source === 'grok-bot' ? 'Hand off to Grok Bot…' : 'New session…'} />}
     </Card>
   );
 });
 
-export const ProjectNode = memo(({ id }: NodeProps) => {
+export const ProjectNode = memo(({ id, selected }: NodeProps) => {
   const e = useEntity(id); if (!e) return <Gone />;
   return (
-    <Card>
+    <Card id={id} selected={selected}>
       <Top e={e} icon={<FolderGit2 size={13} />} label={e.title} />
       <div className="card-sub mono">{e.preview}</div>
       <Composer id={id} placeholder="New task in this project…" />
@@ -155,12 +170,12 @@ export const ProjectNode = memo(({ id }: NodeProps) => {
 
 const TINTS = ['#D97757', '#2F6B55', '#6D5BD0', '#B08A2E', '#3F5E8C'];
 
-export const MeetingNode = memo(({ id }: NodeProps) => {
+export const MeetingNode = memo(({ id, selected }: NodeProps) => {
   const e = useEntity(id); if (!e) return <Gone />;
   const people: any[] = e.meta?.attendees || [];
   const day = new Date(e.meta?.at || e.updatedAt).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
   return (
-    <Card stripe={SOURCE.granola.color}>
+    <Card id={id} selected={selected} stripe={SOURCE.granola.color}>
       <Top e={e} label={day} />
       <div className="card-title">{e.title}</div>
       {people.length > 0 && <div className="people">{people.slice(0, 5).map((p, i) => <span key={p.email || i} title={p.name || p.email} style={{ background: TINTS[i % TINTS.length] }}>{(p.name || p.email || '?').slice(0, 1).toUpperCase()}</span>)}</div>}
@@ -169,10 +184,10 @@ export const MeetingNode = memo(({ id }: NodeProps) => {
   );
 });
 
-export const ThreadNode = memo(({ id }: NodeProps) => {
+export const ThreadNode = memo(({ id, selected }: NodeProps) => {
   const e = useEntity(id); if (!e) return <Gone />;
   return (
-    <Card stripe={colorOf(e, useStore.getState().accounts)}>
+    <Card id={id} selected={selected} stripe={colorOf(e, useStore.getState().accounts)}>
       <Top e={e} label={accountOf(e)?.label || 'Gmail'} />
       <div className="card-title">{e.title}</div>
       <LiveOrPreview id={id} preview={e.preview} title={e.title} />
@@ -180,13 +195,13 @@ export const ThreadNode = memo(({ id }: NodeProps) => {
   );
 });
 
-export const ClientNode = memo(({ id }: NodeProps) => {
+export const ClientNode = memo(({ id, selected }: NodeProps) => {
   const e = useEntity(id); const due = useStore(useShallow((s) => s.due.filter((d) => `cl:${d.clientId}` === id)));
   if (!e) return <Gone />;
   const c = e.meta.client;
   const tone = c.status === 'lead' ? 'amber' : c.status === 'active' ? 'green' : '';
   return (
-    <Card stripe="#2F6B55">
+    <Card id={id} selected={selected} stripe="#2F6B55">
       <div className="acc-head">
         <div className="avatar" style={{ background: '#2F6B55' }}>{(c.name || '?').slice(0, 1).toUpperCase()}</div>
         <div className="acc-id">
@@ -217,14 +232,14 @@ async function fillOutput(id: string, text: string) {
   await s.refreshBoard(); await s.refresh(true);
 }
 
-export const OutputNode = memo(({ id }: NodeProps) => {
+export const OutputNode = memo(({ id, selected }: NodeProps) => {
   const e = useEntity(id); const [full, setFull] = useState(''); const [draft, setDraft] = useState('');
   useEffect(() => { api.transcript(id).then((t) => setFull(t[0]?.text || '')).catch(() => {}); }, [id, e?.updatedAt]);
   if (!e) return <Gone />;
   const text = full || e.preview || '';
   if (!text.trim()) {
     return (
-      <Card className="output-card empty" stripe={SOURCE.output.color}>
+      <Card id={id} selected={selected} className="output-card empty" stripe={SOURCE.output.color}>
         <Top e={e} icon={<FileText size={13} />} label="Output" />
         <textarea className="nodrag nowheel" rows={3} value={draft} placeholder="Write something…"
           onChange={(ev) => setDraft(ev.target.value)} onKeyDown={(ev) => { if (!ev.metaKey && !ev.ctrlKey) ev.stopPropagation(); }}
@@ -233,7 +248,7 @@ export const OutputNode = memo(({ id }: NodeProps) => {
     );
   }
   return (
-    <Card className="output-card" stripe={SOURCE.output.color}>
+    <Card id={id} selected={selected} className="output-card" stripe={SOURCE.output.color}>
       <Top e={e} icon={<FileText size={13} />} label="Output" />
       <div className="card-title">{e.title}</div>
       <div className="md" dangerouslySetInnerHTML={{ __html: md(text) }} />
@@ -242,23 +257,57 @@ export const OutputNode = memo(({ id }: NodeProps) => {
   );
 });
 
-export const NoteNode = memo(({ id }: NodeProps) => {
+const REPEATS = ['off', '15m', '1h', 'daily'] as const;
+const REPEAT_LABEL: Record<string, string> = { '15m': 'Every 15 min', '1h': 'Every hour', daily: 'Daily 9am' };
+type Sched = { every: string; next: number | null };
+const clock = (t: number) => new Date(t).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+
+// Notes edit in place: typing updates locally and saves after a short pause, without touching the board.
+export const NoteNode = memo(({ id, selected }: NodeProps) => {
   const e = useEntity(id); const [text, setText] = useState(e?.preview || '');
   const ref = useRef<HTMLTextAreaElement>(null);
-  useEffect(() => { setText(e?.preview || ''); }, [e?.updatedAt]);
+  const focused = useRef(false); const saved = useRef(e?.preview || ''); const timer = useRef<any>(null);
+  const [sched, setSched] = useState<Sched | null>(null);
+  const linked = useStore((s) => s.edges.some((ed) => ed.source === id && PROMPTABLE(ed.target) && ed.data?.instruction !== false));
+  useEffect(() => { if (!focused.current && e && e.preview !== saved.current) { saved.current = e.preview || ''; setText(saved.current); } }, [e?.preview]);
   useEffect(() => { if (focusNext === id && ref.current) { focusNext = null; ref.current.focus(); } });
+  useEffect(() => {
+    const load = () => api.call<Record<string, Sched>>('recurring:list').then((m) => setSched(m?.[id] || null)).catch(() => {});
+    load(); const t = setInterval(load, 60000);
+    return () => { clearInterval(t); clearTimeout(timer.current); };
+  }, [id]);
   if (!e) return <Gone />;
+  const save = (v: string) => { clearTimeout(timer.current); if (v === saved.current) return; saved.current = v; api.saveNote({ id, text: v }); };
+  const cycle = async () => {
+    const cur = sched?.every || 'off';
+    const nxt = REPEATS[(REPEATS.indexOf(cur as any) + 1) % REPEATS.length];
+    const m = await api.call<Record<string, Sched>>('recurring:set', id, nxt).catch(() => null);
+    setSched(m?.[id] || null);
+  };
+  const repeating = !!sched && sched.every !== 'off';
   return (
-    <Card w={260} className="note-card">
-      <div className="card-top"><span className="src"><StickyNote size={13} /><span className="src-name">Note</span></span></div>
-      <textarea ref={ref} className="nodrag nowheel" value={text} placeholder="Write something…" onChange={(ev) => setText(ev.target.value)} onBlur={() => { if (text !== (e.preview || '')) api.saveNote({ id, text }); }} onKeyDown={(ev) => { if (!ev.metaKey && !ev.ctrlKey) ev.stopPropagation(); }} />
+    <Card id={id} selected={selected} className="note-card" minW={180} minH={100}>
+      <div className="card-top">
+        <span className="src"><StickyNote size={13} /><span className="src-name">Note</span></span>
+        {repeating ? <span className="note-badge">Repeats</span> : linked ? <span className="note-badge" title="Sent with every prompt to the agent this note points at">Instruction</span> : null}
+        <button className={`note-clock nodrag ${repeating ? 'on' : ''}`} onClick={cycle}
+          title={repeating ? `${REPEAT_LABEL[sched!.every]} — click to change` : 'Repeat: send this note to the connected agent on a schedule'}>
+          <Clock size={12} />{repeating && <span>{REPEAT_LABEL[sched!.every]}</span>}
+        </button>
+      </div>
+      <textarea ref={ref} className="nodrag nowheel" value={text} placeholder="Write something…"
+        onFocus={() => { focused.current = true; }}
+        onChange={(ev) => { const v = ev.target.value; setText(v); clearTimeout(timer.current); timer.current = setTimeout(() => save(v), 500); }}
+        onBlur={() => { focused.current = false; save(text); }}
+        onKeyDown={(ev) => { if (ev.key === 'Escape') ev.currentTarget.blur(); if (!ev.metaKey && !ev.ctrlKey) ev.stopPropagation(); }} />
+      {repeating && sched!.next && <div className="note-next">{linked ? `Next run ${clock(sched!.next)}` : 'Draw a line to an agent to run it'}</div>}
     </Card>
   );
 });
 
-export const ErrorNode = memo(({ id }: NodeProps) => {
+export const ErrorNode = memo(({ id, selected }: NodeProps) => {
   const e = useEntity(id); if (!e) return <Gone />;
-  return <Card><div className="card-top"><span className="src"><AlertTriangle size={13} /><span className="src-name">Couldn't load</span></span></div><div className="well err">{e.title}</div></Card>;
+  return <Card id={id} selected={selected}><div className="card-top"><span className="src"><AlertTriangle size={13} /><span className="src-name">Couldn't load</span></span></div><div className="well err">{e.title}</div></Card>;
 });
 
 function saveGroup(id: string, patch: Partial<BoardRow>, data: Record<string, any> = {}) {
@@ -278,6 +327,7 @@ export const GroupNode = memo(({ id, data, selected }: NodeProps) => {
   const [editGoal, setEditGoal] = useState(false);
   const input = useRef<HTMLInputElement>(null);
   const cancel = useRef(false);
+  const claude = useStore(useShallow((s) => s.accounts.filter((a) => a.kind === 'claude-code').map((a) => `${a.id}\t${a.label}`)));
   useEffect(() => { if (!editing) setLabel(d.label || 'Group'); }, [d.label]);
   useEffect(() => { if (!editGoal) setGoal(d.goal || ''); }, [d.goal]);
   useEffect(() => { if (editing) { input.current?.focus(); input.current?.select(); } }, [editing]);
@@ -302,7 +352,7 @@ export const GroupNode = memo(({ id, data, selected }: NodeProps) => {
     const targets = s.board.filter((r) => r.parent_id === id && !r.hidden && s.byId[r.id] && PROMPTABLE(r.id)).map((r) => r.id);
     if (!targets.length) { s.notify('No agents in this group'); return; }
     const text = `Goal for "${label}": ${goal}\n\nDo your part toward this goal, then reply with a short update.`;
-    await Promise.all(targets.map((t) => api.prompt(t, text).catch(() => null)));
+    await Promise.all(targets.map((t) => sendPrompt(t, text, d.accountId ? { accountId: d.accountId } : {}).catch(() => null)));
     s.notify('Goal sent to the group');
   };
 
@@ -315,6 +365,13 @@ export const GroupNode = memo(({ id, data, selected }: NodeProps) => {
         {editing ? (
           <input ref={input} className="nodrag" value={label} size={Math.max(4, label.length + 1)} onChange={(ev) => setLabel(ev.target.value)} onBlur={commit} onKeyDown={keys} />
         ) : <span className="name">{label}</span>}
+        {claude.length > 0 && (
+          <select className="frame-acc nodrag" value={d.accountId || ''} title="Which Claude account this group's agents run on"
+            onChange={(ev) => saveGroup(id, {}, { accountId: ev.target.value || null })} onClick={(ev) => ev.stopPropagation()}>
+            <option value="">Any account</option>
+            {claude.map((c) => { const [aid, l] = c.split('\t'); return <option key={aid} value={aid}>Runs on {l}</option>; })}
+          </select>
+        )}
       </div>
       <div className="frame-goal nodrag">
         {editGoal ? (

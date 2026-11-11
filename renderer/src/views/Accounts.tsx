@@ -138,6 +138,7 @@ export default function Accounts() {
   const [toolsBusy, setToolsBusy] = useState(false);
   const [grok, setGrok] = useState<GrokStatus | null>(null);
   const [grokAuto, setGrokAuto] = useState(true);
+  const [axOk, setAxOk] = useState<boolean | null>(null);
   const [dedicated, setDedicated] = useState<Record<string, string>>({});
   const [detected, setDetected] = useState<string[]>([]);
   const [gmailBusy, setGmailBusy] = useState<string | null>(null);
@@ -148,7 +149,10 @@ export default function Accounts() {
     api.call('agentTools:get').then(setTools).catch(() => {});
     api.call('grokbot:status').then(setGrok).catch(() => {});
     api.getSetting('grokAutoSend', true).then(setGrokAuto);
+    const checkAx = () => api.call('perm:status').then((p: { accessibility: boolean }) => setAxOk(p.accessibility)).catch(() => {});
+    checkAx(); window.addEventListener('focus', checkAx);
     api.getSetting<Record<string, string>>('accountForPath', {}).then((m) => setDedicated(m || {}));
+    return () => window.removeEventListener('focus', checkAx);
   }, []);
   const saveDedicated = (m: Record<string, string>) => { setDedicated(m); api.setSetting('accountForPath', m); };
   const setAgentTools = async (on: boolean) => {
@@ -223,15 +227,23 @@ export default function Accounts() {
         </div>
         {tools && tools.results.length > 0 && <div className="well" data-testid="agent-tools-results">{tools.results.map((r) => <div key={r}>{r}</div>)}</div>}
         <div className="set-row">
-          <div className="txt"><b>Grok Bot</b><span className="hint">Shows your Grok bots and their chats from the Grok Bot app, and sends prompts straight to a bot.</span></div>
+          <div className="txt"><b>Grok Bot</b><span className="hint">{grok && grok.enabled ? `${grok.bots} bot${grok.bots === 1 ? '' : 's'}${grok.running ? '' : ' · app closed'}` : 'Off'}</span></div>
           <Toggle label="Connect Grok Bot" on={grok ? grok.enabled : true} onChange={setGrokOn} />
         </div>
-        {(!grok || grok.enabled) && (
+        {(!grok || grok.enabled) && (<>
           <div className="set-row">
-            <div className="txt"><b>Press Return for me</b><span className="hint">Off: the message waits in the bot's box for you to send. On: Switchboard sends it (macOS asks once for Accessibility permission).</span></div>
-            <Toggle label="Press Return for me" on={grokAuto} onChange={(v) => { setGrokAuto(v); api.setSetting('grokAutoSend', v); }} />
+            <div className="txt"><b>Send in background</b><span className="hint">Sends without leaving Switchboard.</span></div>
+            <Toggle label="Send in background" on={grokAuto} onChange={(v) => { setGrokAuto(v); api.setSetting('grokAutoSend', v); }} />
           </div>
-        )}
+          {grokAuto && (
+            <div className="set-row" data-testid="grok-accessibility">
+              <div className="txt"><b>Accessibility</b><span className="hint">Needed to send for you.</span></div>
+              {axOk
+                ? <span className="chip green"><Check size={11} />Allowed</span>
+                : <button className="btn" onClick={async () => { try { const p = await api.call('perm:openAccessibility'); setAxOk(p.accessibility); } catch (e: any) { notify(e.message); } }}><ExternalLink size={13} />Open Settings</button>}
+            </div>
+          )}
+        </>)}
         <div className="set-row">
           <div className="txt"><b>Balance usage</b><span className="hint">On: new work goes to the Claude account used least in the last 5 hours. Off: the first account. Dedicated folders always win.</span></div>
           <Toggle label="Balance usage" on={split} onChange={(v) => { setSplit(v); api.setSetting('splitUsage', v); }} />

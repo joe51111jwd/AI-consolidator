@@ -5,7 +5,10 @@
 //   Only the roster, cloud-agent runs and transcript replicas are read; every other key
 //   (and the app's secrets, cookies and tokens) is never opened.
 // - Sending: the app's own grokbot://app/v1/prompt link opens a bot with the text in its message
-//   box, then a Return keypress (System Events, needs Accessibility permission) sends it.
+//   box (opened with `open -g`, so it stays in the background), then a Return keypress (System
+//   Events, needs Accessibility permission) sends it: Grok Bot comes forward for that keypress
+//   only, is hidden again, and focus goes back to the app that had it. Sending with no window
+//   flash at all needs an MCP connector in Grok Bot plus a tunnel (not built yet).
 const fs = require('fs');
 const path = require('path');
 const { HOME, truncate, run } = require('../util.cjs');
@@ -85,7 +88,7 @@ function bots() {
   const roster = readKey(/\.roster\.last-roster$/);
   const rows = roster && Array.isArray(roster.rows) ? roster.rows : [];
   return rows.filter((r) => r && r.id && !r.isRemovedFromSidebar).map((r) => ({
-    id: r.id, name: r.name || 'Grok bot', description: r.description || '', color: r.avatarColor || null,
+    id: r.id, name: r.name || 'Grok bot', description: r.description || '', color: r.avatarColor || null, shape: typeof r.avatarShape === 'string' ? r.avatarShape : null,
     lastText: r.lastEntry && typeof r.lastEntry.text === 'string' ? r.lastEntry.text : '',
     lastKind: r.lastEntry ? r.lastEntry.kind : null,
     unread: r.unreadCount || 0, awaiting: !!r.awaitingUserResponse, hidden: !!r.isHiddenFromSidebar,
@@ -119,39 +122,148 @@ function replica(agentId) {
   return v && Array.isArray(v.entries) ? v.entries : [];
 }
 
-// Only plain text messages are shown. Email drafts, forms, secret requests and other widgets
-// can hold sensitive data, so they appear as a one-line placeholder.
+// 'send-message' entries are the bot talking (text or a widget); 'message' entries carry a role
+// and plain string content. Only plain text is shown. Email drafts, forms, secret requests and
+// other widgets can hold sensitive data, so they appear as a one-line label.
+const WIDGET_LABEL = {
+  'email-draft': 'Drafted an email', 'email-offer': 'Offered to send an email', 'user-form': 'Asked you to fill a form',
+  'secret-request': 'Asked for a secret', 'onepassword-connect': 'Asked to connect 1Password', connector: 'Used a connector',
+  'cursor-agent': 'Started a Cursor agent', attachment: 'Sent a file', widget: 'Showed a widget',
+};
+const WIDGET_KIND = { connector: 'connector', 'onepassword-connect': 'connector', 'cursor-agent': 'agent' };
+const COLORS = {
+  black: '#1F1F1F', white: '#E8E8E8', gray: '#8A8A8A', grey: '#8A8A8A', red: '#E5484D', orange: '#F76B15', yellow: '#F5C400',
+  green: '#30A46C', teal: '#12A594', cyan: '#00A2C7', blue: '#3E63DD', indigo: '#5B5BD6', purple: '#8E4EC6', violet: '#6E56CF',
+  magenta: '#D6409F', pink: '#E93D82', brown: '#A18072',
+};
+const hexColor = (c) => (typeof c !== 'string' || !c ? null : /^#[0-9a-f]{3,8}$/i.test(c) ? c : COLORS[c.toLowerCase()] || null);
+
+function describe(e) {
+  if (e.kind === 'message') {
+    const text = typeof e.content === 'string' ? e.content : textOf(e);
+    return text ? { kind: 'message', role: e.role === 'user' ? 'user' : 'assistant', text } : null;
+  }
+  if (e.kind === 'send-message') {
+    const type = e.message && e.message.type;
+    if (type === 'text') { const text = textOf(e.message); return text ? { kind: 'message', role: 'assistant', text } : null; }
+    const label = WIDGET_LABEL[type] || (type ? `Used ${String(type).replace(/-/g, ' ')}` : 'Did something');
+    const title = type === 'cursor-agent' && typeof e.message.title === 'string' ? `: ${e.message.title}` : '';
+    return { kind: WIDGET_KIND[type] || 'tool', role: 'assistant', text: label + title, tool: type, bcId: type === 'cursor-agent' ? e.message.bcId : undefined };
+  }
+  if (e.kind === 'event') {
+    const ev = e.event || {};
+    const text = ev.type === 'automation-changed' ? `${ev.action || 'Changed'} automation${ev.automationName ? ` ${ev.automationName}` : ''}` : String(ev.type || 'event').replace(/-/g, ' ');
+    return { kind: 'event', role: 'assistant', text };
+  }
+  if (e.kind === 'notice' && typeof e.text === 'string') return { kind: 'notice', role: 'assistant', text: e.text };
+  if (e.kind === 'user-attachment') return { kind: 'message', role: 'user', text: 'Attached a file' };
+  if (e.kind === 'voice-call') return { kind: 'event', role: 'assistant', text: 'Voice call' };
+  return null;
+}
+
 function transcript(agentId, limit = 200) {
   const out = [];
   for (const e of replica(agentId)) {
     if (e.kind !== 'send-message' && e.kind !== 'message') continue;
-    const type = e.message && e.message.type;
-    const text = type === 'text' ? textOf(e.message) : `[${type || 'item'}]`;
-    if (!text) continue;
-    out.push({ id: e.id || String(e.seq), role: e.kind === 'send-message' ? 'user' : 'assistant', text, ts: e.timestampMs || 0, kind: type === 'text' ? undefined : 'tool' });
+    const d = describe(e);
+    if (!d) continue;
+    out.push({ id: e.id || String(e.seq), role: d.role, text: d.kind === 'message' ? d.text : `[${d.text}]`, ts: e.timestampMs || 0, kind: d.kind === 'message' ? undefined : 'tool' });
   }
   return out.slice(-limit);
+}
+
+function actions(entries) {
+  const out = [];
+  for (let i = entries.length - 1; i >= 0 && out.length < 15; i--) {
+    const d = describe(entries[i]);
+    if (!d) continue;
+    out.push({ kind: d.kind, text: truncate(d.role === 'user' ? `You: ${d.text}` : d.text, 200), ts: entries[i].timestampMs || 0 });
+  }
+  return out;
+}
+
+function activity(b, entries, running) {
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const d = describe(entries[i]);
+    if (!d || d.kind === 'notice') continue;
+    if (b.awaiting) return { text: d.kind === 'message' ? truncate(d.text, 140) : `Waiting on you: ${d.text}`, tool: d.tool, running: false };
+    if (d.role === 'user') return { text: running ? 'Working on your message' : 'Read your message', running };
+    return { text: truncate(d.text, 140), tool: d.tool, running };
+  }
+  return { text: b.description ? truncate(b.description, 140) : 'Idle', running };
+}
+
+// Cursor agent runs belong to the bot whose chat started them; any others go to the first bot.
+function subagentsByBot(visible, replicas) {
+  const owner = new Map();
+  for (const b of visible) for (const e of replicas.get(b.id) || []) {
+    const t = e.kind === 'send-message' && e.message && e.message.type === 'cursor-agent' ? e.message.bcId : null;
+    if (t) owner.set(t, b.id);
+  }
+  const by = new Map();
+  for (const r of cloudRuns()) {
+    if (!r.id) continue;
+    const id = owner.get(r.id) || (visible[0] && visible[0].id);
+    if (!id) continue;
+    const done = r.status !== 'running';
+    const lastText = r.status === 'error' ? 'Failed' : done && r.filesChanged != null ? `${r.filesChanged} files · +${r.linesAdded || 0} −${r.linesRemoved || 0}` : done ? 'Finished' : 'Working';
+    const s = { id: r.id, title: r.name || r.branch || 'Cursor agent', status: done ? 'done' : 'running', updatedAt: r.lastActivityAt || 0, lastText };
+    if (r.prUrl) s.prUrl = r.prUrl;
+    if (!by.has(id)) by.set(id, []);
+    by.get(id).push(s);
+  }
+  for (const list of by.values()) list.sort((a, b) => b.updatedAt - a.updatedAt);
+  return by;
 }
 
 function list(account) {
   if (!enabled()) return [];
   const now = Date.now();
-  return bots().filter((b) => !b.hidden).map((b) => ({
-    id: `gb:${account.id}:${b.id}`, kind: 'session', source: 'grok-bot', accountId: account.id,
-    title: b.name, preview: truncate(b.lastText || b.description, 220), updatedAt: b.lastActivityAt || 0,
-    status: b.awaiting ? 'waiting' : now - (b.lastActivityAt || 0) < 60000 && b.lastKind !== 'message' ? 'running' : 'idle',
-    meta: { agentId: b.id, description: b.description, unread: b.unread, color: b.color, category: 'chat' },
-  }));
+  const all = bots();
+  const visible = all.filter((b) => !b.hidden);
+  const replicas = new Map(all.map((b) => [b.id, replica(b.id)]));
+  const subs = subagentsByBot(visible, replicas);
+  return visible.map((b) => {
+    const entries = replicas.get(b.id) || [];
+    const running = !b.awaiting && now - (b.lastActivityAt || 0) < 60000 && b.lastKind !== 'message';
+    return {
+      id: `gb:${account.id}:${b.id}`, kind: 'session', source: 'grok-bot', accountId: account.id,
+      title: b.name, preview: truncate(b.lastText || b.description, 220), updatedAt: b.lastActivityAt || 0,
+      status: b.awaiting ? 'waiting' : running ? 'running' : 'idle',
+      meta: {
+        agentId: b.id, description: b.description, unread: b.unread, color: b.color, category: 'chat',
+        avatarColor: hexColor(b.color) || undefined, avatarShape: b.shape || undefined,
+        activity: activity(b, entries, running), actions: actions(entries), subagents: subs.get(b.id) || [],
+      },
+    };
+  });
 }
 
 function link(p) { return `grokbot://app${p}`; }
 function open(url) {
   if (process.env.SB_TEST_OPEN_LOG) { fs.appendFileSync(process.env.SB_TEST_OPEN_LOG, url + '\n'); return Promise.resolve(); }
-  return run('open', [url]).then((r) => { if (r.code !== 0) throw new Error(truncate(r.stderr || 'Grok Bot did not open', 200)); });
+  return run('open', ['-g', url]).then((r) => { if (r.code !== 0) throw new Error(truncate(r.stderr || 'Grok Bot did not open', 200)); });
 }
 function openBot(agentId) { return open(ID_RE.test(agentId || '') ? link(`/v1/agent?id=${agentId}`) : link('/v1/open')); }
 
-const sentCount = (agentId) => replica(agentId).filter((e) => e.kind === 'send-message').length;
+const sentCount = (agentId) => replica(agentId).filter((e) => e.kind === 'message' && e.role === 'user').length;
+const PRESS_RETURN = `
+set prev to ""
+try
+  tell application "System Events" to set prev to name of first application process whose frontmost is true
+end try
+tell application "Grok Bot" to activate
+delay 0.3
+tell application "System Events" to keystroke return
+delay 0.15
+try
+  tell application "System Events" to set visible of process "Grok Bot" to false
+end try
+if prev is not "" and prev is not "Grok Bot" then
+  try
+    tell application "System Events" to set frontmost of process prev to true
+  end try
+end if`;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // Puts the text in the bot's message box and (unless prefillOnly or the "Press Return for me"
@@ -174,7 +286,7 @@ async function send(agentId, text, { prefillOnly } = {}) {
   if (!st.running) return { text: `Grok Bot was not running, so it is opening with the message in ${name}'s box. Press Return there to send.` };
   if (process.platform !== 'darwin' || process.env.SB_TEST_OPEN_LOG) return { text: `Put it in ${name}'s message box in Grok Bot.` };
   await sleep(700);
-  const r = await run('osascript', ['-e', 'tell application "Grok Bot" to activate', '-e', 'delay 0.3', '-e', 'tell application "System Events" to keystroke return']).catch((e) => ({ code: 1, stderr: e.message }));
+  const r = await run('osascript', ['-e', PRESS_RETURN]).catch((e) => ({ code: 1, stderr: e.message }));
   if (r.code !== 0) {
     return { text: `Put it in ${name}'s message box, but Switchboard can't press Return yet. Allow Switchboard in System Settings → Privacy & Security → Accessibility, or press Return in Grok Bot yourself.` };
   }

@@ -1,13 +1,14 @@
 import React, { memo, useEffect, useRef, useState } from 'react';
 import { Handle, Position, NodeResizer, NodeProps } from '@xyflow/react';
-import { GripVertical, FolderGit2, FileText, StickyNote, AlertTriangle, Target, Play, Clock, UserRound } from 'lucide-react';
+import { GripVertical, FolderGit2, FileText, StickyNote, AlertTriangle, Target, Play, Clock, UserRound, MessageSquare, Zap, Wrench, Plug, Bot, Info, GitPullRequest, Monitor } from 'lucide-react';
 import { useStore } from '../lib/store';
 import { useShallow } from 'zustand/react/shallow';
 import { api, BoardRow, Entity } from '../lib/api';
 import { ago, tokens, md, SOURCE, dueLabel, categoryOf, baseName, colorOf, PROMPTABLE } from '../lib/format';
 import { sendPrompt } from '../lib/send';
 import Composer from '../components/Composer';
-import { AgentLogo } from '../components/Logos';
+import { AgentLogo, GrokLogo } from '../components/Logos';
+import ComputerPreview from '../components/demo/DemoNodes';
 
 const Handles = () => (
   <>
@@ -137,8 +138,68 @@ function Subagents({ e }: { e: Entity }) {
   );
 }
 
+type GrokAction = { kind: 'message' | 'event' | 'tool' | 'connector' | 'agent' | 'notice'; text: string; ts?: number };
+type GrokSub = Sub & { prUrl?: string };
+const ACTION_ICON: Record<string, React.ReactNode> = {
+  message: <MessageSquare size={11} />, event: <Zap size={11} />, tool: <Wrench size={11} />,
+  connector: <Plug size={11} />, agent: <Bot size={11} />, notice: <Info size={11} />,
+};
+
+// A Grok bot is a hub: its own avatar, what it's doing now, what it did, and the agents it launched.
+function GrokNode({ id, e, selected }: { id: string; e: Entity; selected?: boolean }) {
+  const running = useRunning(e);
+  const [screen, setScreen] = useState(false);
+  const color: string = e.meta?.avatarColor || colorOf(e, useStore.getState().accounts);
+  const shape: string = e.meta?.avatarShape || 'circle';
+  const a: { text?: string; tool?: string; running?: boolean } | undefined = e.meta?.activity;
+  const actions: GrokAction[] = Array.isArray(e.meta?.actions) ? e.meta.actions : [];
+  const subs: GrokSub[] = Array.isArray(e.meta?.subagents) ? e.meta.subagents : [];
+  const live = running || !!a?.running;
+  const now = a?.tool || a?.text;
+  const open = (ev: React.MouseEvent) => { ev.stopPropagation(); useStore.getState().open(id); };
+  return (
+    <Card id={id} selected={selected} stripe={color} className="grok-card" minH={160}>
+      <div className="grok-head">
+        <div className={`grok-avatar shape-${shape}`} style={{ background: color }}>
+          {(e.title || '?').slice(0, 1).toUpperCase()}
+          <span className="grok-badge"><GrokLogo size={10} /></span>
+        </div>
+        <div className="card-title">{e.title}</div>
+        <span className="when">{live ? <span className="status running"><i />Working</span> : ago(e.updatedAt)}</span>
+      </div>
+      {now && <div className="act-now" title={now}>▸ <span className={live ? 'shimmer' : ''}>{now}</span></div>}
+      {actions.length > 0 && (
+        <div className="grok-feed nowheel">
+          {actions.slice(0, 15).map((x, i) => (
+            <div key={`${x.ts}-${i}`} className={`grok-act ${i >= 5 ? 'extra' : ''}`} title={x.text}>
+              <span className="ic">{ACTION_ICON[x.kind] || ACTION_ICON.notice}</span><span className="t">{x.text}</span><span className="age">{ago(x.ts)}</span>
+            </div>
+          ))}
+        </div>
+      )}
+      {subs.length > 0 && (
+        <div className="subagents">
+          {[...subs].sort((p, q) => (p.status === q.status ? (q.updatedAt || 0) - (p.updatedAt || 0) : p.status === 'running' ? -1 : 1)).slice(0, 4).map((s) => (
+            <button key={s.id} className="sub-row nodrag" onClick={open} title={s.lastText || s.title}>
+              <i className={`sub-dot ${s.status}`} /><span className="sub-t">{s.title}</span>
+              {s.prUrl && <a className="sub-pr" href={s.prUrl} target="_blank" rel="noreferrer" onClick={(ev) => ev.stopPropagation()} title="Pull request"><GitPullRequest size={11} /></a>}
+              <span className="sub-age">{ago(s.updatedAt)}</span>
+            </button>
+          ))}
+        </div>
+      )}
+      <button className={`grok-screen-toggle nodrag ${screen ? 'on' : ''}`} onClick={(ev) => { ev.stopPropagation(); setScreen(!screen); }} title="Show its computer">
+        <Monitor size={11} />Computer
+      </button>
+      {screen && <div className="grok-screen nodrag"><ComputerPreview name={e.title} color={color} live={live} /></div>}
+      <Composer id={id} placeholder="Message…" />
+    </Card>
+  );
+}
+
 export const SessionNode = memo(({ id, selected }: NodeProps) => {
   const e = useEntity(id); if (!e) return <Gone />;
+  if (e.source === 'grok-bot') return <GrokNode id={id} e={e} selected={selected} />;
   const cat = categoryOf(e);
   const folder = cat === 'coding' ? baseName(e.meta?.cwd) : '';
   const branch = e.meta?.gitBranch && !['main', 'master', 'HEAD'].includes(e.meta.gitBranch) ? e.meta.gitBranch : '';
@@ -373,6 +434,7 @@ export const GroupNode = memo(({ id, data, selected }: NodeProps) => {
   const cancel = useRef(false);
   const [pickAcc, setPickAcc] = useState(false);
   const claude = useStore(useShallow((s) => s.accounts.filter((a) => a.kind === 'claude-code').map((a) => `${a.id}\t${a.label}`)));
+  const hasClaude = useStore((s) => s.board.some((r) => r.parent_id === id && !r.hidden && s.byId[r.id]?.source === 'claude-code' && s.byId[r.id]?.kind === 'session'));
   useEffect(() => { if (!editing) setLabel(d.label || 'Group'); }, [d.label]);
   useEffect(() => { if (!editGoal) setGoal(d.goal || ''); }, [d.goal]);
   useEffect(() => { if (editing) { input.current?.focus(); input.current?.select(); } }, [editing]);
@@ -410,7 +472,7 @@ export const GroupNode = memo(({ id, data, selected }: NodeProps) => {
         {editing ? (
           <input ref={input} className="nodrag" value={label} size={Math.max(4, label.length + 1)} onChange={(ev) => setLabel(ev.target.value)} onBlur={commit} onKeyDown={keys} />
         ) : <span className="name">{label}</span>}
-        {claude.length > 0 && (d.accountId || pickAcc ? (
+        {claude.length > 0 && hasClaude && (d.accountId || pickAcc ? (
           <select className="frame-acc nodrag" value={d.accountId || ''} title="Agents in this frame run on this account" autoFocus={pickAcc && !d.accountId}
             onChange={(ev) => { setPickAcc(false); saveGroup(id, {}, { accountId: ev.target.value || null }); }} onBlur={() => setPickAcc(false)} onClick={(ev) => ev.stopPropagation()}>
             <option value="">No account</option>

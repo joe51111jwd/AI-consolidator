@@ -6,6 +6,8 @@ import {
 import { useStore } from '../lib/store';
 import { api, BoardRow, Entity } from '../lib/api';
 import { nodeTypes, focusNote } from '../nodes/nodes';
+import { useDemo } from '../lib/demo';
+import { demoNodeTypes } from './demo/DemoNodes';
 import FlowEdge from './FlowEdge';
 import BoardTools from './BoardTools';
 import {
@@ -19,6 +21,9 @@ const edgeTypes = { flow: FlowEdge };
 // Opens at a readable zoom in the top-left corner; zoom out to see everything.
 const START_VIEW = { x: 48, y: 104, zoom: 0.78 };
 const isGroup = (id: string) => id.startsWith('grp:');
+// Demo cards live only in memory: draggable, never saved, deleted or opened.
+const isDemo = (id: string) => id.startsWith('demo:');
+const allNodeTypes = { ...nodeTypes, ...demoNodeTypes };
 // Cards deleted this session: never re-placed, even if a stale entity list still has them.
 const deleted = new Set<string>();
 const hiddenIds = new Map<string, number>();
@@ -57,6 +62,10 @@ export default function Board() {
   const { entities, byId, board, boardLoaded, edges: edgeRows, refreshBoard, open, set, addAttach, notify } = useStore();
   const [nodes, setNodes, onNodesChangeRaw] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
+  const demoNodes = useDemo((d) => d.nodes);
+  const demoEdges = useDemo((d) => d.edges);
+  const allNodes = useMemo(() => (demoNodes.length ? [...nodes, ...demoNodes] : nodes), [nodes, demoNodes]);
+  const allEdges = useMemo(() => (demoEdges.length ? [...edges, ...demoEdges] : edges), [edges, demoEdges]);
   const [menu, setMenu] = useState<{ x: number; y: number; kind: 'node' | 'edge' | 'pane'; id?: string; ids?: string[]; at?: { x: number; y: number } } | null>(null);
   const [off, setOffState] = useState<string[]>([]);
   const [busy, setBusyState] = useState(false);
@@ -172,7 +181,7 @@ export default function Board() {
     const t = setTimeout(() => {
       const ns = rf.getNodes();
       if (placing.current || busyRef.current || ns.some((n) => n.dragging)) return;
-      const rows = guard(unoverlap(ns, useStore.getState().board));
+      const rows = guard(unoverlap(ns.filter((n) => !isDemo(n.id)), useStore.getState().board));
       if (rows.length) api.saveBoard(rows).then(refreshBoard);
     }, 500);
     return () => clearTimeout(t);
@@ -180,7 +189,11 @@ export default function Board() {
 
   // Marquee selection catches cards it only partly covers, but never the frames it starts inside.
   const onNodesChange = useCallback((changes: NodeChange<Node>[]) => {
-    onNodesChangeRaw(marquee.current ? changes.filter((c) => !(c.type === 'select' && c.selected && isGroup(c.id))) : changes);
+    const list = marquee.current ? changes.filter((c) => !(c.type === 'select' && c.selected && isGroup(c.id))) : changes;
+    const isDemoChange = (c: NodeChange<Node>) => 'id' in c && isDemo(c.id);
+    const mine = list.filter(isDemoChange);
+    if (mine.length) useDemo.getState().onNodesChange(mine);
+    onNodesChangeRaw(mine.length ? list.filter((c) => !isDemoChange(c)) : list);
   }, [onNodesChangeRaw]);
 
   const absPos = useCallback((n: Node) => {
@@ -197,9 +210,10 @@ export default function Board() {
   // Save positions after drags, reparent into frames (growing them to fit), and send outputs dropped onto cards.
   const onNodeDragStop = useCallback(async (_: any, node: Node, dragged: Node[]) => {
     touched.current = true;
-    const moved = dragged.length ? dragged : [node];
+    const moved = (dragged.length ? dragged : [node]).filter((n) => !isDemo(n.id));
+    if (!moved.length) return;
     const rows: BoardRow[] = [];
-    if (moved.length === 1 && (node.type === 'output' || node.type === 'note')) {
+    if (moved.length === 1 && !isDemo(node.id) && (node.type === 'output' || node.type === 'note')) {
       const hit = rf.getIntersectingNodes(node).find((n) => n.type !== 'group' && PROMPTABLE(n.id));
       if (hit) {
         const text = (await api.transcript(node.id))[0]?.text || '';
@@ -229,7 +243,7 @@ export default function Board() {
   }, [board, byId, rf]);
 
   const onConnect = useCallback(async (c: Connection) => {
-    if (!c.source || !c.target || c.source === c.target) return;
+    if (!c.source || !c.target || c.source === c.target || isDemo(c.source) || isDemo(c.target)) return;
     if (c.source.startsWith('nt:') && PROMPTABLE(c.target)) {
       await api.saveEdge({ source: c.source, target: c.target, kind: 'link', data: { instruction: true, label: 'Instruction' } });
       await refreshBoard();
@@ -242,11 +256,12 @@ export default function Board() {
   }, []);
 
   const onSelectionChange = useCallback(({ nodes }: OnSelectionChangeParams) => {
-    set({ selected: nodes.filter((n) => n.type !== 'group').map((n) => n.id) });
+    set({ selected: nodes.filter((n) => n.type !== 'group' && !isDemo(n.id)).map((n) => n.id) });
   }, []);
 
   // One click opens a card; a drag only moves it.
   const onNodeClick = (ev: React.MouseEvent, n: Node) => {
+    if (isDemo(n.id)) return;
     if (n.type === 'note' && !ev.shiftKey && !ev.metaKey && !ev.ctrlKey) {
       const ta = document.querySelector<HTMLTextAreaElement>(`.react-flow__node[data-id="${n.id}"] textarea`);
       if (ta && document.activeElement !== ta && !(ev.target as HTMLElement).closest('button')) { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }
@@ -307,7 +322,9 @@ export default function Board() {
     await reload();
   };
 
-  const hide = async (ids: string[]) => {
+  const hide = async (all: string[]) => {
+    const ids = all.filter((id) => !isDemo(id));
+    if (!ids.length) return;
     touched.current = true;
     const rows: BoardRow[] = [];
     for (const id of ids) {
@@ -325,7 +342,7 @@ export default function Board() {
   };
 
   const groupSelected = async (ids?: string[]) => {
-    const sel = ids ? rf.getNodes().filter((n) => ids.includes(n.id) && n.type !== 'group') : rf.getNodes().filter((n) => n.selected && n.type !== 'group');
+    const sel = ids ? rf.getNodes().filter((n) => ids.includes(n.id) && n.type !== 'group' && !isDemo(n.id)) : rf.getNodes().filter((n) => n.selected && n.type !== 'group' && !isDemo(n.id));
     if (sel.length < 2) { notify('Select two or more cards to group them'); return; }
     touched.current = true;
     const pts = sel.map((n) => ({ n, p: absPos(n), ...sizeOf(n) }));
@@ -364,7 +381,7 @@ export default function Board() {
       if (e.key === 'Backspace' || e.key === 'Delete') {
         const ids = rf.getNodes().filter((n) => n.selected).map((n) => n.id);
         if (ids.length) { e.preventDefault(); hide(ids); }
-        const eds = rf.getEdges().filter((x) => x.selected).map((x) => x.id);
+        const eds = rf.getEdges().filter((x) => x.selected && !isDemo(x.source) && !isDemo(x.target)).map((x) => x.id);
         eds.forEach((id) => api.deleteEdge(id)); if (eds.length) refreshBoard();
       }
     };
@@ -385,26 +402,27 @@ export default function Board() {
   const viewport = useMemo<Viewport | undefined>(() => { try { return JSON.parse(localStorage.getItem('sb.viewport') || ''); } catch { return undefined; } }, []);
   const edgeRow = menu?.kind === 'edge' ? edgeRows.find((e) => e.id === menu.id) : null;
   const close = () => setMenu(null);
-  const mini = (n: Node) => (n.type === 'group' ? 'rgba(24,24,27,.04)' : colorOf(byId[n.id], useStore.getState().accounts));
+  const mini = (n: Node) => (n.type === 'group' ? 'rgba(24,24,27,.04)' : isDemo(n.id) ? '#18181B' : colorOf(byId[n.id], useStore.getState().accounts));
 
   return (
     <div className="board" onDragOver={onDragOver} onDrop={onDrop} onClick={close}
       onPointerDownCapture={(e) => { down.current = { x: e.clientX, y: e.clientY }; }}
       onDoubleClick={(e) => { if ((e.target as HTMLElement).classList.contains('react-flow__pane')) addNote(rf.screenToFlowPosition({ x: e.clientX, y: e.clientY })); }}>
       <ReactFlow
-        nodes={nodes} edges={edges} nodeTypes={nodeTypes as any} edgeTypes={edgeTypes}
+        nodes={allNodes} edges={allEdges} nodeTypes={allNodeTypes as any} edgeTypes={edgeTypes}
         onNodesChange={onNodesChange} onEdgesChange={onEdgesChange} onNodeDragStop={onNodeDragStop}
         onConnect={onConnect} onSelectionChange={onSelectionChange}
         onSelectionStart={() => { marquee.current = true; }} onSelectionEnd={() => { marquee.current = false; }}
         onNodeClick={onNodeClick}
-        onNodeDoubleClick={(_, n) => n.type !== 'group' && n.type !== 'note' && open(n.id)}
+        onNodeDoubleClick={(_, n) => n.type !== 'group' && n.type !== 'note' && !isDemo(n.id) && open(n.id)}
         onNodeContextMenu={(e, n) => {
           e.preventDefault();
+          if (isDemo(n.id)) return;
           const sel = rf.getNodes().filter((x) => x.selected).map((x) => x.id);
           setMenu({ x: e.clientX, y: e.clientY, kind: 'node', id: n.id, ids: sel.includes(n.id) && sel.length > 1 ? sel : [n.id] });
         }}
         onPaneContextMenu={(e) => { e.preventDefault(); setMenu({ x: e.clientX, y: e.clientY, kind: 'pane', at: rf.screenToFlowPosition({ x: e.clientX, y: e.clientY }) }); }}
-        onEdgeClick={(e, ed) => { e.stopPropagation(); setMenu({ x: e.clientX, y: e.clientY, kind: 'edge', id: ed.id }); }}
+        onEdgeClick={(e, ed) => { e.stopPropagation(); if (isDemo(ed.source) || isDemo(ed.target)) return; setMenu({ x: e.clientX, y: e.clientY, kind: 'edge', id: ed.id }); }}
         onMoveEnd={(_, vp) => localStorage.setItem('sb.viewport', JSON.stringify(vp))}
         defaultViewport={viewport || START_VIEW} minZoom={0.15} maxZoom={1.6}
         selectionOnDrag selectionMode={SelectionMode.Partial} panOnDrag={[1, 2]} panOnScroll zoomOnDoubleClick={false}

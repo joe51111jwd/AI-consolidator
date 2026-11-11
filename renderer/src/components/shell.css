@@ -136,3 +136,8 @@ button.dp-row:hover { background: var(--well); }
 .dp-t { font-size: 12.5px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .dp-d { font-size: 11.5px; color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .dock.open .dock-slot .dock-b:not(.on) { opacity: .4; transform: scale(.9); }
+
+.sb-onboard { position: fixed; top: 14px; left: 50%; transform: translateX(-50%); z-index: 30; display: flex; align-items: center; gap: 10px; padding: 8px 8px 8px 14px; background: var(--ink, #18181B); color: #fff; border-radius: 999px; box-shadow: var(--shadow-lg); font-size: 12.5px; -webkit-app-region: no-drag; animation: sb-onboard-in .35s cubic-bezier(.2, .8, .2, 1); }
+.sb-onboard-go { background: #fff; color: #18181B; border-radius: 999px; padding: 5px 12px; font-weight: 600; }
+.sb-onboard-x { color: rgba(255, 255, 255, .7); padding: 4px; }
+@keyframes sb-onboard-in { from { opacity: 0; transform: translate(-50%, -8px); } }

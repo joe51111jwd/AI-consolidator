@@ -6,6 +6,7 @@ import Board from './components/Board';
 import Inspector from './components/Inspector';
 import Chief from './components/Chief';
 import Palette from './components/Palette';
+import Onboarding from './components/Onboarding';
 import Outputs from './components/Outputs';
 import Dock from './components/Dock';
 import UsagePill from './components/UsagePill';
@@ -76,6 +77,7 @@ export default function App() {
         <Chief />
         {inspector && <Inspector />}
         <Palette />
+        <Onboarding />
         <Settings />
       </ReactFlowProvider>
       {toast && <div className="toast">{toast}</div>}

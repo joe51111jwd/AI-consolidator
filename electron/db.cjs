@@ -34,6 +34,9 @@ CREATE TABLE IF NOT EXISTS outputs (
   id TEXT PRIMARY KEY, title TEXT, content TEXT, source TEXT, ts INTEGER);
 CREATE TABLE IF NOT EXISTS notes (
   id TEXT PRIMARY KEY, text TEXT, ts INTEGER);
+CREATE TABLE IF NOT EXISTS chat_context (
+  id TEXT PRIMARY KEY, sig TEXT, about TEXT, client TEXT, project TEXT, status TEXT,
+  next_step TEXT, people TEXT DEFAULT '[]', model TEXT, ts INTEGER);
 CREATE INDEX IF NOT EXISTS flows_ts ON flows(ts);
 CREATE INDEX IF NOT EXISTS chat_messages_chat ON chat_messages(chat_id, ts);
 `;

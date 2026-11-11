@@ -128,7 +128,8 @@ function firstRunSetup() {
 function invalidate() { entityCache.at = 0; }
 
 // Feature modules can add to the cards (decorate), take prompts (dispatch) and serve transcripts
-// for their own cards; see ext/relay.cjs. dispatch/transcript return undefined to pass.
+// for their own cards; see ext/relay.cjs. dispatch/transcript return undefined to pass. finish runs
+// last, on the whole list (extras included); see ext/context.cjs.
 const plugins = [];
 function use(p) { plugins.push(p); }
 
@@ -253,6 +254,7 @@ async function entities({ force = false } = {}) {
   }
   const have = new Set(list.map((e) => e.id));
   for (const fn of extras) { try { for (const e of fn() || []) if (e && !have.has(e.id)) { list.push(e); have.add(e.id); } } catch {} }
+  for (const p of plugins) { try { if (p.finish) p.finish(list); } catch (e) { console.error('finish:', e.message); } }
   entityCache = { at: Date.now(), list };
   scheduleSettle(list);
   return list;

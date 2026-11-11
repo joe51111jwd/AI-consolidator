@@ -5,6 +5,7 @@ One place on your Mac to manage the AI chats you already have: every Claude Code
 - **Chats home (⌘2).** All your chats in one list, grouped into topics by what they're doing. Each topic shows how many are working and how many need you; a blue dot marks a chat waiting on you. Filter and search the list at the top.
 - **Open and reply.** Click a chat to open it and talk. Hover a row to send a quick reply without opening it. Pick the model (Opus, Sonnet or Haiku) for a Claude chat next to the message box; each chat remembers its choice. **Stop** (the square button) ends a reply that's still running.
 - **Approve what Claude wants to do.** When a Claude chat you run from Switchboard wants to run a command or edit a file, it asks you on the chat's card, in the open chat and in the to-do list (**Approve: …**), not in the Claude app. Answer **Allow once**, **Always allow** (that tool, in that chat) or **Deny**.
+- **Chat summaries.** Each chat gets a short AI summary: what the work is, who it's for (a client, person or company), the project, where it stands and the next step. Topics group by it, cards show it under the title (hover for the next step), and ⌘K searches it. It uses your own Claude plan: one small Haiku call for up to 8 changed chats, at most every 20 seconds, only for chats that changed. Turn it off in Settings → Accounts ("Summarize chats with AI").
 - **Import chats.** Bring any older chat from any Claude account into the app.
 - **Dock.** The account bubbles at the bottom start a new chat; each shows its usage this week so you can spread work across accounts. Hover one to see what it's working on.
 - **Main agent (⌘J).** The **+** in the dock opens an agent that sees everything: ask "what needs me?", get a daily recap, or ask any question across your chats. It also starts chats, notes and boards, and runs the Showcase.
@@ -166,7 +167,7 @@ Only programs running as you can use it: it listens on 127.0.0.1 and needs the t
 
 ## Where things are kept
 
-- `~/.switchboard/switchboard.db` holds the board, clients, outputs and settings, including the tools you chose to always allow in each chat.
+- `~/.switchboard/switchboard.db` holds the board, clients, outputs, chat summaries and settings, including the tools you chose to always allow in each chat.
 - `~/.switchboard/brain.md` is the shared brain.
 - API keys and Google sign-ins are encrypted with your Mac's Keychain.
 
@@ -186,6 +187,7 @@ This builds the app and runs `tests/e2e.cjs`, which starts the real app in a thr
 - **Drag and drop:** a message dragged onto a card goes with the next prompt; dropped on empty space it becomes an output card that can be saved to the brain, copied, opened, and dragged onto another agent.
 - **Starting work:** a project folder found with ⌘K; split usage on and off; New chat (⌘N) with the account, folder and model you pick; the dock; ⌘K tagging carried into a new chat; Codex resumes the right session; Grok bots read from the Grok Bot cache and sent to with a `grokbot://` link, never the clipboard; Granola notes open.
 - **Switchboard Relay:** connecting with the app token, bots reporting status, steps, Claude Code runs, outputs and brain notes; messages queued for bots; a Claude chat connecting through its copied address; Connect your agents.
+- **Chat summaries:** every chat (Claude, desktop app, Grok bots) summarized on a small model, several to a call, with no tools; a long chat cut to its first ask and latest turns; only changed chats summarized again; the home grouping a chat under the client its summary names; the summary on the card and the next step in its drawer; ⌘K matching it; the Settings switch.
 - **Overall agent:** answers, works on the selected cards, keeps history, flags what needs you (open or dismiss), and doesn't show its own runs as cards.
 - **Permission requests:** in **Ask first** the stand-in `claude` gets `--permission-prompt-tool mcp__switchboard__approve_tool`, calls that tool through `sb mcp` and the app, and gets back the JSON Claude Code expects. The request shows on the chat's card, in the open chat and in the to-do list. Each answer is checked: **Allow once** (`{"behavior":"allow","updatedInput":…}`), a file edit with its diff, **Always allow** (the next edit doesn't ask, and it's kept after a restart), and **Deny** from the board card (`{"behavior":"deny","message":…}`). It also checks a new chat asking on its own card; **Edit files** still asking before commands while **Full access** and Switchboard's own background runs never ask; and a request leaving once Claude Code stops waiting.
 - **Claude sign-in:** two plans on one email signed in to separate folders with their own organization and plan; a new chat on each runs as that account; the same-login warning; signing out one leaves the others signed in; cancelling a slow sign-in; agent tools added to every Claude folder.

@@ -4,7 +4,8 @@
 // project holding the chats, meetings and emails working on the same thing. `topics` stays the flat
 // list of projects; `clients` is the tree. A rule of thumb answers at once; Claude (no tools, no
 // user hooks, least-used account, run inside ~/.switchboard so it never shows up as a chat)
-// refines it in the background from what each chat asked and answered, when the set changes.
+// refines it in the background, when the set changes, from each chat's AI summary (who it is for,
+// what the work is: ext/context.cjs) or, for chats not summarized yet, what it asked and answered.
 const path = require('path');
 const hub = require('../hub.cjs');
 const db = require('../db.cjs');
@@ -51,6 +52,9 @@ const emitChanged = () => {
 };
 
 const slug = (s) => String(s).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'other';
+// The AI summary of a chat (ext/context.cjs): { about, client, project, status, nextStep, people }.
+// When a chat has one, it is what the grouping reads instead of the first ask and latest reply.
+const ctxOf = (e) => { const c = e && e.meta && e.meta.context; return c && typeof c === 'object' && c.about ? c : null; };
 const isRunning = (e) => e.status === 'running' || !!(e.meta && e.meta.activity && e.meta.activity.running);
 const isLive = (e) => e.status === 'waiting' || isRunning(e);
 const clientLabel = (c) => c.company || c.name;
@@ -95,7 +99,9 @@ async function current() {
   return { list: gather(await hub.entities()), clients: hub.clients() };
 }
 
-const keyOf = (list) => list.map((e) => e.id).sort().join('|');
+// The set of items, and who / what each summarized chat is for, so topics are redone once when
+// summaries land or a chat turns out to be for someone else (not on every new summary line).
+const keyOf = (list) => list.map((e) => { const c = ctxOf(e); return c ? `${e.id}#${slug(c.client || '')}/${slug(c.project || '')}` : e.id; }).sort().join('|');
 
 // The owner's own top-level groups ({ groups: [{ label, hint }] }), or null when none are set.
 function rulesOf() {
@@ -130,12 +136,19 @@ function namedClient(text, clients) {
   return hit ? clientLabel(hit) : null;
 }
 
+// The client the summary names: the CRM client it matches, else the name as the summary gave it.
+function ctxClient(e, clients) {
+  const c = ctxOf(e);
+  if (!c || !c.client) return null;
+  return namedClient(c.client, clients) || truncate(String(c.client).replace(/\s+/g, ' ').trim(), 40);
+}
+
 function clientOf(e, clients) {
   const m = e.meta || {};
   if (m.client && (m.client.company || m.client.name)) return clientLabel(m.client);
   if (e.kind === 'session') {
     const hit = clients.find((c) => m.cwd && (c.project_paths || []).some((p) => m.cwd === p || m.cwd.startsWith(p + path.sep)));
-    return hit ? clientLabel(hit) : null;
+    return hit ? clientLabel(hit) : ctxClient(e, clients);
   }
   const emails = e.kind === 'meeting' ? (m.attendees || []).map((a) => a && a.email) : e.kind === 'thread' ? m.participants || [] : [];
   const hit = clients.find((c) => emails.some((x) => matches(c, x)));
@@ -145,6 +158,8 @@ function clientOf(e, clients) {
 
 const textOf = (e) => {
   const m = e.meta || {};
+  const c = ctxOf(e);
+  if (c) return [e.title, c.about, c.client, c.project].filter(Boolean).join(' ');
   const act = m.activity && typeof m.activity === 'object' ? m.activity.text : m.activity;
   return `${e.title || ''} ${e.preview || ''} ${typeof act === 'string' ? act : ''}`;
 };
@@ -210,15 +225,21 @@ function folderOf(e) {
 }
 
 function keywordOf(e) {
-  const text = `${e.title || ''} ${e.preview || ''}`;
+  const c = ctxOf(e);
+  const text = c ? `${e.title || ''} ${c.about} ${c.project || ''}` : `${e.title || ''} ${e.preview || ''}`;
   const hit = KEYWORDS.find(([re]) => re.test(text));
   return hit ? hit[1] : null;
 }
 
-// The project a chat belongs to: its folder, a Grok bot by its name, else words in its title.
+const ctxProject = (e) => { const c = ctxOf(e); return c && c.project ? truncate(String(c.project).trim(), 40) : null; };
+
+// The project a chat belongs to: its folder, the project its summary names, a Grok bot by its name,
+// else words in its title.
 function projectOf(e, clients) {
   const folder = folderOf(e);
   if (folder) return folder;
+  const named = ctxProject(e);
+  if (named) return named;
   if (e.source === 'grok-bot') return e.title || 'Grok bot';
   return keywordOf(e) || clientOf(e, clients) || 'Other';
 }
@@ -258,7 +279,7 @@ function heuristic(list, clients, rules = rulesOf()) {
   };
   for (const e of list.filter((x) => x.kind === 'session')) {
     const g = groupOf(e, clients, people, rules);
-    const label = g && g.client && !folderOf(e) && e.source !== 'grok-bot' ? g.group : projectOf(e, clients);
+    const label = g && g.client && !folderOf(e) && !ctxProject(e) && e.source !== 'grok-bot' ? g.group : projectOf(e, clients);
     if (g) add(e, g.group, label, g.client);
     else add(e, NO_AREA, label, false);
   }
@@ -413,8 +434,15 @@ function describe(e, i, clients) {
   const m = e.meta || {};
   const base = { kind: kindLabel(e), title: e.title, client: clientOf(e, clients) };
   if (e.kind === 'session') {
+    const status = isLive(e) ? String(e.status || 'running') : '';
+    // With an AI summary of the chat, say what the work is and what's next, not the raw first ask.
+    const ctx = ctxOf(e);
+    if (ctx) {
+      return itemLine(i + 1, { ...base, client: base.client || ctx.client || null, folder: folderOf(e), status: status || ctx.status || '',
+        who: (ctx.people || []).slice(0, 3).join(', '), asked: `about: ${ctx.about}${ctx.project ? ` (project ${ctx.project})` : ''}`, latest: ctx.nextStep ? `next: ${ctx.nextStep}` : '' });
+    }
     const c = contentOf(e);
-    return itemLine(i + 1, { ...base, folder: folderOf(e), status: isLive(e) ? String(e.status || 'running') : '', asked: c.first !== e.title ? c.first : '', latest: c.last });
+    return itemLine(i + 1, { ...base, folder: folderOf(e), status, asked: c.first !== e.title ? c.first : '', latest: c.last });
   }
   if (e.kind === 'meeting') {
     const who = (m.attendees || []).slice(0, 3).map((a) => a && (a.name || a.email)).filter(Boolean).join(' & ');

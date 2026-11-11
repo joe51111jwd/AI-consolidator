@@ -26,6 +26,7 @@ declare global {
 const c = (ch: string, ...a: any[]) => window.sbBridge.call(ch, ...a);
 
 export const api = {
+  call: <T = any,>(ch: string, ...a: any[]): Promise<T> => c(ch, ...a),
   entities: (force = false): Promise<Entity[]> => c('entities', { force }),
   transcript: (id: string): Promise<Message[]> => c('transcript', id),
   prompt: (id: string, text: string, opts: { attach?: Attach[]; includeBrain?: boolean; from?: string } = {}): Promise<string> => c('prompt', id, text, opts),

@@ -21,6 +21,10 @@ interface State {
   auth: Record<string, { phase: string; url?: string; error?: string }>;
   paletteOpen: boolean;
   chiefOpen: boolean;
+  settingsTab: 'accounts' | 'clients' | 'brain' | null; // slide-over settings panel
+  outputsOpen: boolean;
+  chiefMin: boolean;
+  pins: string[];                     // entity ids tagged as context for the next prompt
   set: (p: Partial<State>) => void;
   refresh: (force?: boolean) => Promise<void>;
   boardLoaded: boolean;
@@ -34,7 +38,7 @@ interface State {
 
 export const useStore = create<State>((set, get) => ({
   view: 'board', entities: [], byId: {}, board: [], edges: [], runs: {}, liveByEntity: {}, accounts: [], due: [],
-  boardLoaded: false, inspector: null, selected: [], attach: {}, activeEdges: {}, toast: null, auth: {}, paletteOpen: false, chiefOpen: false,
+  boardLoaded: false, inspector: null, selected: [], attach: {}, activeEdges: {}, toast: null, auth: {}, paletteOpen: false, chiefOpen: false, settingsTab: null, outputsOpen: false, chiefMin: false, pins: [],
   set: (p) => set(p as any),
   refresh: async (force = false) => {
     const [entities, accounts] = await Promise.all([api.entities(force), api.accounts()]);

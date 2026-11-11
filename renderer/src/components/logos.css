@@ -1,0 +1,14 @@
+.lg { flex: none; display: inline-block; vertical-align: middle; }
+.lg-dot { border-radius: 50%; }
+.lg-claude .lg-spin, .lg-codex .lg-spin { transform-origin: center; transform-box: fill-box; }
+.lg-claude.on .lg-spin { animation: lg-claude 2.4s cubic-bezier(.5, 0, .5, 1) infinite; }
+@keyframes lg-claude { 0% { transform: rotate(0) scale(1); } 50% { transform: rotate(90deg) scale(.82); } 100% { transform: rotate(180deg) scale(1); } }
+.lg-codex.on .lg-spin { animation: lg-spin 1.6s linear infinite; }
+@keyframes lg-spin { to { transform: rotate(360deg); } }
+.lg-grok.on .lg-slash { animation: lg-grok 1.1s ease-in-out infinite; transform-origin: 12px 12px; }
+@keyframes lg-grok { 0%, 100% { transform: rotate(0); } 50% { transform: rotate(90deg); } }
+.lg.on .lg-pulse { animation: lg-pulse 1.2s ease-in-out infinite; }
+@keyframes lg-pulse { 50% { opacity: .35; } }
+.lg-granola.on .lg-bar { animation: lg-bar .9s ease-in-out infinite; transform-origin: center; transform-box: fill-box; }
+@keyframes lg-bar { 50% { transform: scaleY(.45); } }
+.lg-dot.on { animation: lg-pulse 1.2s ease-in-out infinite; }

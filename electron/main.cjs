@@ -155,6 +155,10 @@ const handlers = {
   'open:path': (p) => shell.openPath(p),
   'clipboard': (t) => require('electron').clipboard.writeText(t),
 };
+// Feature modules in electron/ext/*.cjs each export { handlers, start? } and plug in here.
+const extDir = path.join(__dirname, 'ext');
+const exts = fs.existsSync(extDir) ? fs.readdirSync(extDir).filter((f) => f.endsWith('.cjs')).sort().map((f) => require(path.join(extDir, f))) : [];
+for (const x of exts) Object.assign(handlers, x.handlers || {});
 for (const [ch, fn] of Object.entries(handlers)) {
   ipcMain.handle('sb:' + ch, async (_e, ...args) => {
     try { return { ok: true, value: await fn(...args) }; } catch (err) { return { ok: false, error: err.message }; }
@@ -179,6 +183,7 @@ app.whenReady().then(() => {
     ]));
   }
   createWindow();
+  for (const x of exts) { try { x.start && x.start({ hub, db, send }); } catch (e) { console.error('ext start', e.message); } }
   setInterval(() => { hub.invalidate(); send({ type: 'entities-changed' }); }, 30000);
   app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 });

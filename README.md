@@ -86,7 +86,7 @@ Import again whenever you like with a newer export. Changed chats are updated an
 The export lists your Projects (name, description, instructions and file names) but not which Project each chat is in. Switchboard works it out:
 
 - A chat that searched a Project's files (claude.ai's project knowledge search names the files it read) goes to that Project.
-- For the rest, Claude reads each chat's title and summary next to your Projects' names, descriptions, instructions and file names, and suggests a Project or none. It runs once after each import on the Claude account you've used least, like topic sorting does. The card says when a Project was "suggested by Claude".
+- For the rest, Claude reads each chat's title and summary next to your Projects' names, descriptions, instructions and file names, and suggests a Project or none. It runs once after each import through one of your Claude accounts (the least used one while Balance usage is on), the same way topic sorting does, and **Sort chats into Projects** in Settings runs it again for chats it hasn't seen. The card says when a Project was "suggested by Claude".
 - You can change any chat's Project on its card, and your choice is never overwritten.
 
 A Project's chats then stay together: as one project on the Chats home and on the board, with older threads too once the Project has work this week. **Show on board** next to a Project in Settings puts its newest chats on the board under it.

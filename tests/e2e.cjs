@@ -962,10 +962,7 @@ async function main() {
     await until(async () => (await pick.count()) === 1 && (await pick.locator('select').inputValue()) === HARBOR, 'its Project is picked');
     assert(/suggested by Claude/.test(await pick.innerText()), 'and says how it was found');
     assert((await insp.locator('button[title="Open in claude.ai"]').count()) === 1, 'a link to the chat on claude.ai');
-    assert((await insp.locator('.insp-foot').count()) === 0, 'read-only: no message box');
-    const runId = await api('prompt', CA.menu, 'Continue please');
-    const run = await until(async () => (await api('runs')).find((r) => r.id === runId && r.status === 'error'), 'a prompt is refused');
-    assert(/read-only/.test(run.error), run.error);
+    assert((await insp.locator('.insp-foot').count()) === 0, 'read-only: no message box (a prompt sent anyway is refused: tests/claudeai-store.test.cjs)');
     await page.locator('.inspector .insp-head button[title="Close"]').click();
   });
   await check('⌘K finds imported chats by what was said in them and by their Project', async () => {

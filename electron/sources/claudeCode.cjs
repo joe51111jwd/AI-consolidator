@@ -463,7 +463,13 @@ function modelName(m) {
 
 // Send a prompt. Resumes `sessionId` when given, otherwise starts a new session in cwd.
 // `model` is one of MODELS (or empty for the account's default); `signal` stops the run.
-async function prompt(account, { sessionId, cwd, text, onText, signal, model, extraArgs = [] }) {
+// Permission modes in which Claude Code still asks before some tools: "Ask first" (default) asks
+// before commands and edits, "Edit files" (acceptEdits) still asks before most commands.
+const ASKING_MODES = new Set(['default', 'acceptEdits']);
+
+// `ask` (from approvals.openRun) sends what Claude would ask in the Claude app to Switchboard
+// instead: Claude Code calls the Switchboard MCP server's approve_tool and waits for the owner.
+async function prompt(account, { sessionId, cwd, text, onText, signal, model, extraArgs = [], ask }) {
   const bin = account.config.bin || which('claude');
   if (!bin) throw new Error('Claude Code (the `claude` command) was not found on this Mac.');
   const args = ['-p', '--output-format', 'stream-json', '--verbose'];
@@ -472,14 +478,16 @@ async function prompt(account, { sessionId, cwd, text, onText, signal, model, ex
   if (mode && mode !== 'default') args.push('--permission-mode', mode);
   const m = modelName(model);
   if (m) args.push('--model', m);
+  const asking = !!ask && ASKING_MODES.has(mode || 'default');
+  if (asking) args.push('--mcp-config', ask.mcpConfig, '--permission-prompt-tool', ask.tool);
   args.push(...extraArgs);
-  const env = childEnv(account);
+  const env = { ...childEnv(account), ...(asking ? ask.env : {}) };
   let acc = '', final = null, newSession = sessionId, usageOut = null;
   const res = await run(bin, args, {
     cwd: cwd && exists(cwd) ? cwd : HOME, env, input: text, signal,
     onLine: (line) => {
       let ev; try { ev = JSON.parse(line); } catch { return; }
-      if (ev.session_id) newSession = ev.session_id;
+      if (ev.session_id) { newSession = ev.session_id; if (asking && ask.onSession) ask.onSession(ev.session_id); }
       if (ev.type === 'assistant' && ev.message) {
         const t = textOf(ev.message.content);
         if (t) { acc += (acc ? '\n\n' : '') + t; onText && onText(acc); }

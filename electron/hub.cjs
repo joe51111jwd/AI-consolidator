@@ -16,9 +16,11 @@ const cursor = require('./sources/cursor.cjs');
 const apiChat = require('./sources/apiChat.cjs');
 const grokbot = require('./sources/grokbot.cjs');
 const claudeDesktop = require('./sources/claudeDesktop.cjs');
+const approvals = require('./approvals.cjs');
 
 const events = new EventEmitter();
 const emit = (e) => events.emit('event', e);
+approvals.events.on('event', emit);
 const BRAIN = path.join(APP_DIR, 'brain.md');
 const runs = new Map();
 let entityCache = { at: 0, list: [] };
@@ -556,7 +558,7 @@ async function dispatch(id, text, onText, opts = {}) {
   const ref = rest.join(':');
   const e = find(id) || { meta: {} };
   const { signal, model } = opts;
-  if (kind === 'cc') { const a = account(accId); const r = await claudeCode.prompt(a, { sessionId: e.meta.sessionId, cwd: e.meta.cwd, text, onText, signal, model }); return { ...r, entityId: `cc:${accId}:${r.sessionId}` }; }
+  if (kind === 'cc') return claudeChat(account(accId), id, { sessionId: e.meta.sessionId, cwd: e.meta.cwd, text, onText, signal, model });
   if (kind === 'cx') { const a = account(accId); return codex.prompt(a, { sessionId: e.meta.sessionId, cwd: e.meta.cwd, text, onText, signal }); }
   if (kind === 'cu') return cursor.prompt(account(accId), { agentId: ref, text });
   if (kind === 'lc') return apiChat.prompt(account(accId), { chatId: ref, text, onText, signal });
@@ -569,7 +571,7 @@ async function dispatch(id, text, onText, opts = {}) {
     if (kind === 'pj') { cwd = id.slice(3); a = pickAccount(['claude-code', 'codex', 'anthropic-api', 'openai-compatible'], { ...pickOpts, cwd }); }
     if (kind === 'cl') { const c = clients().find((x) => x.id === accId); const p = c && c.project_paths[0]; if (p) cwd = p; a = pickAccount(['claude-code', 'anthropic-api', 'openai-compatible'], { ...pickOpts, cwd: p || null }); }
     if (!a) throw new Error('Add a Claude account first');
-    if (a.kind === 'claude-code') { const r = await claudeCode.prompt(a, { cwd, text, onText, signal, model }); return { ...r, entityId: `cc:${a.id}:${r.sessionId}` }; }
+    if (a.kind === 'claude-code') return claudeChat(a, id, { cwd, text, onText, signal, model });
     if (a.kind === 'codex') return codex.prompt(a, { cwd, text, onText, signal });
     if (a.kind === 'anthropic-api' || a.kind === 'openai-compatible') { const r = await apiChat.prompt(a, { text, onText, signal }); return { ...r, entityId: `lc:${a.id}:${r.chatId}` }; }
     if (a.kind === 'grok-bot') return grokAccountSend(text, opts);
@@ -577,6 +579,18 @@ async function dispatch(id, text, onText, opts = {}) {
   }
   if (kind === 'out' || kind === 'nt') throw new Error('Drop this on an agent or chat to send it');
   throw new Error('This card cannot take prompts');
+}
+
+// A Claude chat run from Switchboard (a reply to a chat, or a new chat from an account, folder or
+// client). Whatever Claude would ask permission for in the Claude app is asked on the chat's card
+// instead (electron/approvals.cjs), as long as the run lasts.
+async function claudeChat(a, origin, opts) {
+  if (!a) throw new Error('That Claude account is no longer in Switchboard.');
+  const ask = approvals.openRun({ origin, accountId: a.id });
+  try {
+    const r = await claudeCode.prompt(a, { ...opts, ask });
+    return { ...r, entityId: `cc:${a.id}:${r.sessionId}` };
+  } finally { if (ask) ask.close(); }
 }
 
 // The Grok Bot account card sends to the bot that is selected in the Grok Bot app. Nothing is

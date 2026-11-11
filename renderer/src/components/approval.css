@@ -1,0 +1,62 @@
+/* ---------- a Claude chat asking for your OK (Approval.tsx) ---------- */
+.approval {
+  --ap: #2563EB;
+  display: grid; gap: 8px; padding: 10px 12px; border-radius: 12px; text-align: left; cursor: default;
+  background: #F5F8FF; box-shadow: 0 0 0 1.5px rgba(37, 99, 235, .45), 0 0 0 5px rgba(37, 99, 235, .08);
+  font-size: 12.5px; color: var(--ink); animation: fade-in .18s ease;
+}
+.ap-h { display: flex; align-items: center; gap: 7px; font-weight: 650; color: #1D4ED8; }
+.ap-h svg { flex: none; }
+.ap-what { color: var(--ink-2); line-height: 1.4; overflow-wrap: anywhere; }
+.ap-code, .ap-diff {
+  margin: 0; font-family: ui-monospace, Menlo, monospace; font-size: 11.5px; line-height: 1.5; background: #fff;
+  border-radius: 8px; box-shadow: 0 0 0 1px var(--line); padding: 6px 9px; white-space: pre-wrap; overflow-wrap: anywhere;
+  max-height: 220px; overflow: auto;
+}
+.ap-file { display: flex; align-items: center; gap: 6px; min-width: 0; font-family: ui-monospace, Menlo, monospace; font-size: 11.5px; }
+.ap-path { display: flex; min-width: 0; white-space: nowrap; }
+.ap-dir { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--ink-3); }
+.ap-path b { flex: none; font-weight: 600; }
+.ap-n { flex: none; font-weight: 650; font-variant-numeric: tabular-nums; }
+.ap-n.add { color: var(--green); }
+.ap-n.del { color: var(--red); }
+.ap-diff { padding: 4px 0; white-space: pre; }
+.ap-diff > div { padding: 0 9px 0 0; display: flex; min-width: max-content; }
+.ap-diff i { font-style: normal; width: 18px; flex: none; text-align: center; color: var(--ink-3); user-select: none; }
+.ap-diff .add { background: #EAF6EF; }
+.ap-diff .add i { color: var(--green); }
+.ap-diff .del { background: #FCEDED; }
+.ap-diff .del i { color: var(--red); }
+.ap-diff .more { color: var(--ink-3); padding-left: 18px; font-family: inherit; }
+.ap-acts { display: flex; flex-wrap: wrap; gap: 6px; }
+.ap-btn { height: 28px; padding: 0 11px; border-radius: 8px; font-size: 12px; font-weight: 600; background: #fff; box-shadow: 0 0 0 1px var(--line); color: var(--ink); white-space: nowrap; }
+.ap-btn:hover:not(:disabled) { box-shadow: 0 0 0 1px var(--ink-3); }
+.ap-btn.primary { background: var(--ap); color: #fff; box-shadow: none; }
+.ap-btn.primary:hover:not(:disabled) { background: #1D4ED8; box-shadow: none; }
+.ap-btn.deny { color: var(--red); margin-left: auto; }
+.ap-btn:disabled { opacity: .55; cursor: default; }
+
+/* on a board card: tighter, and the code is clamped */
+.approval.compact { padding: 8px 9px; gap: 6px; font-size: 12px; border-radius: 10px; }
+.approval.compact .ap-code { max-height: 64px; }
+.approval.compact .ap-diff { max-height: 110px; }
+.approval.compact .ap-btn { height: 26px; padding: 0 8px; font-size: 11.5px; }
+/* too narrow for three in a row: Allow once | Deny, then Always allow underneath */
+.approval.compact .ap-acts { display: grid; grid-template-columns: 1fr auto; gap: 4px; }
+.approval.compact .ap-btn.deny { margin-left: 0; }
+.approval.compact .ap-btn.always { order: 3; grid-column: 1 / -1; }
+.ap-more { font-size: 11.5px; color: #1D4ED8; padding: 0 2px; }
+
+/* the line on the card's face while a request waits */
+.board .card.v2 .card-now.ap-now { color: #1D4ED8; font-weight: 600; }
+
+/* above the message box of the open chat */
+.ap-list { display: grid; gap: 10px; max-height: 55vh; overflow-y: auto; padding: 6px 6px 10px; margin: -6px -6px 0; }
+.ap-rules { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; font-size: 11.5px; color: var(--ink-3); }
+.ap-rule { display: inline-flex; align-items: center; gap: 3px; padding: 1px 4px 1px 8px; border-radius: 999px; background: var(--well); color: var(--ink-2); }
+.ap-rule button { display: grid; place-items: center; width: 16px; height: 16px; border-radius: 50%; color: var(--ink-3); }
+.ap-rule button:hover { background: var(--well-2); color: var(--ink); }
+
+/* the to-do row: what it wants to do first; the chat's name gets what room is left */
+.lv-todo-row.ask .lv-todo-t { color: #1D4ED8; flex: 1 1 auto; }
+.lv-todo-row.ask .lv-todo-m { flex: 0 1 auto; max-width: 45%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

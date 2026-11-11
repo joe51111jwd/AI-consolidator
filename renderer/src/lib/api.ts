@@ -20,6 +20,15 @@ export interface Client {
 export interface DueItem { id: string; clientId: string; client: string; kind: 'action' | 'reply' | 'followup'; title: string; due?: number; overdue: boolean; ref: string }
 export interface Usage { h5: number; d1: number; d7: number; out7: number; sessions: number; byModel: Record<string, number> }
 export interface Attach { id?: string; title?: string; text?: string; sourceId?: string }
+// A Claude chat asking to use a tool (electron/approvals.cjs). `chat` is the chat's card; `origin` is
+// the card the prompt was sent to (an account, folder or client for a new chat).
+export interface ApprovalSummary {
+  kind: 'command' | 'edit' | 'write' | 'web' | 'tool'; title: string; line: string;
+  command?: string; file?: string; detail?: string;
+  diff?: { lines: [string, string][]; added: number; removed: number; more: number };
+}
+export interface Approval { id: string; tool: string; chat: string | null; origin: string | null; accountId: string | null; summary: ApprovalSummary; createdAt: number; expiresAt: number }
+export type ApprovalChoice = 'once' | 'always' | 'deny';
 
 declare global {
   interface Window { sbBridge: { call: (ch: string, ...a: any[]) => Promise<any>; onEvent: (fn: (e: any) => void) => () => void; platform: string } }
@@ -73,5 +82,8 @@ export const api = {
   openExternal: (u: string) => c('open:external', u),
   openPath: (p: string) => c('open:path', p),
   copy: (t: string) => c('clipboard', t),
+  approvals: (): Promise<{ approvals: Approval[]; rules: Record<string, string[]> }> => c('approvals'),
+  answerApproval: (id: string, choice: ApprovalChoice, message?: string) => c('approval:answer', id, choice, message),
+  forgetApproval: (chat: string, tool?: string) => c('approval:forget', chat, tool),
   onEvent: (fn: (e: any) => void) => window.sbBridge.onEvent(fn),
 };

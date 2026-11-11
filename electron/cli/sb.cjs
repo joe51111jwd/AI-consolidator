@@ -30,6 +30,30 @@ async function call(method, route, body) {
   return j;
 }
 
+// A POST that may wait minutes for the answer (an approval). fetch gives up after 5 minutes without
+// response headers, so this uses a plain request with no time limit; the app answers or times out.
+function callAndWait(route, body) {
+  const { token, port } = conf();
+  const data = JSON.stringify(body);
+  return new Promise((resolve, reject) => {
+    const req = require('http').request({
+      host: '127.0.0.1', port: Number(port), path: route, method: 'POST',
+      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json', 'content-length': Buffer.byteLength(data) },
+    }, (res) => {
+      let s = '';
+      res.setEncoding('utf8');
+      res.on('data', (c) => { s += c; });
+      res.on('end', () => {
+        let j; try { j = JSON.parse(s); } catch { return reject(new Error(`bad reply (HTTP ${res.statusCode})`)); }
+        if (res.statusCode >= 300) return reject(new Error(j.error || `HTTP ${res.statusCode}`));
+        resolve(j);
+      });
+    });
+    req.on('error', reject);
+    req.end(data);
+  });
+}
+
 function flag(args, name) { const i = args.indexOf(name); if (i < 0) return null; const v = args[i + 1]; args.splice(i, 2); return v; }
 function bool(args, name) { const i = args.indexOf(name); if (i < 0) return false; args.splice(i, 1); return true; }
 
@@ -61,6 +85,22 @@ async function mcp() {
     { instruction: z.string().describe("The user's grouping rule") },
     async ({ instruction }) => { await call('POST', '/group', { instruction }); return text(`Regrouping the board: ${instruction}`); });
   server.tool('whats_due', 'List what is due for clients (CRM, email and meetings).', {}, async () => text(await call('GET', '/due')));
+  // Claude Code's --permission-prompt-tool: it calls this itself when a tool needs the user's OK,
+  // and Switchboard shows the request on the chat's card until the owner answers (up to 10 minutes).
+  // The reply is the JSON Claude Code expects: {"behavior":"allow","updatedInput":{...}} or
+  // {"behavior":"deny","message":"..."}.
+  server.tool('approve_tool',
+    "Switchboard's permission prompt. Claude Code calls this on its own (--permission-prompt-tool) to ask the owner whether a tool may run. Don't call it yourself.",
+    { tool_name: z.string(), input: z.any().optional(), tool_use_id: z.string().optional() },
+    async ({ tool_name, input, tool_use_id }) => {
+      const asked = input && typeof input === 'object' ? input : {};
+      let r;
+      try { r = await callAndWait('/approve', { ask: process.env.SB_ASK || null, from, tool_name, input: asked, tool_use_id }); }
+      catch (e) { r = { behavior: 'deny', message: `Couldn't ask the owner in Switchboard (${e.message}), so this did not run.` }; }
+      if (!r || (r.behavior !== 'allow' && r.behavior !== 'deny')) r = { behavior: 'deny', message: 'Switchboard gave no answer, so this did not run.' };
+      if (r.behavior === 'allow' && !r.updatedInput) r.updatedInput = asked;
+      return { content: [{ type: 'text', text: JSON.stringify(r) }] };
+    });
   await server.connect(new StdioServerTransport());
 }
 

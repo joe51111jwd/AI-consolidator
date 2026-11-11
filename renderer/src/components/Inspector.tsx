@@ -7,6 +7,7 @@ import { dragOutput } from '../nodes/nodes';
 import { AgentLogo } from './Logos';
 import Composer from './Composer';
 import FullChat from './FullChat';
+import { ChatApprovals } from './Approval';
 import './panels.css';
 
 type Who = { key: string; name: string; source?: string; color?: string; you?: boolean };
@@ -257,10 +258,12 @@ export default function Inspector() {
   const latestPlan = (() => { for (let k = items.length - 1; k >= 0; k--) if (items[k].kind === 'plan') return (items[k] as any).plan as { content: string; status: string }[]; return null; })();
 
   const subs = Array.isArray(e.meta?.subagents) ? e.meta.subagents : [];
-  const composer = PROMPTABLE(id) ? (
+  // What the chat is waiting for your OK on sits right above the message box.
+  const composer = PROMPTABLE(id) ? (<>
+    <ChatApprovals id={id} />
     <Composer key={id} id={id} multiline autoFocus placeholder={e.kind === 'account' ? 'Start a new session…' : 'Message…'}
       onSent={(t) => setEcho({ id: `echo:${Date.now()}`, role: 'user', text: t, ts: Date.now() })} />
-  ) : null;
+  </>) : null;
   const sendMenuEl = sendMenu && (
     <div className="menu pn-menu" style={{ position: 'fixed', zIndex: 60, left: Math.min(sendMenu.x, window.innerWidth - 280), top: Math.min(sendMenu.y, window.innerHeight - 400) }} onMouseLeave={() => setSendMenu(null)}>
       <div className="hint">Attach to…</div>

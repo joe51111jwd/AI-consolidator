@@ -40,11 +40,13 @@ async function mcp() {
   const from = process.env.SB_FROM || 'mcp';
   const server = new McpServer({ name: 'switchboard', version: '1.0.0' });
   const text = (t) => ({ content: [{ type: 'text', text: typeof t === 'string' ? t : JSON.stringify(t, null, 2) }] });
-  server.tool('list_cards', 'List every card on the Switchboard board (agents, sessions, projects, clients, outputs).', {}, async () => text(await call('GET', '/cards')));
+  server.tool('list_cards', 'List every card on the Switchboard board (agents, sessions, projects, clients, outputs), to see what else is going on and who can help.', {}, async () => text(await call('GET', '/cards')));
   server.tool('read_card', 'Read the latest messages of a card by id or title.', { card: z.string(), n: z.number().optional() }, async ({ card, n }) => text(await call('GET', `/card?id=${encodeURIComponent(card)}&n=${n || 20}`)));
   server.tool('send_to_card', 'Send a prompt to another agent or chat card. Set wait to get its reply.', { card: z.string(), text: z.string(), wait: z.boolean().optional() }, async ({ card, text: t, wait }) => text(await call('POST', '/send', { to: card, text: t, from, wait: !!wait })));
-  server.tool('read_brain', 'Read the shared brain: notes every agent on this Mac can see.', {}, async () => text((await call('GET', '/brain')).text || '(empty)'));
-  server.tool('add_to_brain', 'Add a note to the shared brain.', { text: z.string() }, async ({ text: t }) => { await call('POST', '/brain', { text: t, from }); return text('Added.'); });
+  server.tool('read_brain', "Read the shared brain: the user's notes and facts that every agent on this Mac shares (clients, preferences, decisions, how things are set up). Read it at the start of a task so you don't ask for what is already known.", {}, async () => text((await call('GET', '/brain')).text || '(empty)'));
+  server.tool('add_to_brain',
+    "Add a fact to the shared brain so every other agent knows it too. Do this on your own, without being asked, whenever you learn something durable and useful: a user preference, a client detail or deadline, a decision and why, where something lives, a command that works, a gotcha you hit. One or two short sentences per note. Never add secrets, passwords or keys.",
+    { text: z.string().describe('The fact, one or two short sentences') }, async ({ text: t }) => { await call('POST', '/brain', { text: t, from }); return text('Added to the shared brain.'); });
   server.tool('post_output', 'Put a finished output (report, draft, code) on the board as its own card.', { title: z.string(), text: z.string() }, async ({ title, text: t }) => text(await call('POST', '/output', { title, text: t, from })));
   server.tool('make_board',
     "Draw on the user's Switchboard whiteboard: short notes joined by labelled arrows, inside a titled frame, laid out left to right. Use it whenever a picture says more than text: a plan of steps, an architecture, how agents or services connect, a decision tree, a timeline, a summary of options. The user sees it on their board at once. Keep each note to a few words or two short lines, and give every note an id the edges can point to.",

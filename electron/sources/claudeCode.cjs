@@ -6,6 +6,7 @@ const fs = require('fs');
 const path = require('path');
 const { HOME, APP_DIR, expand, exists, readJsonl, walk, truncate, run, which } = require('../util.cjs');
 const classify = require('./classify.cjs');
+const claudeDesktop = require('./claudeDesktop.cjs');
 
 const realDir = (p) => { try { return fs.realpathSync(p); } catch { return path.resolve(p); } };
 const cache = new Map(); // file -> { mtimeMs, size, parsed }
@@ -61,10 +62,14 @@ function parseSession(file) {
   }
   const firstUser = messages.find((m) => m.role === 'user');
   const lastText = [...messages].reverse().find((m) => m.kind !== 'tool');
+  // The card shows the newest reply, not the user's own prompt or an old summary.
+  const lastReply = [...messages].reverse().find((m) => m.kind !== 'tool' && m.role === 'assistant');
+  const shown = lastReply || lastText;
   const parsed = {
     sessionId, cwd, gitBranch, messages, usage,
-    title: truncate(summary || (firstUser && firstUser.text) || 'Untitled session', 80),
-    preview: lastText ? truncate(lastText.text, 220) : '',
+    title: truncate((firstUser && firstUser.text) || summary || 'Untitled session', 80),
+    preview: shown ? truncate(shown.text, 220) : '',
+    previewAt: shown ? shown.ts : null,
     lastRole: lastText ? lastText.role : null,
     updatedAt: st.mtimeMs,
   };
@@ -72,29 +77,50 @@ function parseSession(file) {
   return parsed;
 }
 
+// Subagent and workflow side-threads are never cards, so skip them before parsing.
+const SIDE = /[/\\](subagents|workflows)[/\\]/;
 function sessionFiles(account, days = 21) {
   const dir = path.join(configDir(account), 'projects');
-  return walk(dir, (n) => n.endsWith('.jsonl'), Date.now() - days * DAY);
+  return walk(dir, (n) => n.endsWith('.jsonl'), days == null ? 0 : Date.now() - days * DAY).filter((f) => !SIDE.test(f.path));
+}
+
+// One session file as a card, or null when it has nothing to show.
+function entityFor(account, file) {
+  let s;
+  try { s = parseSession(file); } catch { return null; }
+  if (!s.messages.length) return null;
+  // The overall agent runs Claude Code inside ~/.switchboard; those runs are not cards of their own.
+  if (s.cwd && realDir(s.cwd) === realDir(APP_DIR)) return null;
+  const app = claudeDesktop.titleFor(s.sessionId);
+  return {
+    id: `cc:${account.id}:${s.sessionId}`,
+    kind: 'session', source: 'claude-code', accountId: account.id,
+    title: (app && app.title) || s.title, preview: s.preview, updatedAt: s.updatedAt,
+    status: Date.now() - s.updatedAt < 45000 ? 'running' : (s.lastRole === 'assistant' ? 'idle' : 'waiting'),
+    meta: { cwd: s.cwd, gitBranch: s.gitBranch, file, sessionId: s.sessionId, messages: s.messages.length, category: classify.category(s.cwd, s.gitBranch), noise: classify.isNoise(s.cwd), archived: !!(app && app.archived), previewAt: s.previewAt },
+  };
 }
 
 function list(account, { days = 21, max = 60 } = {}) {
   const files = sessionFiles(account, days).sort((a, b) => b.mtimeMs - a.mtimeMs).slice(0, max);
-  const out = [];
-  for (const f of files) {
-    let s;
-    try { s = parseSession(f.path); } catch { continue; }
-    if (!s.messages.length) continue;
-    // The overall agent runs Claude Code inside ~/.switchboard; those runs are not cards of their own.
-    if (s.cwd && realDir(s.cwd) === realDir(APP_DIR)) continue;
-    out.push({
-      id: `cc:${account.id}:${s.sessionId}`,
-      kind: 'session', source: 'claude-code', accountId: account.id,
-      title: s.title, preview: s.preview, updatedAt: s.updatedAt,
-      status: Date.now() - s.updatedAt < 45000 ? 'running' : (s.lastRole === 'assistant' ? 'idle' : 'waiting'),
-      meta: { cwd: s.cwd, gitBranch: s.gitBranch, file: f.path, sessionId: s.sessionId, messages: s.messages.length, category: classify.category(s.cwd, s.gitBranch), noise: classify.isNoise(s.cwd) },
-    });
-  }
-  return out;
+  return files.map((f) => entityFor(account, f.path)).filter(Boolean);
+}
+
+// Agent (Cowork) sessions from the Claude desktop app, read-only, as 'claude-app' cards.
+function desktopEntity(d) {
+  if (!d.file) return null;
+  let s; try { s = parseSession(d.file); } catch { return null; }
+  if (!s.messages.length) return null;
+  return {
+    id: d.id, kind: 'session', source: 'claude-app', accountId: null,
+    title: d.title || s.title || truncate(d.initialMessage, 80) || 'Claude app session', preview: s.preview, updatedAt: d.updatedAt || s.updatedAt,
+    status: Date.now() - s.updatedAt < 45000 ? 'running' : 'idle',
+    meta: { cwd: d.cwd || s.cwd, file: d.file, sessionId: s.sessionId, messages: s.messages.length, category: classify.category(d.cwd || s.cwd, null), noise: false, archived: d.archived, readOnly: true, appAccount: `${d.acct.slice(0, 8)}/${d.org.slice(0, 8)}` },
+  };
+}
+function desktopList({ days = 21 } = {}) {
+  const since = days == null ? 0 : Date.now() - days * DAY;
+  return claudeDesktop.agentSessions().filter((d) => d.updatedAt >= since).map(desktopEntity).filter(Boolean);
 }
 
 function transcript(account, file) {
@@ -234,4 +260,4 @@ async function prompt(account, { sessionId, cwd, text, onText, signal, extraArgs
   return { text: final || acc, sessionId: newSession, usage: usageOut };
 }
 
-module.exports = { list, transcript, usage, detect, prompt, configDir, childEnv, authStatus, login, logout };
+module.exports = { list, entityFor, sessionFiles, desktopList, desktopEntity, parseSession, transcript, usage, detect, prompt, configDir, childEnv, authStatus, login, logout };

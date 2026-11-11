@@ -5,7 +5,6 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { EventEmitter } = require('events');
-const { clipboard, shell } = require('electron');
 const db = require('./db.cjs');
 const secrets = require('./secrets.cjs');
 const { APP_DIR, HOME, exists, truncate, uid, run, which } = require('./util.cjs');
@@ -15,6 +14,7 @@ const granola = require('./sources/granola.cjs');
 const gmail = require('./sources/gmail.cjs');
 const cursor = require('./sources/cursor.cjs');
 const apiChat = require('./sources/apiChat.cjs');
+const grokbot = require('./sources/grokbot.cjs');
 
 const events = new EventEmitter();
 const emit = (e) => events.emit('event', e);
@@ -133,6 +133,7 @@ async function sourceList(a) {
       case 'gmail': return await gmail.list(a);
       case 'cursor': return await cursor.list(a);
       case 'anthropic-api': case 'openai-compatible': return apiChat.listChats(a);
+      case 'grok-bot': return grokbot.list(a);
       default: return [];
     }
   } catch (e) {
@@ -190,6 +191,8 @@ async function entities({ force = false } = {}) {
       }
     }
   });
+  // Agent sessions from the Claude desktop app (read-only), recent ones only; History has the rest.
+  if (db.getSetting('claudeAppSessions', true) !== false) { try { list.push(...claudeCode.desktopList()); } catch {} }
   for (const [cwd, p] of projects) {
     list.push({ id: `pj:${cwd}`, kind: 'project', source: 'project', title: path.basename(cwd), preview: cwd.replace(HOME, '~'), updatedAt: p.updatedAt, status: 'idle', meta: { cwd, sessions: p.sessions, branches: gitBranches(cwd) } });
   }
@@ -206,7 +209,16 @@ async function entities({ force = false } = {}) {
   return list;
 }
 
-function find(id) { return entityCache.list.find((e) => e.id === id); }
+// Cards that aren't in the current list (older sessions opened from History or ⌘K) are looked up
+// by finders that feature modules register.
+const finders = [];
+function addFinder(fn) { finders.push(fn); }
+function find(id) {
+  const hit = entityCache.list.find((e) => e.id === id);
+  if (hit) return hit;
+  for (const f of finders) { try { const e = f(id); if (e) return e; } catch {} }
+  return undefined;
+}
 
 // ---------- transcripts ----------
 async function transcriptFor(id) {
@@ -215,8 +227,10 @@ async function transcriptFor(id) {
   const a = account(accId);
   const e = find(id);
   switch (kind) {
-    case 'cc': return claudeCode.transcript(a, e.meta.file);
-    case 'cx': return codex.transcript(a, e.meta.file);
+    case 'cc': if (!e) throw new Error('Session not found'); return claudeCode.transcript(a, e.meta.file);
+    case 'cd': if (!e) throw new Error('Session not found'); return claudeCode.transcript(null, e.meta.file);
+    case 'gb': return grokbot.transcript(ref);
+    case 'cx': if (!e) throw new Error('Session not found'); return codex.transcript(a, e.meta.file);
     case 'gr': return granola.transcript(a, ref);
     case 'gm': return gmail.transcript(a, ref);
     case 'cu': return cursor.transcript(a, ref);
@@ -275,10 +289,28 @@ function saveEdge(e) {
 function deleteEdge(id) { db.exec('DELETE FROM edges WHERE id = ?', id); }
 
 // ---------- prompting ----------
-// Picks the account for new work: the first kind in the list that you have (so Claude accounts
-// come before Codex or API keys), and with "split usage" on, the one that has used the least
-// in the last 5 hours.
-function pickAccount(kinds = ['claude-code']) {
+// Picks the account for new work, in this order: the account asked for (opts.accountId); the
+// account dedicated to the folder (setting accountForPath, longest matching folder wins) or to the
+// board group (accountForGroup); then the first kind in the list that you have (so Claude accounts
+// come before Codex or API keys), and with "split usage" on, the one that has used the least in
+// the last 5 hours.
+function dedicatedAccount(kinds, { accountId, cwd, group } = {}) {
+  const ok = (id) => { const a = id && account(id); return a && kinds.includes(a.kind) ? a : null; };
+  if (ok(accountId)) return ok(accountId);
+  if (cwd) {
+    const map = db.getSetting('accountForPath', {}) || {};
+    const norm = (p) => path.resolve(String(p).replace(/^~(?=$|\/)/, HOME)).replace(/\/+$/, '');
+    const dir = norm(cwd);
+    const best = Object.keys(map).map((k) => ({ k, p: norm(k) })).filter(({ p }) => dir === p || dir.startsWith(p + '/'))
+      .sort((x, y) => y.p.length - x.p.length).map(({ k }) => ok(map[k])).find(Boolean);
+    if (best) return best;
+  }
+  if (group) { const g = db.getSetting('accountForGroup', {}) || {}; if (ok(g[group])) return ok(g[group]); }
+  return null;
+}
+function pickAccount(kinds = ['claude-code'], opts = {}) {
+  const dedicated = dedicatedAccount(kinds, opts);
+  if (dedicated) return dedicated;
   const all = accounts();
   const kind = kinds.find((k) => all.some((a) => a.kind === k));
   const cands = all.filter((a) => a.kind === kind);
@@ -322,7 +354,7 @@ function prompt(id, text, opts = {}) {
     const full = await buildText(text, opts);
     const onText = (t) => { const r = runs.get(runId); r.text = t; emit({ type: 'run', run: r }); };
     let res;
-    try { res = await dispatch(id, full, onText); } catch (err) { runEnded([id], ''); throw err; }
+    try { res = await dispatch(id, full, onText, opts); } catch (err) { runEnded([id], ''); throw err; }
     const r = runs.get(runId); r.text = res.text || r.text; r.status = 'done'; r.result = res;
     emit({ type: 'run', run: r });
     invalidate(); emit({ type: 'entities-changed' });
@@ -346,7 +378,7 @@ const PROMPTABLE = new Set(['claude-code', 'codex', 'anthropic-api', 'openai-com
 function canTakePrompt(id) {
   const [kind, accId] = id.split(':');
   if (kind === 'ac') { const a = account(accId); return !!a && PROMPTABLE.has(a.kind); }
-  return ['cc', 'cx', 'cu', 'lc', 'pj', 'cl'].includes(kind);
+  return ['cc', 'cx', 'cu', 'lc', 'pj', 'cl', 'gb'].includes(kind);
 }
 function autoEdgesFrom(ids) { return edges().filter((e) => ids.includes(e.source) && e.kind === 'link' && e.data.autoForward); }
 
@@ -417,7 +449,7 @@ async function checkFinished() {
   return n;
 }
 
-async function dispatch(id, text, onText) {
+async function dispatch(id, text, onText, opts = {}) {
   const [kind, accId, ...rest] = id.split(':');
   const ref = rest.join(':');
   const e = find(id) || { meta: {} };
@@ -425,28 +457,34 @@ async function dispatch(id, text, onText) {
   if (kind === 'cx') { const a = account(accId); return codex.prompt(a, { sessionId: e.meta.sessionId, cwd: e.meta.cwd, text, onText }); }
   if (kind === 'cu') return cursor.prompt(account(accId), { agentId: ref, text });
   if (kind === 'lc') return apiChat.prompt(account(accId), { chatId: ref, text, onText });
+  if (kind === 'gb') return grokbot.send(ref, text, { prefillOnly: opts.prefillOnly });
+  if (kind === 'cd') throw new Error('Claude app sessions are read-only here. Open them in the Claude app.');
   if (kind === 'pj' || kind === 'ac' || kind === 'cl') {
     let a, cwd = HOME;
     if (kind === 'ac') a = account(accId);
-    if (kind === 'pj') { cwd = id.slice(3); a = pickAccount(['claude-code', 'codex', 'anthropic-api', 'openai-compatible']); }
-    if (kind === 'cl') { const c = clients().find((x) => x.id === accId); const p = c && c.project_paths[0]; if (p) cwd = p; a = pickAccount(['claude-code', 'anthropic-api', 'openai-compatible']); }
+    const pickOpts = { accountId: opts.accountId, group: opts.group };
+    if (kind === 'pj') { cwd = id.slice(3); a = pickAccount(['claude-code', 'codex', 'anthropic-api', 'openai-compatible'], { ...pickOpts, cwd }); }
+    if (kind === 'cl') { const c = clients().find((x) => x.id === accId); const p = c && c.project_paths[0]; if (p) cwd = p; a = pickAccount(['claude-code', 'anthropic-api', 'openai-compatible'], { ...pickOpts, cwd: p || null }); }
     if (!a) throw new Error('Add a Claude account first');
     if (a.kind === 'claude-code') { const r = await claudeCode.prompt(a, { cwd, text, onText }); return { ...r, entityId: `cc:${a.id}:${r.sessionId}` }; }
     if (a.kind === 'codex') return codex.prompt(a, { cwd, text, onText });
     if (a.kind === 'anthropic-api' || a.kind === 'openai-compatible') { const r = await apiChat.prompt(a, { text, onText }); return { ...r, entityId: `lc:${a.id}:${r.chatId}` }; }
-    if (a.kind === 'grok-bot') return grokHandoff(text);
+    if (a.kind === 'grok-bot') return grokAccountSend(text, opts);
     throw new Error(`${a.label} can't take prompts`);
   }
   if (kind === 'out' || kind === 'nt') throw new Error('Drop this on an agent or chat to send it');
   throw new Error('This card cannot take prompts');
 }
 
-// Grok Bot has no public API, so "sending" copies the text and opens the Grok Bot app.
-function grokHandoff(text) {
-  clipboard.writeText(text);
-  const appName = db.getSetting('grokAppName', 'Grok Bot');
-  if (process.platform === 'darwin') run('open', ['-a', appName]).catch(() => {});
-  return { text: `Copied to your clipboard and opened ${appName}. Paste it there. Replies Grok Bot sends back through the \`sb\` command show up here.` };
+// The Grok Bot account card sends to the bot that is selected in the Grok Bot app. Nothing is
+// copied to the clipboard: if it can't send, it says so and the card offers "Open in Grok Bot".
+async function grokAccountSend(text, opts = {}) {
+  if (!grokbot.enabled()) throw new Error('The Grok Bot connection is off. Turn it on in Accounts.');
+  const st = grokbot.status();
+  if (!st.installed) throw new Error("Grok Bot isn't installed on this Mac, so nothing was sent.");
+  const agentId = grokbot.selectedAgent();
+  if (!agentId) throw new Error("Couldn't tell which Grok bot to send to. Send from that bot's own card, or open Grok Bot and pick the bot first.");
+  return grokbot.send(agentId, text, { prefillOnly: opts.prefillOnly });
 }
 
 // ---------- diagrams agents draw on the board ----------
@@ -729,7 +767,7 @@ module.exports = {
   prompt, runs, recordFlow, flowsFor, edges, saveEdge, deleteEdge, forwardFinished, makeBoard, quickAsk,
   brain, setBrain, appendBrain, saveOutput, saveNote, deleteEntity,
   board, saveBoard, deleteBoardNodes,
-  clients, saveClient, due, suggestions, usageSummary, chief, chiefHistory, pickAccount,
+  clients, saveClient, due, suggestions, usageSummary, chief, chiefHistory, pickAccount, addFinder,
   gmailConnect: (id) => gmail.connect(account(id)).then((email) => { const a = account(id); a.config.email = email; saveAccount(a); return email; }),
   BRAIN,
 };

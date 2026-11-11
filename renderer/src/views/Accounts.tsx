@@ -10,7 +10,7 @@ const KINDS: Kind[] = [
   { kind: 'claude-code', label: 'Claude account', blurb: 'Your Claude login, through Claude Code.' },
   { kind: 'gmail', label: 'Gmail', blurb: 'Read-only, with Google sign-in.' },
   { kind: 'granola', label: 'Granola', blurb: 'Meeting notes on this Mac.' },
-  { kind: 'grok-bot', label: 'Grok Bot', blurb: 'Reaches your agents through sb.' },
+  { kind: 'grok-bot', label: 'Grok Bot', blurb: 'Your Grok bots and their chats, from the app.' },
 ];
 // Key-based and rarely used sources stay out of the way.
 const ADVANCED: Kind[] = [
@@ -90,6 +90,32 @@ function ClaudeSignIn({ a, all }: { a: Account; all: Account[] }) {
   );
 }
 
+// Folders this Claude account is dedicated to: new work started in them always uses it.
+function Dedicated({ a, map, onChange }: { a: Account; map: Record<string, string>; onChange: (m: Record<string, string>) => void }) {
+  const [dir, setDir] = useState('');
+  const mine = Object.entries(map).filter(([, id]) => id === a.id).map(([p]) => p);
+  const add = () => {
+    const p = dir.trim().replace(/\/+$/, '');
+    if (!p) return;
+    onChange({ ...map, [p]: a.id }); setDir('');
+  };
+  const remove = (p: string) => { const m = { ...map }; delete m[p]; onChange(m); };
+  return (
+    <div className="dedicated" data-testid={`dedicated-${a.id}`}>
+      <div className="hint">Dedicated to {mine.length ? '' : 'no folders yet. New work in a folder added here always uses this account.'}</div>
+      {mine.length > 0 && <div className="chips">{mine.map((p) => (
+        <span key={p} className="chip mono" title={p}>{p}<button className="icon-btn" aria-label={`Remove ${p}`} onClick={() => remove(p)}><X size={11} /></button></span>
+      ))}</div>}
+      <div style={{ display: 'flex', gap: 6 }}>
+        <input className="mono" style={{ flex: 1, minWidth: 0 }} placeholder="~/Projects/client-site" value={dir} onChange={(e) => setDir(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') add(); }} />
+        <button className="btn" disabled={!dir.trim()} onClick={add}><Plus size={13} />Add folder</button>
+      </div>
+    </div>
+  );
+}
+
+type GrokStatus = { enabled: boolean; installed: boolean; running: boolean; signedIn: boolean; bots: number; cache: boolean };
+
 function KindButton({ k, onPick }: { k: Kind; onPick: (k: Kind) => void }) {
   return (
     <button className="due-item" onClick={() => onPick(k)}>
@@ -108,13 +134,29 @@ export default function Accounts() {
   const [edit, setEdit] = useState<any | null>(null);
   const [advanced, setAdvanced] = useState(false);
   const [split, setSplit] = useState(true);
-  const [mcp, setMcp] = useState<{ sb: string; results: string[] } | null>(null);
+  const [tools, setTools] = useState<{ on: boolean; results: string[] } | null>(null);
+  const [toolsBusy, setToolsBusy] = useState(false);
+  const [grok, setGrok] = useState<GrokStatus | null>(null);
+  const [grokAuto, setGrokAuto] = useState(true);
+  const [dedicated, setDedicated] = useState<Record<string, string>>({});
   const [detected, setDetected] = useState<string[]>([]);
   const [gmailBusy, setGmailBusy] = useState<string | null>(null);
   const [confirmDel, setConfirmDel] = useState<string | null>(null);
   const [bus, setBus] = useState<{ tokenFile: string; port: string | null } | null>(null);
   const sbPath = '~/.switchboard/bin/sb';
-  useEffect(() => { useStore.getState().refresh(true); api.getSetting('splitUsage', true).then(setSplit); api.detect().then((d) => setDetected(d.claude)); api.busInfo().then(setBus); }, []);
+  useEffect(() => { useStore.getState().refresh(true); api.getSetting('splitUsage', true).then(setSplit); api.detect().then((d) => setDetected(d.claude)); api.busInfo().then(setBus);
+    api.call('agentTools:get').then(setTools).catch(() => {});
+    api.call('grokbot:status').then(setGrok).catch(() => {});
+    api.getSetting('grokAutoSend', true).then(setGrokAuto);
+    api.getSetting<Record<string, string>>('accountForPath', {}).then((m) => setDedicated(m || {}));
+  }, []);
+  const saveDedicated = (m: Record<string, string>) => { setDedicated(m); api.setSetting('accountForPath', m); };
+  const setAgentTools = async (on: boolean) => {
+    setToolsBusy(true); setTools((t) => ({ results: [], ...t, on }));
+    try { setTools(await api.call('agentTools:set', on)); } catch (e: any) { notify(e.message); }
+    setToolsBusy(false);
+  };
+  const setGrokOn = async (on: boolean) => { try { setGrok(await api.call('grokbot:setEnabled', on)); refresh(); } catch (e: any) { notify(e.message); } };
   const refresh = () => useStore.getState().refresh(true);
 
   const save = async () => {
@@ -157,6 +199,10 @@ export default function Accounts() {
               </div>
               {u && <div className="stats"><span><b>{tokens(u.h5)}</b> 5 hr</span><span><b>{tokens(u.d1)}</b> today</span><span><b>{tokens(u.d7)}</b> 7 days</span></div>}
               {a.kind === 'claude-code' && <ClaudeSignIn a={a} all={accounts} />}
+              {a.kind === 'claude-code' && <Dedicated a={a} map={dedicated} onChange={saveDedicated} />}
+              {a.kind === 'grok-bot' && grok && (
+                <div className="hint">{!grok.installed ? 'Grok Bot app not found on this Mac.' : !grok.enabled ? 'Connection off.' : `${grok.bots} bot${grok.bots === 1 ? '' : 's'} · ${grok.running ? (grok.signedIn ? 'app running' : 'app running, not signed in') : 'app closed (showing last sync)'}`}</div>
+              )}
               {a.secrets && Object.keys(a.secrets).length > 0 && (
                 <div className="chips">{Object.entries(a.secrets).map(([k, v]) => <span key={k} className={`chip ${v ? 'green' : 'amber'}`}>{v ? <Check size={11} /> : <KeyRound size={11} />}{k === 'refresh' ? (v ? 'Signed in' : 'Not signed in') : k.replace('_', ' ')}</span>)}</div>
               )}
@@ -171,19 +217,30 @@ export default function Accounts() {
 
       <div className="panel">
         <div className="panel-h">Connections</div>
-        <div className="set-row" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 8 }}>
-          <div className="txt"><b>Agent tools</b><span className="hint">Lets every session see and message your other cards.</span></div>
-          <div><button className="btn" onClick={async () => { try { setMcp(await api.installMcp()); } catch (e: any) { notify(e.message); } }}>Add Switchboard tools to my agents</button></div>
-          {mcp && <div className="well">{mcp.results.map((r) => <div key={r}>{r}</div>)}{!mcp.results.length && 'No agent accounts yet.'}</div>}
-        </div>
         <div className="set-row">
-          <div className="txt"><b>Grok Bot</b><span className="hint">Turn on Execution on this computer in Grok Bot, then paste the note once. It asks first.</span></div>
-          <button className="btn" onClick={() => { api.copy(grokText(sbPath)); notify('Copied'); }}><Copy size={13} />Copy note for Grok Bot</button>
+          <div className="txt"><b>Let agents use Switchboard</b><span className="hint">Your Claude and Codex agents can see your cards, send each other work and add to the shared brain. Set up automatically.</span></div>
+          <Toggle label="Let agents use Switchboard" on={tools ? tools.on : true} onChange={(v) => { if (!toolsBusy) setAgentTools(v); }} />
         </div>
+        {tools && tools.results.length > 0 && <div className="well" data-testid="agent-tools-results">{tools.results.map((r) => <div key={r}>{r}</div>)}</div>}
         <div className="set-row">
-          <div className="txt"><b>Balance usage</b><span className="hint">Start new work on the least-used Claude account.</span></div>
+          <div className="txt"><b>Grok Bot</b><span className="hint">Shows your Grok bots and their chats from the Grok Bot app, and sends prompts straight to a bot.</span></div>
+          <Toggle label="Connect Grok Bot" on={grok ? grok.enabled : true} onChange={setGrokOn} />
+        </div>
+        {(!grok || grok.enabled) && (
+          <div className="set-row">
+            <div className="txt"><b>Press Return for me</b><span className="hint">Off: the message waits in the bot's box for you to send. On: Switchboard sends it (macOS asks once for Accessibility permission).</span></div>
+            <Toggle label="Press Return for me" on={grokAuto} onChange={(v) => { setGrokAuto(v); api.setSetting('grokAutoSend', v); }} />
+          </div>
+        )}
+        <div className="set-row">
+          <div className="txt"><b>Balance usage</b><span className="hint">On: new work goes to the Claude account used least in the last 5 hours. Off: the first account. Dedicated folders always win.</span></div>
           <Toggle label="Balance usage" on={split} onChange={(v) => { setSplit(v); api.setSetting('splitUsage', v); }} />
         </div>
+        <details className="more">
+          <summary>Let a Grok bot message your other agents (optional)</summary>
+          <p className="hint">Needs "Execution on this computer" on in Grok Bot. Paste this into the bot once.</p>
+          <button className="btn" onClick={() => { api.copy(grokText(sbPath)); notify('Copied'); }}><Copy size={13} />Copy note for Grok Bot</button>
+        </details>
         <details className="more">
           <summary>The sb command</summary>
           <div className="well mono" style={{ whiteSpace: 'pre-wrap', lineHeight: 1.6 }}>{`${sbPath} cards\n${sbPath} send "client-site" "Fix the footer" --wait\n${sbPath} board "Plan" --json '{"nodes":[...],"edges":[...]}'\n${sbPath} brain append "Client wants Friday delivery"`}</div>
@@ -224,7 +281,7 @@ export default function Accounts() {
                   <div className="field"><label>Google OAuth client ID {edit.secrets?.client_id ? '(saved)' : ''}</label><input value={edit.secretsIn.client_id || ''} onChange={secret('client_id')} /></div>
                   <div className="field"><label>Client secret</label><input type="password" value={edit.secretsIn.client_secret || ''} onChange={secret('client_secret')} /><span className="hint">A Desktop-app client with the Gmail API on (steps in the README). Then Sign in with Google.</span></div>
                 </>)}
-                {edit.kind === 'grok-bot' && <p className="hint">No public API. Prompts are copied and Grok Bot opens so you can paste them.</p>}
+                {edit.kind === 'grok-bot' && <p className="hint">Reads your bots from the Grok Bot app on this Mac. Messages go straight into the bot you send to.</p>}
                 <div style={{ display: 'flex', gap: 8 }}><button className="btn primary" onClick={save}>Save</button>{!edit.id && <button className="btn" onClick={() => setEdit({ ...edit, kind: '' })}>Back</button>}</div>
               </div>
             )}

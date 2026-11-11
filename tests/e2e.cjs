@@ -228,8 +228,9 @@ function grokSeed() {
 const GB = { mkt: 'gb:a_grok:bot_mkt', cal: 'gb:a_grok:bot_cal' };
 const opened = () => { try { return fs.readFileSync(OPENED, 'utf8').trim().split('\n').filter(Boolean); } catch { return []; } };
 
-// Switchboard Relay (relay/) served on a local port with in-memory storage, and a fake Grok bot that
-// calls its MCP tools over HTTP the way Grok Bot's custom connector does.
+// Switchboard Relay (relay/) served on a local port with in-memory storage, and fake agents that call
+// its MCP tools over HTTP: a Grok bot with the token in a header, as Grok Bot's custom connector sends
+// it, and others through a connector address of their own (a Claude connector carries ?key= in it).
 async function startRelay() {
   Object.assign(process.env, { BOT_TOKEN: 'e2e-bot-token', APP_TOKEN: 'e2e-app-token' });
   const { pathToFileURL } = require('url');
@@ -240,16 +241,17 @@ async function startRelay() {
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   const url = `http://127.0.0.1:${server.address().port}`;
   let n = 0;
-  const call = async (name, args = {}) => {
-    const r = await fetch(`${url}/mcp`, {
+  const agent = (address, headers = {}) => async (name, args = {}) => {
+    const r = await fetch(address, {
       method: 'POST', body: JSON.stringify({ jsonrpc: '2.0', id: ++n, method: 'tools/call', params: { name, arguments: args } }),
-      headers: { Authorization: 'Bearer e2e-bot-token', 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' },
+      headers: { ...headers, 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' },
     });
     const j = await r.json();
     if (j.error || j.result.isError) throw new Error(`${name}: ${JSON.stringify(j.error || j.result.content)}`);
     return j.result.content.map((c) => c.text).join('\n');
   };
-  return { url, call, close: () => new Promise((r) => server.close(r)) };
+  const call = agent(`${url}/mcp?app=grok-bot`, { Authorization: 'Bearer e2e-bot-token' });
+  return { url, call, agent, close: () => new Promise((r) => server.close(r)) };
 }
 
 async function main() {
@@ -658,6 +660,7 @@ async function main() {
 
   console.log('\nSwitchboard Relay');
   const relay = await startRelay();
+  const RD = 'rl:grok-bot:research-desk';
   const ent = async (id) => (await api('entities', { force: true })).find((e) => e.id === id);
   await check('the relay is set up in Accounts: a wrong token is refused, the right one connects', async () => {
     await view('Accounts');
@@ -679,15 +682,17 @@ async function main() {
     const q = (sql) => execFileSync(process.execPath, ['-e', `const {DatabaseSync}=require('node:sqlite');const d=new DatabaseSync(process.argv[1]);console.log(d.prepare(process.argv[2]).get().n)`, db, sql], { encoding: 'utf8' }).trim();
     assert(q("SELECT COUNT(*) AS n FROM settings WHERE value LIKE '%e2e-app-token%'") === '0', 'the app token is not in plain settings');
     assert(q("SELECT COUNT(*) AS n FROM secrets WHERE key = 'relay:appToken'") === '1', 'the app token is in the Keychain store');
-    await box.getByTestId('relay-copy-url').click();
-    assert((await app.evaluate(({ clipboard }) => clipboard.readText())) === `${relay.url}/mcp`, 'step 1 copies the MCP URL');
-    await box.getByTestId('relay-copy-header').click();
-    assert((await app.evaluate(({ clipboard }) => clipboard.readText())) === 'Bearer <BOT_TOKEN>', 'step 2 copies the header value');
+    const clip = () => app.evaluate(({ clipboard }) => clipboard.readText());
+    await box.getByTestId('relay-copy-1').click();
+    assert((await clip()) === `${relay.url}/mcp?app=grok-bot`, 'Grok Bot step 1 copies its connector URL');
+    await box.getByTestId('relay-copy-2').click();
+    assert((await clip()) === 'Bearer <BOT_TOKEN>', 'step 2 copies the header value, with a placeholder until the token is saved');
+    assert(!/e2e-bot-token/.test(await box.innerText()), 'the agent token is never shown');
   });
   await check('a bot reporting to the relay shows what it is doing and its Claude Code run on its card', async () => {
-    await relay.call('report_status', { bot: 'Marketing', status: 'working', doing: 'Drafting the launch email', client: 'Harbor Coffee' });
-    await relay.call('log_action', { bot: 'Marketing', kind: 'browser', text: 'Read the Harbor menu page' });
-    await relay.call('log_subagent', { bot: 'Marketing', id: 'cli-1', title: 'Fix the footer links', status: 'running', kind: 'claude-cli', lastText: 'Editing Footer.tsx', prUrl: 'https://github.com/example/harbor/pull/7' });
+    await relay.call('report_status', { agent: 'Marketing', status: 'working', doing: 'Drafting the launch email', client: 'Harbor Coffee' });
+    await relay.call('log_action', { agent: 'Marketing', kind: 'browser', text: 'Read the Harbor menu page' });
+    await relay.call('log_subagent', { agent: 'Marketing', id: 'cli-1', title: 'Fix the footer links', status: 'running', kind: 'claude-cli', lastText: 'Editing Footer.tsx', prUrl: 'https://github.com/example/harbor/pull/7' });
     await api('relay:sync');
     const e = await until(async () => { const x = await ent(GB.mkt); return x && x.meta.relay ? x : false; }, 'the Marketing card took the relay events');
     assert(e.status === 'running' && /Drafting the launch email · Harbor Coffee/.test(e.meta.activity.text), JSON.stringify({ s: e.status, a: e.meta.activity }));
@@ -700,25 +705,25 @@ async function main() {
     await node(GB.mkt).hover();
     await until(async () => /Fix the footer links/.test(await node(GB.mkt).locator('.subagents').innerText()), 'the Claude Code run is listed on the card');
     await shot('relay-bot-card');
-    await relay.call('log_subagent', { bot: 'Marketing', id: 'cli-1', title: 'Fix the footer links', status: 'done', kind: 'claude-cli', lastText: 'Opened PR #7' });
-    await relay.call('report_status', { bot: 'Marketing', status: 'idle', doing: 'Sent the launch email draft' });
+    await relay.call('log_subagent', { agent: 'Marketing', id: 'cli-1', title: 'Fix the footer links', status: 'done', kind: 'claude-cli', lastText: 'Opened PR #7' });
+    await relay.call('report_status', { agent: 'Marketing', status: 'idle', doing: 'Sent the launch email draft' });
     await api('relay:sync');
     const after = await until(async () => { const x = await ent(GB.mkt); return x.status === 'idle' ? x : false; }, 'the card went idle');
     const done = after.meta.subagents.find((s) => s.id === 'cli-1');
     assert(done.status === 'done' && done.lastText === 'Opened PR #7' && done.prUrl, 'the run is updated in place');
   });
   await check('a bot the Grok Bot app on this Mac does not know gets its own card, outputs and brain notes', async () => {
-    await relay.call('report_status', { bot: 'Research Desk', status: 'waiting', doing: 'Which competitor first?' });
-    await relay.call('post_output', { bot: 'Research Desk', title: 'Competitor scan', content: '- Three cafés within a mile' });
-    await relay.call('add_to_brain', { bot: 'Research Desk', text: 'Harbor competes with Bean There on price' });
+    await relay.call('report_status', { agent: 'Research Desk', status: 'waiting', doing: 'Which competitor first?' });
+    await relay.call('post_output', { agent: 'Research Desk', title: 'Competitor scan', content: '- Three cafés within a mile' });
+    await relay.call('add_to_brain', { agent: 'Research Desk', text: 'Harbor competes with Bean There on price' });
     await api('relay:sync');
-    const e = await until(() => ent('grk:research-desk'), 'a card for the new bot');
+    const e = await until(() => ent(RD), 'a card for the new bot');
     assert(e.source === 'grok-bot' && e.title === 'Research Desk' && e.status === 'waiting' && /Waiting on you: Which competitor first\?/.test(e.meta.activity.text), JSON.stringify(e));
-    await until(async () => (await node('grk:research-desk').count()) === 1, 'its card is on the board');
+    await until(async () => (await node(RD).count()) === 1, 'its card is on the board');
     const out = (await api('entities', {})).find((x) => x.kind === 'output' && x.title === 'Competitor scan');
-    assert(out && out.meta.from === 'grk:research-desk', 'the output became a card from that bot');
+    assert(out && out.meta.from === RD, 'the output became a card from that bot');
     assert(/Bean There/.test(await api('brain')), 'the note went to the shared brain');
-    const tr = await api('transcript', 'grk:research-desk');
+    const tr = await api('transcript', RD);
     assert(tr.some((m) => /Posted/.test(m.text)), 'opening the card shows what it reported');
   });
   await check('sending to a Grok bot queues it on the relay; the bot picks it up once', async () => {
@@ -727,18 +732,42 @@ async function main() {
     await sendFromCard(GB.mkt, 'Write the launch tweet');
     await until(async () => /Queued for Marketing/.test(await node(GB.mkt).innerText()), 'the card says it was queued');
     assert(!opened().some((u) => u.startsWith('grokbot://')), 'Grok Bot was not opened');
-    const got = await relay.call('get_tasks', { bot: 'Marketing' });
+    const got = await relay.call('get_tasks', { agent: 'Marketing' });
     assert(/Write the launch tweet/.test(got), got);
-    assert(/No new messages/.test(await relay.call('get_tasks', { bot: 'Marketing' })), 'delivered only once');
+    assert(/No new messages/.test(await relay.call('get_tasks', { agent: 'Marketing' })), 'delivered only once');
     await api('relay:sync');
     await until(async () => (await ent(GB.mkt)).meta.actions.some((a) => /Picked up your message/.test(a.text)), 'the card shows the bot picked it up');
-    await api('prompt', 'grk:research-desk', 'Start with Bean There');
-    await until(async () => /Start with Bean There/.test(await relay.call('get_tasks', { bot: 'Research Desk' })), 'a relay-only bot gets messages too');
+    await api('prompt', RD, 'Start with Bean There');
+    await until(async () => /Start with Bean There/.test(await relay.call('get_tasks', { agent: 'Research Desk' })), 'a relay-only bot gets messages too');
     assert(!opened().length, 'nothing opened in Grok Bot');
+  });
+  await check('a Claude chat connects with the address copied from Settings and gets its own card', async () => {
+    await view('Accounts');
+    const box = page.getByTestId('relay');
+    await box.getByTestId('relay-bot-token').fill('e2e-bot-token');
+    await box.getByTestId('relay-bot-save').click();
+    await until(async () => (await api('relay:status')).hasBotToken, 'the agent token is saved');
+    await box.getByTestId('relay-app').selectOption('claude');
+    await box.getByTestId('relay-copy-1').click();
+    const address = await app.evaluate(({ clipboard }) => clipboard.readText());
+    assert(address === `${relay.url}/mcp?app=claude&key=e2e-bot-token`, `copied ${address}`);
+    assert(!/e2e-bot-token/.test(await box.innerText()), 'the token is copied but never shown');
+    const claude = relay.agent(address); // no header: Claude's connectors can't send one
+    await claude('report_status', { agent: 'Launch planning', status: 'working', doing: 'Outlining the launch week' });
+    await claude('log_subagent', { agent: 'Launch planning', id: 'sub-1', title: 'Research competitor pricing', status: 'running' });
+    await api('relay:sync');
+    const id = 'rl:claude:launch-planning';
+    const e = await until(() => ent(id), 'a card for the Claude chat');
+    assert(e.source === 'claude-code' && e.status === 'running' && /Outlining the launch week/.test(e.meta.activity.text) && e.meta.subagents.length === 1, JSON.stringify({ s: e.source, st: e.status, a: e.meta.activity }));
+    await view('Board');
+    await center(id, 0.8);
+    await until(async () => /Outlining the launch week/.test(await node(id).innerText()), 'its card shows what it is doing');
+    await sendFromCard(id, 'Add a teaser post');
+    await until(async () => /Add a teaser post/.test(await claude('get_tasks', { agent: 'Launch planning' })), 'the chat gets the message');
   });
   await check('turning the relay off takes its cards away and sends go back to Grok Bot', async () => {
     await api('relay:configure', { enabled: false });
-    await until(async () => { const l = await api('entities', { force: true }); return !l.some((x) => x.id.startsWith('grk:')) && !l.find((x) => x.id === GB.mkt).meta.relay; }, 'relay cards gone');
+    await until(async () => { const l = await api('entities', { force: true }); return !l.some((x) => x.id.startsWith('rl:')) && !l.find((x) => x.id === GB.mkt).meta.relay; }, 'relay cards gone');
     assert((await api('relay:status')).hasToken, 'the token is kept for next time');
   });
   await relay.close();

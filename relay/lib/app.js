@@ -1,13 +1,14 @@
 // Every route of the relay in one handler: (req, res) for Node's http server and Vercel functions.
-//   /mcp              the MCP connector for Grok bots      Authorization: Bearer <BOT_TOKEN>
+//   /mcp?app=<app>    the MCP connector agents call        Authorization: Bearer <BOT_TOKEN>
+//                     (or ?key=<BOT_TOKEN> for clients that can't send headers, like Claude's connectors)
 //   /api/events       GET  ?since=<cursor> → { events, cursor, more }    Bearer <APP_TOKEN>
-//   /api/tasks        POST { bot, text } queues a message for a bot
+//   /api/tasks        POST { agent, app, text } queues a message for an agent
 //   /api/board        POST { summary } stores the board summary bots read
 //   /api/health       GET  checks the URL and token
 import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import { storeFromEnv, TTL_DAYS } from './store.js';
 import { handleMcp } from './mcp.js';
-import { botKey, clip } from './util.js';
+import { agentKey, appOf, clip } from './util.js';
 
 const MAX_BODY = 1024 * 1024;
 const PAGE = 500;
@@ -22,11 +23,13 @@ export const setStore = (s) => { store = s; };
 class HttpError extends Error { constructor(status, message) { super(message); this.status = status; } }
 
 const digest = (s) => createHash('sha256').update(String(s)).digest();
-function authorized(req, envName) {
+// The token comes in the Authorization header, or for the MCP connector also as ?key= in its address.
+function authorized(req, envName, url) {
   const want = process.env[envName];
   const m = /^Bearer\s+(\S+)\s*$/i.exec(req.headers.authorization || '');
+  const got = m ? m[1] : url ? url.searchParams.get('key') : null;
   // Hashing first makes the comparison constant-time whatever the lengths.
-  return !!want && !!m && timingSafeEqual(digest(m[1]), digest(want));
+  return !!want && !!got && timingSafeEqual(digest(got), digest(want));
 }
 
 function send(res, status, body, headers = {}) {
@@ -77,11 +80,12 @@ async function events({ url, store }) {
 }
 
 async function queueTask({ body, store }) {
-  const bot = text(body && body.bot, 'bot', 80);
-  const task = { id: randomUUID(), bot, text: text(body.text, 'text', 20000), ts: Date.now() };
-  if (typeof body.botId === 'string' && body.botId) task.botId = clip(body.botId, 128);
-  await store.pushTask(botKey(bot), task);
-  return { ok: true, task: { id: task.id, bot: task.bot, ts: task.ts } };
+  const agent = text(body && body.agent, 'agent', 80);
+  const app = appOf(body.app) || 'other';
+  const task = { id: randomUUID(), agent, app, text: text(body.text, 'text', 20000), ts: Date.now() };
+  if (typeof body.agentId === 'string' && body.agentId) task.agentId = clip(body.agentId, 128);
+  await store.pushTask(`${app}:${agentKey(agent)}`, task);
+  return { ok: true, task: { id: task.id, agent, app, ts: task.ts } };
 }
 
 async function saveBoard({ body, store }) {
@@ -92,7 +96,7 @@ async function saveBoard({ body, store }) {
 
 async function health({ store }) {
   const warnings = [];
-  if (!process.env.BOT_TOKEN) warnings.push('BOT_TOKEN is not set, so bots cannot connect.');
+  if (!process.env.BOT_TOKEN) warnings.push('BOT_TOKEN is not set, so agents cannot connect.');
   else if (process.env.BOT_TOKEN === process.env.APP_TOKEN) warnings.push('BOT_TOKEN and APP_TOKEN are the same. Use two different tokens.');
   if (store.kind === 'memory') warnings.push('No Redis configured: events are kept in memory and lost when the function restarts. Add Upstash Redis.');
   return { ok: true, storage: store.kind, cursor: await store.head(), warnings };
@@ -110,8 +114,8 @@ export async function handler(req, res) {
     const url = new URL(req.url || '/', 'http://relay.local');
     const path = url.pathname.replace(/\/+$/, '') || '/';
     if (path === '/mcp' || path === '/api/mcp') {
-      if (!authorized(req, 'BOT_TOKEN')) return send(res, 401, { error: 'Unauthorized' }, { 'WWW-Authenticate': 'Bearer' });
-      return await handleMcp(req, res, getStore(), await readBody(req));
+      if (!authorized(req, 'BOT_TOKEN', url)) return send(res, 401, { error: 'Unauthorized' }, { 'WWW-Authenticate': 'Bearer' });
+      return await handleMcp(req, res, getStore(), await readBody(req), { app: appOf(url.searchParams.get('app')) });
     }
     const route = ROUTES[path.replace(/^\/api\//, '')];
     if (!route || !path.startsWith('/api/')) return send(res, 404, { error: 'Not found' });

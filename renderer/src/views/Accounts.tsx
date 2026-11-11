@@ -227,6 +227,7 @@ export default function Accounts() {
           <Toggle label="Let agents use Switchboard" on={tools ? tools.on : true} onChange={(v) => { if (!toolsBusy) setAgentTools(v); }} />
         </div>
         {tools && tools.results.length > 0 && <div className="well" data-testid="agent-tools-results">{tools.results.map((r) => <div key={r}>{r}</div>)}</div>}
+        <RelaySettings />
         <div className="set-row">
           <div className="txt"><b>Grok Bot</b><span className="hint">{grok && grok.enabled ? `${grok.bots} bot${grok.bots === 1 ? '' : 's'}${grok.running ? '' : ' · app closed'}` : 'Off'}</span></div>
           <Toggle label="Connect Grok Bot" on={grok ? grok.enabled : true} onChange={setGrokOn} />
@@ -245,7 +246,6 @@ export default function Accounts() {
             </div>
           )}
         </>)}
-        <RelaySettings />
         <div className="set-row">
           <div className="txt"><b>Balance usage</b><span className="hint">On: new work goes to the Claude account used least in the last 5 hours. Off: the first account. Dedicated folders always win.</span></div>
           <Toggle label="Balance usage" on={split} onChange={(v) => { setSplit(v); api.setSetting('splitUsage', v); }} />

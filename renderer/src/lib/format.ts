@@ -45,6 +45,8 @@ export const SOURCE: Record<string, { label: string; color: string }> = {
   'grok-bot': { label: 'Grok Bot', color: '#6D5BD0' },
   'anthropic-api': { label: 'Claude API', color: '#B08A2E' },
   'openai-compatible': { label: 'Model API', color: '#4E6E7E' },
+  chatgpt: { label: 'ChatGPT', color: '#10A37F' },
+  relay: { label: 'Agent', color: '#52525B' },
   project: { label: 'Project', color: '#3F7A5E' },
   crm: { label: 'Client', color: '#2F6B55' },
   output: { label: 'Output', color: '#52525B' },

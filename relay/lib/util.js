@@ -1,6 +1,11 @@
-// A bot's key: its display name, lowercased, with runs of anything but letters and digits as '-'.
-// The Switchboard app uses the same key to match relay bots to its cards.
-export const botKey = (name) => String(name || '').trim().toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '-').replace(/^-+|-+$/g, '').slice(0, 64) || 'bot';
+// The apps an agent can report from. A connector URL names its app (/mcp?app=claude), so every call
+// through it is filed under that app; an agent may also say it in the call.
+export const APPS = ['grok-bot', 'claude', 'claude-code', 'cursor', 'codex', 'chatgpt', 'other'];
+export const appOf = (v) => (APPS.includes(v) ? v : null);
+
+// An agent's key: its display name, lowercased, with runs of anything but letters and digits as '-'.
+// The Switchboard app uses the same key to match relay agents to its cards.
+export const agentKey = (name) => String(name || '').trim().toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '-').replace(/^-+|-+$/g, '').slice(0, 64) || 'agent';
 
 export function clip(s, n) {
   if (s == null) return undefined;

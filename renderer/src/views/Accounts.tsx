@@ -4,6 +4,7 @@ import { useStore } from '../lib/store';
 import { api, Account, ClaudeAuth } from '../lib/api';
 import { SOURCE, tokens } from '../lib/format';
 import { AgentLogo } from '../components/Logos';
+import RelaySettings from '../components/RelaySettings';
 
 type Kind = { kind: string; label: string; blurb: string };
 const KINDS: Kind[] = [
@@ -244,6 +245,7 @@ export default function Accounts() {
             </div>
           )}
         </>)}
+        <RelaySettings />
         <div className="set-row">
           <div className="txt"><b>Balance usage</b><span className="hint">On: new work goes to the Claude account used least in the last 5 hours. Off: the first account. Dedicated folders always win.</span></div>
           <Toggle label="Balance usage" on={split} onChange={(v) => { setSplit(v); api.setSetting('splitUsage', v); }} />

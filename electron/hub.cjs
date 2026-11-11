@@ -125,6 +125,11 @@ function firstRunSetup() {
 // ---------- entities ----------
 function invalidate() { entityCache.at = 0; }
 
+// Feature modules can add to the cards (decorate), take prompts (dispatch) and serve transcripts
+// for their own cards; see ext/relay.cjs. dispatch/transcript return undefined to pass.
+const plugins = [];
+function use(p) { plugins.push(p); }
+
 // Liveness. main.cjs watches the Claude Code / Codex / Granola folders; the hub also watches Grok
 // Bot's cache and the Claude desktop app's session index, and while anything is running it re-checks
 // shortly after, so a card flips from running to idle without waiting for the 30 s refresh.
@@ -231,6 +236,7 @@ async function entities({ force = false } = {}) {
   });
   // Agent sessions from the Claude desktop app (read-only), recent ones only; History has the rest.
   if (db.getSetting('claudeAppSessions', true) !== false) { try { list.push(...claudeCode.desktopList()); } catch {} }
+  for (const p of plugins) { try { if (p.decorate) p.decorate(list, accs); } catch (e) { console.error('decorate:', e.message); } }
   for (const [cwd, p] of projects) {
     list.push({ id: `pj:${cwd}`, kind: 'project', source: 'project', title: path.basename(cwd), preview: cwd.replace(HOME, '~'), updatedAt: p.updatedAt, status: 'idle', meta: { cwd, sessions: p.sessions, branches: gitBranches(cwd) } });
   }
@@ -261,6 +267,7 @@ function find(id) {
 
 // ---------- transcripts ----------
 async function transcriptFor(id) {
+  for (const p of plugins) { const t = p.transcript && (await p.transcript(id)); if (t) return t; }
   const [kind, accId, ...rest] = id.split(':');
   const ref = rest.join(':');
   const a = account(accId);
@@ -417,7 +424,7 @@ const PROMPTABLE = new Set(['claude-code', 'codex', 'anthropic-api', 'openai-com
 function canTakePrompt(id) {
   const [kind, accId] = id.split(':');
   if (kind === 'ac') { const a = account(accId); return !!a && PROMPTABLE.has(a.kind); }
-  return ['cc', 'cx', 'cu', 'lc', 'pj', 'cl', 'gb'].includes(kind);
+  return ['cc', 'cx', 'cu', 'lc', 'pj', 'cl', 'gb'].includes(kind) || plugins.some((p) => p.canPrompt && p.canPrompt(id));
 }
 function autoEdgesFrom(ids) { return edges().filter((e) => ids.includes(e.source) && e.kind === 'link' && e.data.autoForward); }
 
@@ -489,6 +496,7 @@ async function checkFinished() {
 }
 
 async function dispatch(id, text, onText, opts = {}) {
+  for (const p of plugins) { const r = p.dispatch && (await p.dispatch(id, text, opts)); if (r) return r; }
   const [kind, accId, ...rest] = id.split(':');
   const ref = rest.join(':');
   const e = find(id) || { meta: {} };
@@ -806,7 +814,7 @@ module.exports = {
   prompt, runs, recordFlow, flowsFor, edges, saveEdge, deleteEdge, forwardFinished, makeBoard, quickAsk,
   brain, setBrain, appendBrain, saveOutput, saveNote, deleteEntity,
   board, saveBoard, deleteBoardNodes,
-  clients, saveClient, due, suggestions, usageSummary, chief, chiefHistory, pickAccount, addFinder,
+  clients, saveClient, due, suggestions, usageSummary, chief, chiefHistory, pickAccount, addFinder, use,
   gmailConnect: (id) => gmail.connect(account(id)).then((email) => { const a = account(id); a.config.email = email; saveAccount(a); return email; }),
   BRAIN,
 };

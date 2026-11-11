@@ -33,6 +33,7 @@ function follow(runId: string, accountId: string, cwd: string | null, before: Se
 export default function NewChat() {
   const accounts = useStore((s) => s.accounts);
   const notify = useStore((s) => s.notify);
+  const pins = useStore((s) => s.pins);
   const { rows, budgets } = useUsage();
   const [open, setOpen] = useState(false);
   const [acct, setAcct] = useState<string | null>(null);
@@ -90,10 +91,13 @@ export default function NewChat() {
     if (!t || !acct || sending) return;
     setSending(true);
     const before = new Set(useStore.getState().entities.map((e) => e.id));
-    const opts: Record<string, string> = { accountId: acct };
+    const opts: { accountId: string; model?: string; attach?: { id: string; title?: string }[] } = { accountId: acct };
     if (model) opts.model = model;
+    // Cards tagged as context (⌘T) go along with the first message, as they do from the dock.
+    if (pins.length) opts.attach = pins.map((id) => ({ id, title: useStore.getState().byId[id]?.title }));
     try {
       const runId = await api.call<string>('prompt', cwd ? `pj:${cwd}` : `ac:${acct}`, t, opts);
+      if (pins.length) useStore.getState().set({ pins: [] });
       notify('Chat started');
       setText(''); close();
       follow(runId, acct, cwd, before);
@@ -133,6 +137,12 @@ export default function NewChat() {
         <div className="nc-seg">
           {MODELS.map((m) => <button key={m.id} className={model === m.id ? 'on' : ''} onClick={() => setModel(m.id)}>{m.label}</button>)}
         </div>
+
+        {pins.length > 0 && (
+          <div className="nc-row" data-testid="new-chat-tags">
+            <button className="chip" title="Clear tagged context" onClick={() => useStore.getState().set({ pins: [] })}>{pins.length} tagged<X size={11} /></button>
+          </div>
+        )}
 
         <div className="nc-compose">
           <textarea ref={box} value={text} rows={3} placeholder="First message" data-testid="new-chat-input"

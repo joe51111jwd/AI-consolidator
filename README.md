@@ -157,18 +157,24 @@ Only programs running as you can use it: it listens on 127.0.0.1 and needs the t
 npm test
 ```
 
-This builds the app and runs `tests/e2e.cjs`, which starts the real app in a throwaway home folder with stand-in `claude`, `codex` and Grok Bot commands and a stand-in Google server, then clicks through it. On Linux run it under `xvfb-run -a npm test`. It checks 73 things, including:
+This builds the app and runs `tests/e2e.cjs`, which starts the real app in a throwaway home folder with stand-in `claude`, `codex` and Grok Bot commands, a stand-in Google server and an in-memory Switchboard Relay, then clicks through it. On Linux run it under `xvfb-run -a npm test`. It checks 96 things in a little over a minute, including:
 
-- **Board:** cards from every source show up while project folders and scratch sessions don't; Smart group (asking Claude, keeping agents' diagrams); one click opens a card; dragging, grouping by hand (⌘G, rename, ungroup), frame goals, the filter, `sb board` diagrams; positions, groups and lines survive a restart.
-- **Lines and messages:** drawing a line (auto-send on by default, switchable), a reply flowing down it, `sb send --from grok-bot --wait` drawing and lighting a line.
+- **The week board (home):** it opens on this week laid out from `topics:get` as client → project → chats frames with pills and tree lines, re-laid out once Claude's grouping lands; account and client cards stay off it; project folders and scratch sessions never show; the guided tour.
+- **Board:** dragging, one click opens a card, grouping by hand (⌘G, rename, ungroup), `sb board` diagrams, Smart group (asking Claude, keeping agents' diagrams), Group by a rule (also from the main agent), your own top-level groups (Groups), the filter, and the to-do list on the board (what you owe, your own to-dos, ticking them off); positions, groups, lines and to-dos survive a restart.
+- **List view:** every chat with a summary, filters, search, opening a row, Import chats for older chats.
+- **The chat panel:** plan, steps and recap as the Claude app shows them; Expand to the full-window chat; attaching a file to a message.
+- **Lines and messages:** drawing a line (auto-send on by default, switchable in the line's menu), a reply flowing down it, `sb send --wait`, a live message lighting the line.
 - **Drag and drop:** a message dragged onto a card goes with the next prompt; dropped on empty space it becomes an output card that can be saved to the brain, copied, opened, and dragged onto another agent.
-- **Prompting every kind of card:** a project folder found with ⌘K starts a session in it; the dock; ⌘K tagging; split usage picks the least-used Claude account; an account card uses that account; Codex resumes the right session; Grok Bot gets the text on the clipboard; Granola notes open.
+- **Starting work:** a project folder found with ⌘K; split usage on and off; New chat (⌘N) with the account, folder and model you pick; the dock; ⌘K tagging carried into a new chat; Codex resumes the right session; Grok bots read from the Grok Bot cache and sent to with a `grokbot://` link, never the clipboard; Granola notes open.
+- **Switchboard Relay:** connecting with the app token, bots reporting status, steps, Claude Code runs, outputs and brain notes; messages queued for bots; a Claude chat connecting through its copied address; Connect your agents.
 - **Overall agent:** answers, works on the selected cards, keeps history, flags what needs you (open or dismiss), and doesn't show its own runs as cards.
-- **Claude sign-in:** two plans on one email signed in to separate folders and shown with their own organization and plan; the same-login warning; signing out one card leaves the other signed in; cancelling a slow sign-in; agent tools added to every Claude folder.
+- **Claude sign-in:** two plans on one email signed in to separate folders with their own organization and plan; a new chat on each runs as that account; the same-login warning; signing out one leaves the others signed in; cancelling a slow sign-in; agent tools added to every Claude folder.
 - **Gmail:** the Google consent link (read-only scope, PKCE, state check), a wrong state refused, the token stored encrypted, the token refreshed after it expires and after a restart, a revoked token asking you to reconnect, and removing the account deleting its keys.
 - **Clients:** replies owed, follow-ups, people you email added as leads, deleted clients not re-added, adding and editing a client.
-- **Corners:** the usage pill, the outputs drawer, Settings, and no Codex anywhere without a Codex account.
+- **Corners:** the attention dot, the usage pill, the outputs drawer, the version tag, Settings, and no Codex anywhere without a Codex account.
 - **Shared brain:** edits saved, and an agent's addition merged in while you're typing.
+
+While working on one part, `SB_STOP=<n>` stops after n checks and `SB_SHOTS=<folder>` saves a screenshot of each failure. Checks that take three seconds or more print their time.
 
 ### Check these yourself on your Mac
 

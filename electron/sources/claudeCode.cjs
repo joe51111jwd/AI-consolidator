@@ -32,6 +32,14 @@ function isNoise(text) {
 // System, hook and harness wrappers (<task-notification>, <system-reminder>, Caveat: ...) are not
 // something the user typed, so they never become a title.
 const isWrapper = (text) => { const t = String(text || '').trim(); return !t || t.startsWith('<') || t.startsWith('Caveat:'); };
+// Prompts sent with context (tagged cards, dropped outputs, files) start with "Context from …" blocks
+// (hub.buildText); what was asked follows them, and that is what titles a chat.
+const CONTEXT = /^Context from [^\n]*:\n"""\n[\s\S]*?\n"""\n\n/;
+function askOf(text) {
+  let t = String(text || '');
+  for (let m = t.match(CONTEXT); m; m = t.match(CONTEXT)) t = t.slice(m[0].length);
+  return t.trim() ? t : String(text || '');
+}
 
 const base = (f) => String(f || '').split(/[\\/]/).pop();
 // What a tool call is doing, as a short verb phrase. Raw shell arguments are never shown.
@@ -117,7 +125,7 @@ function parseSession(file) {
       if (l.type === 'user' && Array.isArray(m.content) && m.content.every((b) => b.type === 'tool_result')) { act.last = 'result'; continue; }
       const text = textOf(m.content);
       if (l.isMeta || isNoise(text)) continue;
-      if (l.type === 'user') { if (!isWrapper(text)) act.prompt = truncate(text, 160); act.tool = ''; act.last = 'prompt'; }
+      if (l.type === 'user') { if (!isWrapper(text)) act.prompt = truncate(askOf(text), 160); act.tool = ''; act.last = 'prompt'; }
       else if (Array.isArray(m.content)) {
         for (const b of m.content) {
           if (b.type === 'tool_use') { act.tool = toolLabel(b); act.last = 'tool'; }
@@ -147,7 +155,7 @@ function parseSession(file) {
   const shown = lastReply || lastText;
   const parsed = {
     sessionId, cwd, gitBranch, messages, usage,
-    title: truncate((firstUser && firstUser.text) || summary || 'Untitled session', 80),
+    title: truncate((firstUser && askOf(firstUser.text)) || summary || 'Untitled session', 80),
     preview: shown ? truncate(plain(shown.text), 220) : '',
     previewAt: shown ? shown.ts : null,
     lastRole: lastText ? lastText.role : null,

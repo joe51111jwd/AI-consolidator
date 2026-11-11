@@ -150,7 +150,7 @@ export default function Dock() {
   };
 
   return (
-    <div ref={wrap} className={`dock ${target ? 'open' : ''} ${under && !target && !hover ? 'under' : ''}`} data-testid="dock">
+    <div ref={wrap} className={`dock ${target ? 'open' : ''} ${under && !target && !hover ? 'under' : ''}`} data-testid="dock" data-tour="dock">
       {bubbles.map((a) => {
         const auth = a.config?.auth;
         const off = a.kind === 'claude-code' && auth && auth.loggedIn === false;
@@ -184,7 +184,7 @@ export default function Dock() {
           </span>
         );
       })}
-      <button className={`dock-b add ${chiefOpen ? 'on' : ''} ${chiefRunning ? 'working' : ''}`} data-tip={chiefOpen ? undefined : runningCount ? `Agent · ${runningCount} working  ⌘J` : 'Agent  ⌘J'} aria-label="Agent" aria-expanded={chiefOpen} data-testid="dock-plus"
+      <button className={`dock-b add ${chiefOpen ? 'on' : ''} ${chiefRunning ? 'working' : ''}`} data-tip={chiefOpen ? undefined : runningCount ? `Agent · ${runningCount} working  ⌘J` : 'Agent  ⌘J'} aria-label="Agent" aria-expanded={chiefOpen} data-testid="dock-plus" data-tour="agent"
         onClick={() => { setPick(null); set({ chiefOpen: !chiefOpen }); }}>
         <Plus size={18} strokeWidth={2.2} />
         {runningCount > 0 && <span className="dock-run" title={`${runningCount} working now`}>{runningCount}</span>}

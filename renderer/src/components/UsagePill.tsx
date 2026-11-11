@@ -143,7 +143,7 @@ export default function UsagePill() {
     .sort((a, b) => Number(unused(a.r)) - Number(unused(b.r)) || b.p - a.p);
   const top = ranked[0];
   return (
-    <div className="usage" ref={ref}>
+    <div className="usage" ref={ref} data-tour="usage">
       <button className="usage-pill" data-testid="usage-pill" title={`${top.r.label}: ${Math.round(top.p)}% of this week`} onClick={() => setOpen(!open)}>
         <Ring pct={top.p} />{pctLabel(top.r, top.p)}<span className="lbl">week</span>
       </button>

@@ -381,3 +381,12 @@
 .board .card.v2 > .react-flow__handle { z-index: 2; }
 .board .card.v2 > .react-flow__resize-control { z-index: 3; }
 .board .card.v2 .kind-chip { height: auto; padding: 0; background: none; box-shadow: none; color: inherit; font-size: inherit; font-weight: 500; letter-spacing: 0; }
+
+.bt-smart-wrap { display: flex; gap: 2px; }
+.bt-smart-wrap .bt-smart { border-top-right-radius: 6px; border-bottom-right-radius: 6px; }
+.bt-groupby-btn { width: 30px; justify-content: center; padding: 0; border-top-left-radius: 6px; border-bottom-left-radius: 6px; }
+.board-tools .bt-groupby { left: auto; right: 0; width: 280px; transform-origin: top right; }
+.bt-groupby .bt-row { color: #3F3F46; height: auto; min-height: 30px; padding: 6px 10px; line-height: 1.35; white-space: normal; }
+.bt-groupby .bt-row:hover { background: #F4F4F5; color: #18181B; }
+.bt-rule { width: calc(100% - 12px); margin: 6px; height: 32px; border-radius: 9px; border: 1px solid #E4E4E7; padding: 0 10px; font: inherit; font-size: 12.5px; outline: none; }
+.bt-rule:focus { border-color: #18181B; }

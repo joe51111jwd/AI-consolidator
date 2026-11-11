@@ -96,6 +96,7 @@ function start(port = 47821) {
         const from = (await resolve(j.from)) || (j.from ? `ext:${j.from}` : null);
         return send(200, { ok: true, ...hub.makeBoard({ title: j.title, nodes: j.nodes, edges: j.edges, from }) });
       }
+      if (req.method === 'POST' && url.pathname === '/group') return send(200, hub.requestRegroup(j.instruction));
       if (req.method === 'GET' && url.pathname === '/due') return send(200, await hub.due());
       return send(404, { error: 'unknown route' });
     } catch (e) { return send(500, { error: e.message }); }

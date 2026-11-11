@@ -1,11 +1,12 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Search, StickyNote, Sparkles, Inbox, Settings, Users, BookOpen, LayoutGrid, Tag, Plus, Check, X, Shapes, Sun, Download } from 'lucide-react';
+import { Search, StickyNote, Sparkles, Inbox, Settings, Users, BookOpen, LayoutGrid, Tag, Plus, Check, X, Shapes, Sun, Download, Compass } from 'lucide-react';
 import { useStore } from '../lib/store';
 import { useImport } from './ImportChats';
 import { api, Entity, BoardRow } from '../lib/api';
 import { SOURCE, ago } from '../lib/format';
 import { suppressed } from '../lib/layout';
 import { AgentLogo } from './Logos';
+import { useTour } from './Tour';
 import './panels.css';
 
 interface Hit { id: string; title: string; source: string; kind: string; snippet?: string; updatedAt: number }
@@ -144,6 +145,7 @@ export default function Palette() {
     { id: 'accounts', label: 'Accounts', icon: Settings, run: () => set({ settingsTab: 'accounts' }) },
     { id: 'clients', label: 'Clients', icon: Users, run: () => set({ settingsTab: 'clients' }) },
     { id: 'brain', label: 'Shared brain', icon: BookOpen, run: () => set({ settingsTab: 'brain' }) },
+    { id: 'tour', label: 'Take the tour', icon: Compass, run: () => useTour.getState().start() },
     { id: 'recap', label: 'Daily recap', icon: Sun, run: async () => {
       notify('Writing your recap…');
       try {
@@ -155,7 +157,7 @@ export default function Palette() {
       } catch (err: any) { notify(err?.message || 'Recap failed'); }
     } },
   ];
-  const STARTERS = ['examples', 'note', 'smart', 'recap', 'settings'];
+  const STARTERS = ['examples', 'note', 'smart', 'recap', 'settings', 'tour'];
 
   const rows = useMemo<Row[]>(() => {
     const local = localHits(entities, q);

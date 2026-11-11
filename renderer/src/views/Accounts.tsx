@@ -1,9 +1,10 @@
 import React, { useEffect, useState } from 'react';
-import { Plus, LogIn, LogOut, Trash2, Copy, X, KeyRound, Check, RefreshCw, Terminal, ExternalLink, TriangleAlert, ChevronRight } from 'lucide-react';
+import { Plus, LogIn, LogOut, Trash2, Copy, X, KeyRound, Check, RefreshCw, Terminal, ExternalLink, TriangleAlert, ChevronRight, Compass } from 'lucide-react';
 import { useStore } from '../lib/store';
 import { api, Account, ClaudeAuth } from '../lib/api';
 import { SOURCE, tokens } from '../lib/format';
 import { AgentLogo } from '../components/Logos';
+import { useTour } from '../components/Tour';
 
 type Kind = { kind: string; label: string; blurb: string };
 const KINDS: Kind[] = [
@@ -182,6 +183,7 @@ export default function Accounts() {
       <div className="page-h">
         <span className="hint">Keys stay encrypted in your Keychain.</span>
         <span className="spacer" />
+        <button className="btn" data-testid="accounts-tour" onClick={() => useTour.getState().start()}><Compass size={14} />Take the tour</button>
         <button className="btn primary" onClick={() => { setAdvanced(false); setEdit({ kind: '', config: {}, secretsIn: {} }); }}><Plus size={14} />Add account</button>
       </div>
 

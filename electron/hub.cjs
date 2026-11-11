@@ -775,7 +775,14 @@ async function chiefContext(selected) {
 const CHIEF_SYSTEM = `You are the overall agent inside Switchboard, a local whiteboard where the user sees all their AI agents, chats, code projects and clients.
 You can read the context below. Be brief and concrete: lead with the answer. When you compare outputs, say which is better and why in a few lines.
 When the user asks you to hand work to another card, use the switchboard tools if you have them (send_to_card), otherwise write the exact prompt they should send.
+When the user asks to organize, group, sort or arrange the board, call group_board with their rule in their own words (for example "by client or by the work being done; Grok bots in their own group unless they belong to one project"). Never draw notes or frames to describe groups instead.
 Never send email or take actions outside Switchboard.`;
+
+// Asks the open window to regroup the board by the user's rule (the window owns the layout).
+function requestRegroup(instruction) {
+  emit({ type: 'regroup', instruction: String(instruction || '').slice(0, 400) });
+  return { ok: true };
+}
 
 function chief(question, { selected = [], accountId } = {}) {
   const runId = uid('r');
@@ -793,7 +800,7 @@ function chief(question, { selected = [], accountId } = {}) {
       const convo = history.slice(0, -1).slice(-10).map((m) => `${m.role === 'user' ? 'User' : 'You'}: ${m.text}`).join('\n\n');
       const text = `${CHIEF_SYSTEM}\n\n${ctx}\n\n${convo ? 'Conversation so far:\n' + convo + '\n\n' : ''}User: ${question}`;
       const mcp = mcpConfigPath();
-      const extra = mcp ? ['--mcp-config', mcp, '--allowedTools', 'mcp__switchboard'] : [];
+      const extra = [...(mcp ? ['--mcp-config', mcp, '--allowedTools', 'mcp__switchboard'] : []), ...internalArgs()];
       res = await claudeCode.prompt(a, { cwd: APP_DIR, text, onText, extraArgs: extra });
     } else {
       const messages = history.map((m) => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: m.text }));
@@ -808,11 +815,19 @@ function chief(question, { selected = [], accountId } = {}) {
 
 // A quick one-off question to Claude (no tools, short timeout) for helpers like smart grouping.
 // Runs inside ~/.switchboard so it never shows up as a card.
+// Switchboard's own Claude runs (main agent, grouping, topics) must not pick up the user's personal
+// hooks, which inject routing advice and other text into the answer.
+function internalArgs() {
+  const f = path.join(APP_DIR, 'internal-settings.json');
+  try { if (!exists(f)) fs.writeFileSync(f, JSON.stringify({ disableAllHooks: true })); } catch {}
+  return ['--settings', f];
+}
+
 async function quickAsk(text, { timeoutMs = 25000, model = 'sonnet' } = {}) {
   const a = pickAccount(['claude-code']);
   if (!a) throw new Error('No Claude account');
   const quiet = { ...a, config: { ...a.config, permissionMode: undefined } };
-  const res = await claudeCode.prompt(quiet, { cwd: APP_DIR, text, signal: AbortSignal.timeout(timeoutMs), extraArgs: ['--model', model, '--tools', ''] });
+  const res = await claudeCode.prompt(quiet, { cwd: APP_DIR, text, signal: AbortSignal.timeout(timeoutMs), extraArgs: ['--model', model, '--tools', '', ...internalArgs()] });
   return res.text || '';
 }
 
@@ -834,7 +849,7 @@ module.exports = {
   prompt, runs, sentReplies, recordFlow, flowsFor, edges, saveEdge, deleteEdge, forwardFinished, makeBoard, quickAsk,
   brain, setBrain, appendBrain, saveOutput, saveNote, deleteEntity,
   board, saveBoard, deleteBoardNodes,
-  clients, saveClient, due, suggestions, usageSummary, chief, chiefHistory, pickAccount, addFinder, addExtraEntities,
+  clients, saveClient, due, suggestions, usageSummary, chief, chiefHistory, pickAccount, addFinder, addExtraEntities, requestRegroup,
   gmailConnect: (id) => gmail.connect(account(id)).then((email) => { const a = account(id); a.config.email = email; saveAccount(a); return email; }),
   BRAIN,
 };

@@ -59,7 +59,7 @@ async function check(name, fn) {
   catch (e) {
     results.push({ ok: false, name, err: e.message });
     if (process.env.SB_SHOTS && page) await page.screenshot({ path: path.join(process.env.SB_SHOTS, `fail-${results.length}.png`) }).catch(() => {});
-    console.log(`  ✗ ${name}\n      ${String(e.message).split('\n').slice(0, 4).join('\n      ')}`); }
+    console.log(`  ✗ ${name}\n      ${String(e.message).split("\n").slice(0, process.env.SB_SHOTS ? 25 : 4).join('\n      ')}`); }
 }
 function assert(c, msg) { if (!c) throw new Error(msg); }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -69,7 +69,10 @@ async function until(fn, msg, ms = 10000) {
   throw new Error(`${msg} (waited ${ms / 1000}s${last && last !== true ? `; last: ${String(last).slice(0, 200)}` : ''})`);
 }
 const calls = () => { try { return fs.readFileSync(LOG, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)); } catch { return []; } };
-const promptCalls = () => calls().filter((c) => c.prompt != null);
+// The chats home sorts chats into topics with its own background Claude runs; leave those out.
+const TOPICS_RE = /Sort them into 2 to 8 topics/;
+const promptCalls = () => calls().filter((c) => c.prompt != null && !TOPICS_RE.test(c.prompt));
+const topicCalls = () => calls().filter((c) => c.prompt != null && TOPICS_RE.test(c.prompt));
 
 let mock, app, page;
 const api = (ch, ...args) => page.evaluate(([c, a]) => window.sbBridge.call(c, ...a), [ch, args]);
@@ -88,7 +91,13 @@ async function launch() {
   page = await app.firstWindow();
   page.setDefaultTimeout(8000);
   page.on('pageerror', (e) => console.log('    [page error]', e.message));
-  await page.waitForSelector('.react-flow__node', { timeout: 30000 });
+  // The guided tour starts by itself on first launch and blocks clicks; the tour has its own check.
+  await page.evaluate(() => { localStorage.setItem('sb.tourDone', 'test'); window.__sbTour?.(false); });
+  // Ready when either the Chats home or the board is on screen (the other one is mounted but hidden).
+  await page.waitForFunction(() => [...document.querySelectorAll('[data-testid="live-view"], .react-flow__node')]
+    .some((el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0 && getComputedStyle(el).visibility !== 'hidden'; }), null, { timeout: 30000 });
+  await page.waitForSelector('.react-flow__node', { state: 'attached', timeout: 30000 });
+  await page.evaluate(() => window.__sbTour?.(false));
   await sleep(300);
 }
 async function quit() { if (app) await app.close().catch(() => {}); app = null; }
@@ -97,7 +106,7 @@ async function quit() { if (app) await app.close().catch(() => {}); app = null; 
 const TABS = { Accounts: 'accounts', Clients: 'clients', 'Shared brain': 'brain' };
 async function view(name) {
   if (name === 'Board') {
-    await page.evaluate(() => window.__sbView('board'));
+    await page.evaluate(() => { window.__sbView('board'); window.__sbMode('board'); });
     await until(async () => (await page.locator('.settings').count()) === 0, 'settings closed');
     return;
   }
@@ -249,6 +258,71 @@ async function main() {
   mock = await require('./google-mock.cjs').start();
   await launch();
 
+  console.log('\nChats home');
+  await check('the app opens on the Chats home, sorted into topics that hold the current chats', async () => {
+    await until(async () => (await page.getByTestId('live-view').count()) === 1, 'Chats home shown');
+    assert(!(await page.locator('.react-flow__node').first().isVisible()), 'the board is not what opens');
+    assert(/on/.test(await page.getByTestId('mode-live').getAttribute('class')), 'the switch shows Chats');
+    const want = [S.menu, S.crew, S.desktop, GB.mkt];
+    const placed = await until(async () => {
+      const got = await page.evaluate(() => [...document.querySelectorAll('[data-testid="home-topic"], [data-testid="live-needs"]')]
+        .flatMap((sec) => [...sec.querySelectorAll('[data-testid="live-row"]')].map((r) => r.dataset.id)));
+      return want.every((id) => got.includes(id)) ? got : false;
+    }, 'every current chat sits in a topic');
+    assert(!placed.includes(S.scratch) && !placed.includes(S.old), 'no temp-folder or month-old chat');
+    assert((await page.getByTestId('home-topic').count()) >= 2, 'more than one topic');
+    assert(new Set(placed).size === placed.length, 'each chat shows once');
+  });
+  await check('topics:get sorts every current chat into a named topic', async () => {
+    const want = [S.menu, S.seo, S.crew, S.news, S.desktop, GB.mkt, GB.cal];
+    const r = await until(async () => {
+      const t = await api('topics:get');
+      const ids = t.topics.flatMap((x) => x.ids);
+      return want.every((id) => ids.includes(id)) ? t : false;
+    }, 'topics cover the seeded chats', 15000);
+    const ids = r.topics.flatMap((x) => x.ids);
+    assert(new Set(ids).size === ids.length, 'no chat in two topics');
+    assert(!ids.includes(S.scratch) && !ids.includes(S.old), 'noise and old chats left out');
+    assert(r.topics.every((t) => t.id.startsWith('t:') && t.label), 'every topic has an id and a name');
+    const harbor = r.topics.find((t) => t.ids.includes(S.menu));
+    assert(harbor.ids.includes(S.seo) && !harbor.ids.includes(S.crew), `Harbor chats together, apart from Fieldline (${harbor.label}: ${harbor.ids.join(', ')})`);
+    const ai = await until(async () => { const t = await api('topics:refresh'); return t.via === 'ai' ? t : false; }, 'Claude refined the topics', 30000);
+    const c = topicCalls().pop();
+    assert(c && c.args.includes('--tools') && /\.switchboard$/.test(c.cwd), `asked Claude without tools, inside ~/.switchboard (${c && c.cwd})`);
+    assert(ai.topics.some((t) => t.label === 'Maya Lin' || t.label === 'Harbor Coffee'), `topics named by client: ${ai.topics.map((t) => t.label).join(', ')}`);
+    const own = (await api('entities', { force: true })).filter((e) => e.kind === 'session' && /switchboard$/.test(e.meta.cwd || ''));
+    assert(!own.length, 'the topics run does not show up as a chat');
+  });
+  await check('the guided tour walks every step from ⌘K "Take the tour", then closes and is remembered', async () => {
+    await page.evaluate(() => localStorage.removeItem('sb.tourDone'));
+    await page.keyboard.press(mod('k'));
+    await page.locator('.palette input').fill('take the tour');
+    await page.locator('.palette .item', { hasText: 'Take the tour' }).first().click();
+    const tour = page.getByTestId('tour');
+    await until(async () => (await tour.count()) === 1, 'the tour opened');
+    assert((await page.locator('.palette').count()) === 0, 'search closed for the tour');
+    const total = Number((await page.getByTestId('tour-step').innerText()).match(/1 \/ (\d+)/)[1]);
+    assert(total >= 8, `${total} steps`);
+    assert((await page.getByTestId('tour-skip').count()) === 1 && (await page.getByTestId('tour-back').count()) === 0, 'step 1 offers Skip, not Back');
+    for (let n = 2; n <= total; n++) {
+      await page.getByTestId('tour-next').click();
+      await until(async () => (await page.getByTestId('tour-step').innerText()).trim() === `${n} / ${total}`, `step ${n} of ${total}`);
+      assert((await page.getByTestId('tour-skip').count()) === 1, `one Skip on step ${n}`);
+      if (n === 2) await page.getByTestId('tour-back').click().then(() => until(async () => /^1 \//.test(await page.getByTestId('tour-step').innerText()), 'Back goes to step 1')).then(() => page.getByTestId('tour-next').click());
+    }
+    assert(/Done/.test(await page.getByTestId('tour-next').innerText()), 'the last step says Done');
+    await page.getByTestId('tour-next').click();
+    await until(async () => (await tour.count()) === 0, 'the tour closed');
+    assert(await page.evaluate(() => localStorage.getItem('sb.tourDone')), 'remembered as done');
+    assert(await page.getByTestId('live-view').isVisible(), 'back on the Chats home it started from');
+    assert((await page.locator('.sb-chief.open').count()) === 0, 'the agent panel it opened is closed again');
+    await page.evaluate(() => window.__sbTour(true));
+    await until(async () => (await tour.count()) === 1, 'window.__sbTour starts it too');
+    await page.keyboard.press('Escape');
+    await until(async () => (await tour.count()) === 0, 'Escape closes it');
+  });
+  await page.evaluate(() => window.__sbMode('board'));
+
   console.log('\nBoard');
   await check('every source shows up as cards', async () => {
     for (const id of ['ac:a_claude1', 'ac:a_claude2', 'ac:a_claude3', 'ac:a_codex', 'ac:a_granola', 'ac:a_grok', S.menu, S.crew, S.news, S.codex, 'cl:c1', 'cl:c2', 'cl:c3', 'out:o1', 'nt:n1']) {
@@ -374,6 +448,22 @@ async function main() {
     assert(await boardRow(diagram), 'the agent diagram kept its frame');
     assert((await api('board')).filter((x) => x.parent_id === diagram).length === 3, 'and its notes');
   });
+  await check('Group by follows your rule, and the main agent can regroup the board by one', async () => {
+    let n = smartCalls().length;
+    await page.getByTestId('group-by').click();
+    await page.getByTestId('group-rule').fill('by client; Grok bots on their own');
+    await page.getByTestId('group-rule').press('Enter');
+    const c = await until(() => smartCalls().slice(n).find((x) => /My rule: "by client; Grok bots on their own"/.test(x.prompt)), 'the rule went to Claude');
+    assert(c.args.includes('--settings'), "the grouping run ignores the user's own hooks");
+    await until(async () => !(await page.locator('.bt-smart.busy').count()), 'grouping finished');
+    n = smartCalls().length;
+    const dir = path.join(HOME, '.switchboard');
+    const port = fs.readFileSync(path.join(dir, 'bus-port'), 'utf8').trim(), token = fs.readFileSync(path.join(dir, 'bus-token'), 'utf8').trim();
+    const r = await fetch(`http://127.0.0.1:${port}/group`, { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: JSON.stringify({ instruction: 'by the work being done' }) });
+    assert(r.ok, `the group_board route answered ${r.status}`);
+    await until(() => smartCalls().slice(n).find((x) => /My rule: "by the work being done"/.test(x.prompt)), 'the board regrouped by the agent\'s rule');
+    await until(async () => !(await page.locator('.bt-smart.busy').count()), 'grouping finished');
+  });
   await check('a frame goal is saved and "Work toward goal" prompts the agents in it', async () => {
     const g = (await api('board')).find((r) => r.id.startsWith('grp:') && r.data.label === 'Dev Patel');
     await center(g.id, 0.5);
@@ -404,7 +494,7 @@ async function main() {
     await page.getByTestId('mode-live').click();
     await until(async () => (await page.getByTestId('live-view').count()) === 1, 'Live view shown');
     const summary = (await page.getByTestId('live-summary').innerText()).replace(/\s+/g, ' ');
-    assert(/\d+ working\W*\d+ need you\W*\d+ today/.test(summary), `summary: ${summary}`);
+    assert(/\d+ working\W*\d+ needs? you\W*\d+ chats/.test(summary), `summary: ${summary}`);
     const ids = await page.getByTestId('live-row').evaluateAll((els) => els.map((e) => e.dataset.id));
     for (const id of [S.menu, S.crew, S.desktop, GB.mkt]) assert(ids.includes(id), `row for ${id}`);
     assert(!ids.includes(S.scratch), 'no temp-folder session');
@@ -428,6 +518,15 @@ async function main() {
     await page.getByTestId('mode-board').click();
     await until(async () => page.locator('.react-flow__node').first().isVisible(), 'back on the board');
     assert((await page.evaluate(() => localStorage.getItem('sb.mode'))) === 'board', 'mode saved');
+  });
+  await check('the home lists what you need to do', async () => {
+    const due = await api('due');
+    await page.getByTestId('mode-live').click();
+    if (due.length) {
+      await until(async () => (await page.getByTestId('home-todo').count()) === 1, 'a To do section');
+      assert((await page.getByTestId('todo-row').count()) === Math.min(5, due.length), 'one row per item, five at most');
+    }
+    await page.getByTestId('mode-board').click();
   });
   await check('Import chats finds a month-old chat and puts it on the board', async () => {
     assert((await node(S.old).count()) === 0, 'the old chat is not on the board by itself');

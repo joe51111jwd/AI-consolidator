@@ -134,7 +134,7 @@ export default function Board() {
     setTimeout(() => home(400), 60);
   };
 
-  const smartGroup = async (auto = false) => {
+  const smartGroup = async (auto = false, rule?: string) => {
     const notify = useStore.getState().notify;
     if (busy) { if (!auto) notify('Already grouping…'); return; }
     const ids = cardIds();
@@ -146,7 +146,7 @@ export default function Board() {
       if (ids.length >= 2) {
         try {
           const timeout = new Promise<never>((_, rej) => setTimeout(() => rej(new Error('timed out')), 45000));
-          const r = await Promise.race([api.call<{ groups: GroupSpec[] }>('smartgroup:run', ids), timeout]);
+          const r = await Promise.race([api.call<{ groups: GroupSpec[] }>('smartgroup:run', ids, rule ? { instruction: rule } : {}), timeout]);
           if (r?.groups?.length) groups = r.groups;
           else if (!auto) notify('AI grouping returned nothing — used a quick layout');
         } catch (err: any) {
@@ -160,6 +160,15 @@ export default function Board() {
       notify(`Couldn't group the board: ${err?.message || err}`);
     } finally { setBusy(false); }
   };
+
+  // The main agent (group_board tool) asks the window to regroup by the user's rule.
+  const smartRef = useRef(smartGroup);
+  smartRef.current = smartGroup;
+  useEffect(() => api.onEvent((e) => {
+    if (e.type !== 'regroup') return;
+    (window as any).__sbMode?.('board');
+    smartRef.current(false, e.instruction || undefined);
+  }), []);
 
   // Make sure every visible entity has a place on the board.
   useEffect(() => {
@@ -432,7 +441,8 @@ export default function Board() {
   });
 
   useEffect(() => {
-    (window as any).__sbRegroup = () => smartGroup();
+    (window as any).__sbRegroup = (rule?: unknown) => smartGroup(false, typeof rule === 'string' && rule.length > 12 ? rule : undefined);
+    (window as any).__sbRegroupRule = (rule: string) => smartGroup(false, rule);
     (window as any).__sbHide = (ids: string[]) => hide(ids);
     (window as any).__sbAttention = attentionIds(board.filter((r) => !r.hidden && !isGroup(r.id)).map((r) => r.id));
     // Used by the palette and the end-to-end tests to bring a card into view.
@@ -497,7 +507,7 @@ export default function Board() {
           bgColor="#FFFFFF" maskColor="rgba(24,24,27,.07)" maskStrokeColor="rgba(24,24,27,.35)" maskStrokeWidth={1} style={{ width: 168, height: 108 }} />
       </ReactFlow>
 
-      <BoardTools busy={busy} onSmart={() => smartGroup()} off={off} setOff={setOff} overview={overview} onOverview={toggleOverview} />
+      <BoardTools busy={busy} onSmart={(rule) => smartGroup(false, rule)} off={off} setOff={setOff} overview={overview} onOverview={toggleOverview} />
 
       {menu && (
         <div className="menu board-menu" style={{ left: menu.x, top: menu.y, position: 'fixed' }} onClick={(e) => e.stopPropagation()}>

@@ -1,259 +1,82 @@
-import React, { memo, useMemo, useRef, useState } from 'react';
-import { Bot, Download, Search, X } from 'lucide-react';
+import React, { useMemo, useState } from 'react';
+import { useReactFlow } from '@xyflow/react';
+import { Download, RotateCw, Search, X } from 'lucide-react';
 import { useStore } from '../lib/store';
-import { Account, Entity, Run } from '../lib/api';
-import { needsAttention, useSeen } from '../lib/attention';
-import { ago, baseName, isNoise, PROMPTABLE } from '../lib/format';
-import { AgentLogo, ClaudeLogo } from './Logos';
-import { GrokAvatar, GroupAvatar } from './GrokAvatar';
-import Composer from './Composer';
 import { useImport } from './ImportChats';
+import { dueLabel } from '../lib/format';
+import { DAY, groupItems, Item, Section, useItems } from './home/items';
+import { placeInTopics, useTopics } from './home/topics';
+import TopicSection from './home/TopicSection';
 import './live.css';
 
-type Filter = 'all' | 'claude' | 'grok' | 'desktop' | 'attn';
-type Family = 'claude' | 'grok' | 'desktop' | 'cursor' | 'codex' | 'other';
-type Item = {
-  e: Entity; family: Family; group: string; groupLabel: string; running: boolean; attn: boolean;
-  activity: string; chip: string; subs: number; subsLive: number;
-};
-type Group = { key: string; label: string; family: Family; items: Item[] };
+export { clean, toolVerb } from './home/items';
 
-const DAY = 86400000;
+type Filter = 'all' | 'claude' | 'grok' | 'desktop' | 'attn';
+type GroupBy = 'topic' | 'status' | 'account';
+
 const FILTERS: { id: Filter; label: string }[] = [
   { id: 'all', label: 'All' }, { id: 'claude', label: 'Claude' }, { id: 'grok', label: 'Grok' },
   { id: 'desktop', label: 'Desktop' }, { id: 'attn', label: 'Needs you' },
 ];
-const FAMILY_ORDER: Family[] = ['claude', 'grok', 'desktop', 'cursor', 'codex', 'other'];
-const FAMILY_LABEL: Record<Family, string> = { claude: 'Claude', grok: 'Grok', desktop: 'Claude desktop', cursor: 'Cursor', codex: 'Codex', other: 'Other' };
-
-function familyOf(e: Entity): Family {
-  if (e.source === 'claude-app' || e.meta?.category === 'desktop') return 'desktop';
-  if (e.source === 'grok-bot') return 'grok';
-  if (e.source === 'cursor') return 'cursor';
-  if (e.source === 'codex') return 'codex';
-  if (e.source === 'claude-code' || e.source === 'anthropic-api') return 'claude';
-  return 'other';
-}
-
-// Plain one-line text: markdown links keep their label, bare URLs and code ticks go.
-export const clean = (s: string) => s
-  .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
-  .replace(/https?:\/\/\S+/g, '')
-  .replace(/[#*`_>|[\]]/g, '')
-  .replace(/\(\s*\)/g, '')
-  .replace(/\s+/g, ' ')
-  .trim();
-
-// The first meaningful line; a lead-in ending in ":" pulls in the line after it.
-function firstLine(s: string): string {
-  const lines = s.split('\n').map(clean).filter(Boolean);
-  if (!lines.length) return '';
-  return lines[0].endsWith(':') && lines[1] ? lines[1] : lines[0];
-}
-
-const lastSentence = (s: string) => {
-  const lines = s.split('\n').map(clean).filter(Boolean);
-  const last = lines[lines.length - 1] || '';
-  return last.endsWith(':') && lines.length > 1 ? lines[lines.length - 2] : last;
+const GROUP_BY: { id: GroupBy; label: string }[] = [{ id: 'topic', label: 'Topic' }, { id: 'status', label: 'Status' }, { id: 'account', label: 'Account' }];
+const savedGroupBy = (): GroupBy => {
+  const v = localStorage.getItem('sb.homeGroup');
+  return v === 'status' || v === 'account' ? v : 'topic';
 };
 
-// A tool call as a short verb ("Running tests"), never its raw arguments.
-export function toolVerb(label: string): string {
-  const [name = '', ...rest] = label.trim().split(/\s+/);
-  const arg = rest.join(' ');
-  const file = /^[\w.@-]+\.\w{1,6}$/.test(arg) ? arg : '';
-  if (name === 'Bash') {
-    if (/\b(pytest|jest|vitest|mocha|e2e|npm (run )?test|go test|cargo test)\b/.test(arg)) return 'Running tests';
-    if (/\b(tsc|vite build|npm run build|cargo build|make|webpack|next build)\b/.test(arg)) return 'Building';
-    if (/\b(npm|pnpm|yarn|pip|brew) (i|install|add)\b/.test(arg)) return 'Installing packages';
-    if (/\bgit\b/.test(arg)) return 'Working with git';
-    if (/\b(grep|rg|find|ls|cat|head|tail|sed -n)\b/.test(arg)) return 'Looking through files';
-    if (/\b(curl|wget)\b/.test(arg)) return 'Fetching from the web';
-    return 'Running a command';
-  }
-  if (name === 'Edit' || name === 'MultiEdit' || name === 'NotebookEdit') return file ? `Editing ${file}` : 'Editing files';
-  if (name === 'Write') return file ? `Writing ${file}` : 'Writing a file';
-  if (name === 'Read') return file ? `Reading ${file}` : 'Reading files';
-  if (name === 'Grep' || name === 'Glob') return 'Searching the code';
-  if (name === 'WebFetch' || name === 'WebSearch') return 'Reading the web';
-  if (name === 'Task' || name === 'Agent') return 'Running a subagent';
-  if (name === 'TodoWrite') return 'Planning next steps';
-  if (name === 'Skill') return 'Using a skill';
-  if (name.startsWith('mcp__')) return `Using ${name.split('__')[1]?.replace(/[-_]/g, ' ') || 'a connector'}`;
-  return name ? 'Working' : '';
+// Brings a topic's chats into view on the board: fit them all, or center the first if fitting fails.
+function useOpenOnBoard(onMode?: (m: 'board' | 'live') => void) {
+  const rf = useReactFlow();
+  return (ids: string[]) => {
+    onMode?.('board');
+    setTimeout(() => {
+      const on = ids.filter((id) => rf.getInternalNode(id));
+      if (!on.length) { useStore.getState().notify('Not on the board yet — use Import chats to add them'); return; }
+      rf.fitView({ nodes: on.map((id) => ({ id })), padding: 0.25, maxZoom: 1, duration: 450 })
+        .catch(() => (window as any).__sbCenter?.(on[0]));
+    }, 80);
+  };
 }
 
-const tsOf = (v: unknown) => (typeof v === 'number' ? v : typeof v === 'string' ? Date.parse(v) || 0 : 0);
-
-function activityOf(e: Entity, live: Run | undefined, running: boolean): string {
-  const a = e.meta?.activity;
-  if (running && live?.status === 'running' && live.text) return lastSentence(live.text).slice(-140);
-  if (typeof a === 'string') return firstLine(a).slice(0, 140);
-  const fresh = Date.now() - tsOf(e.meta?.previewAt) < 30000;
-  if (running || a?.running) {
-    if (a?.text && fresh) return lastSentence(a.text).slice(0, 140);
-    // A source-written line ("Running Claude Code · …") beats a generic verb for an unknown tool.
-    if (a?.tool) { const v = toolVerb(a.tool); if (v !== 'Working' || !a.text) return v; }
-    if (a?.text) return lastSentence(a.text).slice(0, 140);
-    return 'Working';
-  }
-  return firstLine(e.preview || a?.text || '').slice(0, 140);
-}
-
-const SCRATCH = /\/scratch-workspaces\//;
-
-function clientChip(e: Entity, clientPaths: [string, string][]): string {
-  if (e.meta?.client?.name) return e.meta.client.name;
-  const cwd: string = e.meta?.cwd || '';
-  if (cwd) for (const [p, name] of clientPaths) if (cwd === p || cwd.startsWith(`${p}/`)) return name;
-  let chip = typeof e.meta?.project === 'string' && !e.meta.project.startsWith('pj:') ? e.meta.project : baseName(cwd);
-  // Desktop-app chats live in throwaway scratch folders; their names mean nothing to the user.
-  if (/^scratch-/.test(chip) || (SCRATCH.test(cwd) && /^scratch-|^[0-9a-f-]{20,}$/.test(baseName(cwd)))) return '';
-  if (chip === 'Desktop') chip = 'Desktop folder';
-  return chip;
-}
-
-function attentionSet(): Set<string> {
-  const flag = (window as any).__sbAttention;
-  return new Set(Array.isArray(flag) ? flag : []);
-}
-
-function useItems(): Item[] {
-  const entities = useStore((s) => s.entities);
-  const live = useStore((s) => s.liveByEntity);
-  const accounts = useStore((s) => s.accounts);
-  const seen = useSeen((s) => s.seen);
-  const base = useSeen((s) => s.base);
-  return useMemo(() => {
-    const accById: Record<string, Account> = {};
-    for (const a of accounts) accById[a.id] = a;
-    const clientPaths: [string, string][] = [];
-    for (const e of entities) {
-      const c = e.kind === 'client' ? e.meta?.client : null;
-      for (const p of c?.project_paths || []) clientPaths.push([String(p).replace(/\/+$/, ''), c.name]);
-    }
-    clientPaths.sort((x, y) => y[0].length - x[0].length);
-    const flagged = attentionSet();
-    const out: Item[] = [];
-    for (const e of entities) {
-      if (e.kind !== 'session' || e.meta?.archived || isNoise(e)) continue;
-      const family = familyOf(e);
-      const run = live[e.id];
-      const subs = Array.isArray(e.meta?.subagents) ? e.meta.subagents : [];
-      const subsLive = subs.filter((s: any) => s?.status === 'running').length;
-      // A Grok bot whose Claude CLI run is live is working, even if the bot itself is quiet.
-      const running = e.status === 'running' || run?.status === 'running' || !!(e.meta?.activity?.running) || subsLive > 0;
-      const acc = e.accountId ? accById[e.accountId] : undefined;
-      out.push({
-        e, family, running,
-        group: `${family}:${family === 'desktop' ? '' : e.accountId || ''}`,
-        groupLabel: family === 'desktop' || family === 'cursor' ? FAMILY_LABEL[family] : acc?.label || FAMILY_LABEL[family],
-        attn: flagged.has(e.id) || needsAttention(e, run, seen[e.id] ?? base),
-        activity: activityOf(e, run, running),
-        chip: clientChip(e, clientPaths),
-        subs: subs.length,
-        subsLive,
-      });
-    }
-    return out.sort((x, y) => (y.e.updatedAt || 0) - (x.e.updatedAt || 0));
-  }, [entities, live, accounts, seen, base]);
-}
-
-function groupItems(items: Item[]): Group[] {
-  const m = new Map<string, Group>();
-  for (const it of items) {
-    let g = m.get(it.group);
-    if (!g) { g = { key: it.group, label: it.groupLabel, family: it.family, items: [] }; m.set(it.group, g); }
-    g.items.push(it);
-  }
-  return [...m.values()].sort((a, b) => FAMILY_ORDER.indexOf(a.family) - FAMILY_ORDER.indexOf(b.family) || a.label.localeCompare(b.label));
-}
-
-function RowLogo({ it }: { it: Item }) {
-  const { e } = it;
-  if (it.family === 'grok' && e.meta?.isGroup && Array.isArray(e.meta.members) && e.meta.members.length) return <GroupAvatar members={e.meta.members} size={22} />;
-  if (it.family === 'grok') return <GrokAvatar color={e.meta?.avatarColor} shape={e.meta?.avatarShape} seed={e.meta?.agentId || e.id} size={22} working={it.running} />;
-  if (it.family === 'desktop') return <ClaudeLogo size={16} working={it.running} />;
-  return <AgentLogo source={e.source} size={16} working={it.running} />;
-}
-
-function GroupLogo({ g }: { g: Group }) {
-  if (g.family === 'grok') return <AgentLogo source="grok-bot" size={12} />;
-  if (g.family === 'desktop') return <ClaudeLogo size={12} />;
-  return <AgentLogo source={g.items[0]?.e.source || ''} size={12} />;
-}
-
-const Row = memo(function Row({ it }: { it: Item }) {
-  const [hot, setHot] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-  const { e } = it;
-  const canReply = PROMPTABLE(e.id) && !e.meta?.readOnly;
-  const cool = () => { if (!ref.current?.contains(document.activeElement)) setHot(false); };
+// What you owe people: replies, follow-ups and client next steps (the same list as "what's due").
+function ToDo() {
+  const due = useStore((s) => s.due);
+  const open = useStore((s) => s.open);
+  const [all, setAll] = useState(false);
+  if (!due.length) return null;
+  const list = all ? due : due.slice(0, 5);
   return (
-    <div ref={ref} className={`lv-row ${it.running ? 'running' : ''} ${it.attn ? 'attn' : ''} ${hot ? 'hot' : ''}`}
-      data-testid="live-row" data-id={e.id} role="button" tabIndex={0}
-      onClick={() => useStore.getState().open(e.id)}
-      onKeyDown={(ev) => { if (ev.key === 'Enter' && ev.target === ev.currentTarget) useStore.getState().open(e.id); }}
-      onMouseEnter={() => setHot(true)} onMouseLeave={cool}
-      onBlur={(ev) => { if (!ev.currentTarget.contains(ev.relatedTarget as Node) && !ev.currentTarget.matches(':hover')) setHot(false); }}>
-      <span className="lv-logo">{<RowLogo it={it} />}</span>
-      <div className="lv-body">
-        <div className="lv-top">
-          <span className="lv-title">{e.title || 'Untitled'}</span>
-          {it.chip && <span className="lv-chip">{it.chip}</span>}
-          {it.subs > 0 && (
-            <span className={`lv-subs ${it.subsLive ? 'on' : ''}`} title={`${it.subs} subagent${it.subs === 1 ? '' : 's'}${it.subsLive ? `, ${it.subsLive} running` : ''}`}>
-              <Bot size={11} />{it.subs}{it.subsLive > 0 && <em>{it.subsLive} live</em>}
-            </span>
-          )}
-        </div>
-        {it.activity && <div className="lv-act"><span className={it.running ? 'lv-shimmer' : ''}>{it.activity}</span></div>}
-        {hot && canReply && (
-          <div className="lv-reply" onClick={(ev) => ev.stopPropagation()} onKeyDown={(ev) => ev.stopPropagation()}>
-            <Composer id={e.id} placeholder={`Reply to ${e.title || 'this chat'}`} />
-          </div>
-        )}
-      </div>
-      <span className="lv-meta">
-        {it.running ? <span className="lv-working"><i />Working</span> : <span className="lv-age">{ago(e.updatedAt)}</span>}
-        {it.attn && <i className="lv-dot" data-testid="live-attn" title="Needs you" />}
-      </span>
-    </div>
-  );
-});
-
-function Section({ title, items, testId }: { title: string; items: Item[]; testId: string }) {
-  const groups = useMemo(() => groupItems(items), [items]);
-  if (!items.length) return null;
-  return (
-    <section className="lv-section" data-testid={testId}>
-      <h3 className="lv-h">{title}<span>{items.length}</span></h3>
-      {groups.map((g) => (
-        <div key={g.key} className="lv-group">
-          <div className="lv-gh"><GroupLogo g={g} />{g.label}</div>
-          {g.items.map((it) => <Row key={it.e.id} it={it} />)}
-        </div>
+    <section className="lv-section flat lv-todo" data-testid="home-todo">
+      <h3 className="lv-h">To do<span>{due.length}</span></h3>
+      {list.map((d) => (
+        <button key={d.id} className="lv-todo-row" onClick={() => open(d.ref)} data-testid="todo-row">
+          <i className={`lv-todo-dot ${d.overdue ? 'late' : ''}`} />
+          <span className="lv-todo-t">{d.title}</span>
+          <span className="lv-todo-m">{[d.client, d.due ? dueLabel(d.due) : ''].filter(Boolean).join(' · ')}</span>
+        </button>
       ))}
+      {due.length > 5 && <button className="lv-more" onClick={() => setAll(!all)}>{all ? 'Show less' : `Show all ${due.length}`}</button>}
     </section>
   );
 }
 
-// Simple mode: every chat and bot as a calm list, what needs you first, then what is working, then today.
-export default function LiveView() {
+// The home: every current chat, sorted by what it is about, what needs you first.
+export default function LiveView({ onMode }: { onMode?: (m: 'board' | 'live') => void }) {
   const all = useItems();
+  const { topics, refresh, busy } = useTopics();
+  const openOnBoard = useOpenOnBoard(onMode);
   const [filter, setFilter] = useState<Filter>(() => (localStorage.getItem('sb.liveFilter') as Filter) || 'all');
+  const [groupBy, setGroupByState] = useState<GroupBy>(savedGroupBy);
   const [q, setQ] = useState('');
   const [earlier, setEarlier] = useState(false);
   const pick = (f: Filter) => { setFilter(f); localStorage.setItem('sb.liveFilter', f); };
+  const setGroupBy = (g: GroupBy) => { setGroupByState(g); localStorage.setItem('sb.homeGroup', g); };
 
-  const summary = useMemo(() => {
-    const midnight = new Date().setHours(0, 0, 0, 0);
-    return {
-      working: all.filter((i) => i.running).length,
-      attn: all.filter((i) => i.attn).length,
-      today: all.filter((i) => (i.e.updatedAt || 0) >= midnight).length,
-    };
-  }, [all]);
+  const summary = useMemo(() => ({
+    working: all.filter((i) => i.running).length,
+    attn: all.filter((i) => i.attn).length,
+    chats: all.filter((i) => i.running || i.attn || (i.e.updatedAt || 0) >= Date.now() - 7 * DAY).length,
+  }), [all]);
 
   const shown = useMemo(() => {
     const needle = q.trim().toLowerCase();
@@ -267,7 +90,7 @@ export default function LiveView() {
   }, [all, filter, q]);
 
   const sections = useMemo(() => {
-    const since = Date.now() - 3 * DAY;
+    const since = Date.now() - 7 * DAY;
     const needs: Item[] = [], working: Item[] = [], recent: Item[] = [], older: Item[] = [];
     for (const i of shown) {
       if (i.attn) needs.push(i);
@@ -278,16 +101,36 @@ export default function LiveView() {
     return { needs, working, recent, older: older.slice(0, 200) };
   }, [shown]);
 
+  const placed = useMemo(() => placeInTopics(shown, topics), [shown, topics]);
+  const topicGroups = useMemo(() => placed.groups.filter((g) => g.items.some((it) => !it.attn)), [placed]);
+  const accountGroups = useMemo(() => groupItems([...sections.working, ...sections.recent]), [sections]);
+
+  const olderList = groupBy === 'topic' ? placed.older.slice(0, 200) : sections.older;
+  const current = groupBy === 'topic' ? topicGroups.length : sections.working.length + sections.recent.length;
   const empty = !all.length;
-  const none = !empty && !sections.needs.length && !sections.working.length && !sections.recent.length && !(earlier && sections.older.length);
+  const none = !empty && !sections.needs.length && !current && !(earlier && olderList.length);
 
   return (
-    <div className="lv" data-testid="live-view">
+    <div className="lv" data-testid="live-view" data-tour="home">
       <div className="lv-col">
-        <div className="lv-summary" data-testid="live-summary">
-          <span><b>{summary.working}</b> working</span><i />
-          <span className={summary.attn ? 'warn' : ''}><b>{summary.attn}</b> need you</span><i />
-          <span><b>{summary.today}</b> today</span>
+        <div className="hm-head">
+          <div className="lv-summary" data-testid="live-summary">
+            <span><b>{summary.working}</b> working</span><i />
+            <span className={summary.attn ? 'warn' : ''}><b>{summary.attn}</b> needs you</span><i />
+            <span><b>{summary.chats}</b> chats</span>
+          </div>
+          <div className="hm-groupby" role="tablist" aria-label="Group by">
+            <span>Group by</span>
+            {GROUP_BY.map((g) => (
+              <button key={g.id} role="tab" aria-selected={groupBy === g.id} className={groupBy === g.id ? 'on' : ''}
+                data-testid={`home-group-${g.id}`} onClick={() => setGroupBy(g.id)}>{g.label}</button>
+            ))}
+            {groupBy === 'topic' && (
+              <button className={`hm-refresh ${busy ? 'spin' : ''}`} data-testid="topics-refresh" title="Re-sort into topics" disabled={busy} onClick={refresh}>
+                <RotateCw size={12} />
+              </button>
+            )}
+          </div>
         </div>
         <div className="lv-bar">
           <div className="lv-filters" role="tablist">
@@ -304,18 +147,31 @@ export default function LiveView() {
               onKeyDown={(ev) => { ev.stopPropagation(); if (ev.key === 'Escape') setQ(''); }} />
             {q && <button onClick={() => setQ('')} title="Clear"><X size={12} /></button>}
           </label>
-          <button className="lv-import" data-testid="live-import" onClick={() => useImport.getState().set(true)} title="Bring past chats onto the board"><Download size={13} />Import chats</button>
+          <button className="lv-import" data-testid="live-import" data-tour="import" onClick={() => useImport.getState().set(true)} title="Bring past chats onto the board"><Download size={13} />Import chats</button>
         </div>
 
-        {empty && <div className="lv-empty" data-testid="live-empty">No chats yet. Start one from the dock below and it shows up here live.</div>}
-        {none && <div className="lv-empty" data-testid="live-empty">{q || filter !== 'all' ? 'Nothing matches.' : 'All quiet. Nothing in the last 3 days.'}</div>}
+        {empty && <div className="lv-empty" data-testid="live-empty">No chats yet. Start one from the dock below, or import the ones you have.</div>}
+        {none && <div className="lv-empty" data-testid="live-empty">{q || filter !== 'all' ? 'Nothing matches.' : 'All quiet. Nothing in the past week.'}</div>}
 
-        <Section title="Needs you" items={sections.needs} testId="live-needs" />
-        <Section title="Working now" items={sections.working} testId="live-working" />
-        <Section title="Last 3 days" items={sections.recent} testId="live-recent" />
-        {earlier && <Section title="Earlier" items={sections.older} testId="live-earlier" />}
-        {sections.older.length > 0 && (
-          <button className="lv-more" onClick={() => setEarlier(!earlier)}>{earlier ? 'Hide earlier' : `Show ${sections.older.length} earlier`}</button>
+        <Section title="Needs you" items={sections.needs} testId="live-needs" flat tour="home-row" />
+        {!q && filter === 'all' && <ToDo />}
+
+        {groupBy === 'topic' && topicGroups.map((g, i) => (
+          <TopicSection key={g.id} g={g} first={i === 0} rowTour={i === 0 && !sections.needs.length} onBoard={openOnBoard} />
+        ))}
+        {groupBy === 'status' && (
+          <>
+            <Section title="Working now" items={sections.working} testId="live-working" tour={sections.needs.length ? undefined : 'home-row'} />
+            <Section title="This week" items={sections.recent} testId="live-recent" />
+          </>
+        )}
+        {groupBy === 'account' && accountGroups.map((g, i) => (
+          <Section key={g.key} title={g.label} items={g.items} testId="live-account" flat tour={i === 0 && !sections.needs.length ? 'home-row' : undefined} />
+        ))}
+
+        {earlier && <Section title="Earlier" items={olderList} testId="live-earlier" />}
+        {olderList.length > 0 && (
+          <button className="lv-more" onClick={() => setEarlier(!earlier)}>{earlier ? 'Hide earlier' : `Show ${olderList.length} earlier`}</button>
         )}
       </div>
     </div>

@@ -1,5 +1,8 @@
 'use strict';
 const { app, BrowserWindow, ipcMain, shell, nativeTheme, Menu } = require('electron');
+// Preview mode (SB_PREVIEW=1 or --preview): sample data in its own home folder, stub CLIs, no real
+// Claude/Grok/Google. Must run before util.cjs, which reads HOME when it loads.
+if (process.env.SB_PREVIEW === '1' || process.argv.includes('--preview')) require('../scripts/preview-data/preview-env.cjs').enter(app);
 // macOS ignores $HOME for Electron's profile folder, so tests and sandboxes pass their own.
 if (process.env.SB_USER_DATA) app.setPath('userData', process.env.SB_USER_DATA);
 const fs = require('fs');

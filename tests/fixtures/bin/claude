@@ -60,31 +60,37 @@ process.stdin.on('end', () => {
   ].map((r) => JSON.stringify(r)).join('\n') + '\n');
 });
 
+// The real item lines ("12. [kind] Title | folder: x | client: y | ..."), not the indented examples.
+function itemRows(text) {
+  const rows = [];
+  for (const line of text.split('\n')) {
+    const m = line.match(/^(\d+)\. \[([^\]]+)\] (.*)$/); if (!m) continue;
+    const [title, ...fields] = m[3].split(' | ');
+    const f = {};
+    for (const x of fields) { const i = x.indexOf(': '); if (i > 0) f[x.slice(0, i)] = x.slice(i + 2).trim(); }
+    rows.push({ n: Number(m[1]), kind: m[2], title, client: f.client || null, folder: f.folder || null, line });
+  }
+  return rows;
+}
+
 // Smart group asks for JSON: group the numbered cards by the client each one mentions.
 function smartGroup(text) {
   if (!/Group these cards from my work whiteboard/.test(text)) return null;
   const groups = new Map();
-  for (const line of text.split('\n')) {
-    const m = line.match(/^(\d+)\. /); if (!m) continue;
-    const c = line.match(/[(,]\s*client ([^,)]+)[,)]/);
-    const label = c ? c[1].trim() : 'Everything else';
-    groups.set(label, [...(groups.get(label) || []), Number(m[1])]);
+  for (const r of itemRows(text)) {
+    const label = r.client || 'Everything else';
+    groups.set(label, [...(groups.get(label) || []), r.n]);
   }
   return JSON.stringify({ groups: [...groups].map(([label, items]) => ({ label, items })) });
 }
 
-// The home asks for a client / project tree as JSON: one per client, else per project folder. Meetings, emails and
-// outputs (lines tagged "[meeting]" etc.) with no client join a folder topic named in their title.
+// The home asks for a client / project tree as JSON: one per client, else per project folder. Meetings and
+// emails with no client join a folder topic named in their title.
 // With the owner's own groups, each item goes to the first group whose name it mentions, else Other.
 function topics(text) {
   if (!/Sort them into 2 to 8 topics/.test(text)) return null;
   if (/Use EXACTLY these top-level groups/.test(text)) return ownGroups(text);
-  const rows = [];
-  for (const line of text.split('\n')) {
-    const m = line.match(/^(\d+)\. (\[[^\]]+\] )?(.*?) \(([^)]*)\)/); if (!m) continue;
-    const client = m[4].match(/client ([^,]+)/), folder = m[4].match(/folder ([^,]+)/);
-    rows.push({ n: Number(m[1]), title: m[3].toLowerCase(), client: !!client, label: client ? client[1].trim() : folder ? folder[1].trim() : null });
-  }
+  const rows = itemRows(text).map((r) => ({ n: r.n, title: r.title.toLowerCase(), client: !!r.client, label: r.client || r.folder }));
   const folders = [...new Set(rows.map((r) => r.label).filter(Boolean))];
   const groups = new Map();
   for (const r of rows) {
@@ -99,10 +105,9 @@ function ownGroups(text) {
   const labels = [...text.matchAll(/^ {2}"([^"]+)"/gm)].map((m) => m[1]);
   const groups = new Map(labels.map((l) => [l, []]));
   groups.set('Other', []);
-  for (const line of text.split('\n')) {
-    const m = line.match(/^(\d+)\. /); if (!m) continue;
-    const hit = labels.find((l) => line.toLowerCase().includes(l.toLowerCase())) || 'Other';
-    groups.get(hit).push(Number(m[1]));
+  for (const r of itemRows(text)) {
+    const hit = labels.find((l) => r.line.toLowerCase().includes(l.toLowerCase())) || 'Other';
+    groups.get(hit).push(r.n);
   }
   return JSON.stringify({ clients: [...groups].filter(([, items]) => items.length).map(([label, items]) => ({ label, client: label !== 'Other', projects: [{ label, summary: `${items.length} items`, items }] })) });
 }

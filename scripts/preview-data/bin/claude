@@ -1,0 +1,53 @@
+#!/usr/bin/env node
+'use strict';
+// Preview-only stand-in for `claude`: the test stub does the work, but the board's grouping
+// question gets the answer the tuned prompt aims for (clients first, Marketing, Grok Bot ·
+// calendar, My projects), so the preview shows the finished layout without spending tokens.
+const { spawnSync } = require('child_process');
+const path = require('path');
+const STUB = path.join(__dirname, '..', '..', '..', 'tests', 'fixtures', 'bin', 'claude');
+const args = process.argv.slice(2);
+if (args[0] === 'auth') process.exit(spawnSync(STUB, args, { stdio: 'inherit' }).status || 0);
+
+let input = '';
+process.stdin.on('data', (d) => { input += d; });
+process.stdin.on('end', () => {
+  const reply = /Sort them into 2 to 8 topics/.test(input) && !/Use EXACTLY these top-level groups/.test(input) ? curated(input) : null;
+  const env = reply ? { ...process.env, SB_STUB_REPLY: reply } : process.env;
+  const r = spawnSync(STUB, args, { input, env, stdio: ['pipe', 'inherit', 'inherit'] });
+  process.exit(r.status || 0);
+});
+
+function rows(text) {
+  const out = [];
+  for (const line of text.split('\n')) {
+    const m = line.match(/^(\d+)\. \[([^\]]+)\] (.*)$/); if (!m) continue;
+    const [title, ...fields] = m[3].split(' | ');
+    const f = {};
+    for (const x of fields) { const i = x.indexOf(': '); if (i > 0) f[x.slice(0, i)] = x.slice(i + 2).trim(); }
+    out.push({ n: Number(m[1]), kind: m[2].toLowerCase(), title, folder: f.folder || '', text: [title, f.folder, f.client, f.with].filter(Boolean).join(' ').toLowerCase() });
+  }
+  return out;
+}
+
+const pretty = (s) => String(s || '').replace(/[-_]+/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()).trim();
+
+function curated(text) {
+  const groups = new Map(); // label -> { client, projects: Map(label -> items) }
+  const put = (group, client, project, n) => {
+    const g = groups.get(group) || { client, projects: new Map() };
+    g.projects.set(project, [...(g.projects.get(project) || []), n]);
+    groups.set(group, g);
+  };
+  for (const r of rows(text)) {
+    const project = r.kind === 'meeting' ? 'Meetings' : r.folder ? pretty(r.folder) : pretty(r.title).slice(0, 28);
+    const grok = r.kind.includes('grok');
+    if (grok && (/^grok bot$/i.test(r.title.trim()) || /calendar/.test(r.title.toLowerCase()))) put('Grok Bot · calendar', false, 'Calendar', r.n);
+    else if (grok && /outreach|marketing|seo|posting|replier/.test(r.title.toLowerCase())) put('Marketing', false, /seo/.test(r.title.toLowerCase()) ? 'SEO' : 'Outreach and posting', r.n);
+    else if (/michael|brightline/.test(r.text)) put('Michael · Brightline Realty', true, project, r.n);
+    else if (/andrew/.test(r.text)) put("Andrew · Andrew's Coffee", true, project, r.n);
+    else if (/alpha school/.test(r.text)) put('Alpha School', true, project, r.n);
+    else put('My projects', false, project, r.n);
+  }
+  return JSON.stringify({ clients: [...groups].map(([label, g]) => ({ label, client: g.client, projects: [...g.projects].map(([p, items]) => ({ label: p, summary: `${items.length} chat${items.length === 1 ? '' : 's'}`, items })) })) });
+}

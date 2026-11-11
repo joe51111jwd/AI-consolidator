@@ -1,6 +1,6 @@
 {
   "name": "switchboard",
-  "version": "3.9.0",
+  "version": "3.13.0",
   "description": "One whiteboard for your AI agents, chats, code projects and clients.",
   "main": "electron/main.cjs",
   "scripts": {
@@ -10,6 +10,7 @@
     "dist": "vite build --config vite.config.mjs && electron-builder --mac",
     "typecheck": "tsc --noEmit",
     "demo": "vite build --config vite.config.mjs && node scripts/demo.cjs",
+    "preview": "vite build --config vite.config.mjs && electron . --preview",
     "test": "node tests/build-if-stale.cjs && node tests/e2e.cjs"
   },
   "author": "joe51111jwd",
@@ -49,6 +50,8 @@
     "files": [
       "electron/**",
       "dist-renderer/**",
+      "scripts/preview-data/**",
+      "tests/fixtures/bin/**",
       "package.json"
     ],
     "directories": {

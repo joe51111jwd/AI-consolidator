@@ -4,10 +4,11 @@
 const path = require('path');
 const hub = require('../hub.cjs');
 const { HOME, truncate } = require('../util.cjs');
+const P = require('./topics.cjs').prompt;
 
 const COLORS = ['#3F7A5E', '#7A5A8C', '#C0603E', '#4E6E7E', '#B08A2E', '#9A4B5B', '#5E7F3A', '#8A6B52'];
 const colorFor = (label) => COLORS[[...label.toLowerCase()].reduce((h, c) => (h * 31 + c.charCodeAt(0)) >>> 0, 7) % COLORS.length];
-const AI_LIMIT = 150;
+const RULE_MAX_GROUPS = 8;
 
 function matches(c, email) {
   if (!email) return false;
@@ -59,13 +60,16 @@ function heuristic(list, all, clients) {
   return [...groups.values()].sort((a, b) => b.ids.length - a.ids.length);
 }
 
-const SOURCE_LABEL = { 'grok-bot': 'Grok bot', 'claude-code': 'Claude chat', codex: 'Codex chat', cursor: 'Cursor agent', gmail: 'email', granola: 'meeting' };
+// Each card as one line, in the same shape as the home's topics prompt.
 function describe(e, i, clients, links) {
   const m = e.meta || {};
   const c = clientOf(e, clients);
-  const linked = (links.get(e.id) || []).slice(0, 3);
-  const bits = [SOURCE_LABEL[e.source] || (e.kind === 'session' ? `${m.category || ''} session` : e.kind), m.cwd && m.cwd !== HOME ? `folder ${path.basename(m.cwd)}` : '', c ? `client ${c.name}` : '', linked.length ? `linked to ${linked.join(', ')}` : ''].filter(Boolean).join(', ');
-  return `${i + 1}. ${truncate(e.title, 80)} (${bits})${e.preview ? ` - ${truncate(e.preview, 100)}` : ''}`;
+  const content = e.kind === 'session' ? P.contentOf(e) : { first: '', last: e.preview };
+  return P.itemLine(i + 1, {
+    kind: P.kindLabel(e), title: e.title, folder: m.cwd && m.cwd !== HOME && !m.noise ? path.basename(m.cwd) : '',
+    client: c ? c.name : '', linked: (links.get(e.id) || []).slice(0, 3).join(', '),
+    asked: content.first !== e.title ? content.first : '', latest: content.last,
+  });
 }
 
 function linksFor(list) {
@@ -80,26 +84,36 @@ function linksFor(list) {
   return links;
 }
 
-async function askClaude(list, clients, instruction) {
-  const rule = String(instruction || '').trim();
-  const text = `Group these cards from my work whiteboard into 2 to 8 groups ${rule ? 'following my rule below exactly' : 'by client, project or purpose'}.
-${rule ? `My rule: "${truncate(rule, 400)}"\n` : ''}Reply with JSON only, no prose: {"groups":[{"label":"Short name","items":[1,2]}]}
+const SMART_ANSWERS = [
+  JSON.stringify({ groups: [{ label: 'Michael', items: [1, 2] }] }),
+  JSON.stringify({ groups: [{ label: P.MARKETING, items: [1] }, { label: P.MAIN_BOT, items: [2] }, { label: P.MINE, items: [3] }] }),
+];
+
+function smartPrompt(items, clients, rule) {
+  const links = linksFor(items);
+  const max = rule ? RULE_MAX_GROUPS : P.MAX_GROUPS;
+  return `You sort the cards on my work whiteboard into a few named groups so I can see what I'm working on and for whom.
+Group these cards from my work whiteboard into 2 to ${max} groups${rule ? ', following my rule below exactly' : ''}.
+${rule ? `My rule: "${truncate(rule, 400)}"\nMy rule wins. Where it says nothing, group by what the work is about.` : P.CRITERIA}
+Each card: number, [kind], title, then folder / client / with / linked to / asked (first request) / latest (latest reply), when known.
+${rule ? '' : `${P.examples(SMART_ANSWERS)}\n`}Reply with JSON only, no prose, no code fence: {"groups":[{"label":"Short name","items":[1,2]}]}
 Use every item number exactly once. Labels are 1 to 3 plain words, no numbers or emoji.
 
-${list.map((e, i) => describe(e, i, clients, linksFor(list))).join('\n')}`;
-  const out = await hub.quickAsk(text);
-  const m = out.match(/\{[\s\S]*\}/);
-  if (!m) throw new Error('Claude did not answer with JSON');
-  const used = new Set();
-  const groups = [];
-  for (const g of JSON.parse(m[0]).groups || []) {
-    const label = truncate(String((g && g.label) || ''), 40);
-    const ids = ((g && (g.items || g.ids)) || []).map(Number).filter((n) => Number.isInteger(n) && n >= 1 && n <= list.length && !used.has(n))
-      .map((n) => { used.add(n); return list[n - 1].id; });
-    if (label && ids.length) groups.push({ label, color: colorFor(label), ids });
-  }
+Items:
+${items.map((e, i) => describe(e, i, clients, links)).join('\n')}`;
+}
+
+async function askClaude(list, clients, instruction) {
+  const rule = String(instruction || '').trim();
+  const items = P.forPrompt(list);
+  const parsed = P.readJson(await hub.quickAsk(smartPrompt(items, clients, rule)));
+  const raw = Array.isArray(parsed.groups) ? parsed.groups : Array.isArray(parsed.clients) ? parsed.clients : [];
+  const groups = P.repair(raw, items.length, rule ? RULE_MAX_GROUPS : P.MAX_GROUPS).map((g) => ({
+    label: g.label, color: colorFor(g.label), ids: g.projects.flatMap((p) => p.items.map((n) => items[n - 1].id)),
+  }));
   if (!groups.length) throw new Error('Claude returned no groups');
-  return { groups, rest: list.filter((_, i) => !used.has(i + 1)) };
+  const asked = new Set(items.map((e) => e.id));
+  return { groups, rest: list.filter((e) => !asked.has(e.id)) };
 }
 
 // Notes and outputs follow the card they have a line to, so a line never crosses the board
@@ -131,7 +145,7 @@ async function group(ids, { ai = true, instruction = '' } = {}) {
   const list = [...new Set(Array.isArray(ids) ? ids : [])].map((id) => byId.get(id)).filter(Boolean);
   if (!list.length) return { groups: [], via: 'none' };
   const clients = hub.clients();
-  if (ai && list.length > 2 && list.length <= AI_LIMIT) {
+  if (ai && list.length > 2) {
     try {
       const { groups, rest } = await askClaude(list, clients, instruction);
       for (const g of heuristic(rest, all, clients)) {
@@ -148,4 +162,5 @@ module.exports = {
   handlers: {
     'smartgroup:run': (ids, opts) => run(ids, opts || {}),
   },
+  prompt: { smartPrompt },
 };

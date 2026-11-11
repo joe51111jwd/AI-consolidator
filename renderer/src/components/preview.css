@@ -1,0 +1,13 @@
+.preview-banner {
+  position: fixed; top: 0; left: 50%; transform: translateX(-50%); z-index: 9999;
+  padding: 2px 12px; border-radius: 0 0 8px 8px;
+  background: var(--amber-soft, #FBEFD5); color: var(--ink, #1C1B19);
+  font-size: 11px; font-weight: 500; letter-spacing: 0.02em; pointer-events: none;
+}
+.preview-toggle {
+  display: flex; align-items: center; gap: 12px; margin: 16px 0 0; padding: 12px 14px;
+  border: 1px solid var(--line, #E6E3DD); border-radius: var(--r, 10px); background: var(--card, #fff);
+}
+.preview-toggle > div { flex: 1; min-width: 0; }
+.preview-toggle-title { font-size: 13px; font-weight: 600; color: var(--ink, #1C1B19); }
+.preview-toggle-sub { font-size: 12px; color: var(--ink-3, #8A867E); margin-top: 2px; }

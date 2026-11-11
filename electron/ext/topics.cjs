@@ -14,7 +14,6 @@ const { APP_DIR, HOME, truncate } = require('../util.cjs');
 const DAY = 86400000;
 const WINDOW = 7 * DAY;
 const SETTLE = 30000;
-const AI_LIMIT = 120;
 const NOISE = /\/scratch-workspaces\/|^(\/private)?\/tmp(\/|$)|^(\/private)?\/var\/folders\//;
 const NO_REPLY = /no-?reply|notifications?@|mailer|daemon|calendar-notification|updates?@|news(letter)?@/i;
 
@@ -41,8 +40,6 @@ const NOT_PEOPLE = new Set(('the this that these my our your his her their a an 
   + 'january february march april may june july august september october november december claude grok codex cursor chatgpt openai anthropic switchboard google gmail granola slack notion '
   + 'github vercel react electron next node python figma shopify webflow wordpress tiktok instagram linkedin twitter youtube seo api ui ux mcp ai me us it').split(' '));
 const PERSON_RE = /\b(?:for|with|from|to|client|call|meeting|email|tell|ask)\s+([A-Z][a-z]{2,15})\b|\b([A-Z][a-z]{2,15})['’]s\b/g;
-// How each kind is labelled for Claude.
-const KIND_TAG = { meeting: 'meeting', thread: 'email waiting on my reply' };
 
 let sendFn = null;
 let inflight = null;
@@ -75,9 +72,19 @@ function needsReply(e) {
 // The work on the home this week: chats touched in the last 7 days (or running / waiting), meetings
 // from the last 7 days (and the coming week) and threads waiting on a reply. Notes, outputs, client
 // and account cards are not work in progress and stay out.
+// Switchboard's own background runs (grouping, the main agent) and chats that only hold an error
+// say nothing about the owner's work, so they never shape the groups.
+function isJunk(e) {
+  const m = e.meta || {};
+  const cwd = String(m.cwd || '');
+  if (cwd && path.resolve(cwd) === path.resolve(APP_DIR)) return true;
+  const text = `${e.title || ''} ${e.preview || ''}`.trim();
+  return /^(API Error|Error:|Connection error|Request failed)/i.test(e.title || '') || (!!text && /^API Error\b/i.test(e.preview || '') && (m.messages || 0) <= 2);
+}
+
 function gather(all, now = Date.now()) {
   const since = now - WINDOW;
-  const chats = all.filter((e) => e.kind === 'session' && !(e.meta && e.meta.archived) && !isNoise(e)
+  const chats = all.filter((e) => e.kind === 'session' && !(e.meta && e.meta.archived) && !isNoise(e) && !isJunk(e)
     && ((e.updatedAt || 0) >= since || isLive(e)));
   const meetings = all.filter((e) => e.kind === 'meeting' && meetingAt(e) >= since && meetingAt(e) <= now + WINDOW);
   const threads = all.filter((e) => needsReply(e) && (e.updatedAt || 0) >= since);
@@ -321,14 +328,11 @@ function leastUsedAccount() {
   return [...claude].sort((x, y) => h5(x) - h5(y))[0];
 }
 
-// Parentheses and commas separate the details Claude reads, so they are kept out of the values.
-const bit = (s, n = 60) => truncate(String(s || '').replace(/[(),]/g, ' ').replace(/\s+/g, ' ').trim(), n);
-
 // What a chat is about: its first real prompt and the latest reply, from the transcript when it can
 // be read, else from the card.
 function contentOf(e) {
   const m = e.meta || {};
-  let first = e.title || '', last = (m.activity && typeof m.activity === 'object' ? m.activity.text : m.activity) || e.preview || '';
+  let first = m.asked || e.title || '', last = (m.activity && typeof m.activity === 'object' ? m.activity.text : m.activity) || e.preview || '';
   if (m.file && (e.source === 'claude-code' || e.source === 'claude-app')) {
     try {
       const s = claudeCode.parseSession(m.file);
@@ -338,86 +342,184 @@ function contentOf(e) {
       if (reply) last = reply.text;
     } catch {}
   }
+  // Grok bots: what they've been saying lately is where the client names are.
+  if (e.source === 'grok-bot' && Array.isArray(m.actions)) {
+    const said = m.actions.filter((a) => a && a.text && (a.kind === 'message' || a.kind === 'agent')).slice(0, 4).map((a) => a.text).join(' · ');
+    if (said) last = `${last} · ${said}`;
+  }
   const flat = (t) => String(t || '').replace(/\s+/g, ' ').trim();
-  return { first: truncate(flat(first), 300), last: truncate(flat(last), 300) };
+  return { first: truncate(flat(first), 300), last: truncate(flat(last), e.source === 'grok-bot' ? 600 : 300) };
 }
 
-function describe(e, i, clients) {
-  const m = e.meta || {};
-  const client = clientOf(e, clients);
-  let bits, body;
-  if (e.kind === 'session') {
-    const c = contentOf(e);
-    bits = [e.source, folderOf(e) ? `folder ${bit(folderOf(e))}` : '', client ? `client ${bit(client)}` : '', isLive(e) ? String(e.status || 'running') : ''];
-    body = [c.first && c.first !== e.title ? `asked: ${c.first}` : '', c.last ? `latest: ${c.last}` : ''].filter(Boolean).join(' | ');
-  } else if (e.kind === 'meeting') {
-    const who = (m.attendees || []).slice(0, 3).map((a) => a && (a.name || a.email)).filter(Boolean).map((x) => bit(x, 30)).join(' & ');
-    bits = ['granola', client ? `client ${bit(client)}` : '', who ? `with ${who}` : ''];
-    body = truncate(String(e.preview || '').replace(/\s+/g, ' '), 200);
-  } else {
-    bits = ['gmail', client ? `client ${bit(client)}` : '', (m.participants || [])[0] ? `from ${bit(m.participants[0], 40)}` : ''];
-    body = truncate(String(e.preview || '').replace(/\s+/g, ' '), 200);
-  }
-  const tag = KIND_TAG[e.kind] ? `[${KIND_TAG[e.kind]}] ` : '';
-  return `${i + 1}. ${tag}${bit(e.title || 'Untitled', 80)} (${bits.filter(Boolean).join(', ')})${body ? ` - ${body}` : ''}`;
+// ---- Asking Claude. The prompt pieces and the answer repair are shared with smart group and
+// scripts/try-grouping.cjs, so all three ask the same way.
+
+// At most this many items go into one prompt (the most recent first); the rest are placed by rule.
+const MAX_ITEMS = 80;
+const SOURCE_KIND = { 'claude-code': 'Claude chat', 'claude-app': 'Claude chat', codex: 'Codex chat', cursor: 'Cursor agent', 'grok-bot': 'Grok bot', granola: 'meeting', gmail: 'email' };
+const ENTITY_KIND = { meeting: 'meeting', thread: 'email', output: 'note', note: 'note', account: 'agent', client: 'client card', project: 'project' };
+const kindLabel = (e) => SOURCE_KIND[e.source] || ENTITY_KIND[e.kind] || 'chat';
+
+// One line per item: "12. [Claude chat] Title | folder: x | client: y | asked: … | latest: …".
+// " | " separates the fields, so it is kept out of the values.
+const clip = (s, n) => truncate(String(s || '').replace(/\s*\|\s*/g, ' / ').replace(/\s+/g, ' ').trim(), n);
+function itemLine(n, { kind, title, folder, client, status, who, linked, asked, latest }) {
+  const fields = [
+    folder && `folder: ${clip(folder, 40)}`, client && `client: ${clip(client, 40)}`, status && `status: ${clip(status, 20)}`,
+    who && `with: ${clip(who, 60)}`, linked && `linked to: ${clip(linked, 80)}`, asked && `asked: ${clip(asked, 160)}`, latest && `latest: ${clip(latest, kind === 'Grok bot' ? 280 : 200)}`,
+  ].filter(Boolean);
+  return [`${n}. [${kind}] ${clip(title, 80) || 'Untitled'}`, ...fields].join(' | ');
 }
+
+const CRITERIA = `1. My clients are PEOPLE (Michael, Andrew, …) and almost all my work is for one of them. Give each client one group named after them, with "client": true. The client is often named only inside "asked" or "latest" ("the listing page for Michael's agency"), not in the title or folder, so read those.
+2. Marketing bots and chats (posting, replying, checking posts, outreach, SEO, social) all go in ONE group: "${MARKETING}".
+3. My main Grok bot (the one that handles my calendar: scheduling, invites, reminders) goes alone in a small group "${MAIN_BOT}". Never spread it into other groups, even when it names a client.
+4. Research goes with the client or project it is about.
+5. My own personal and dev work with no client goes in ONE group: "${MINE}".
+6. Group by what the work is ABOUT, not by folder or app: a chat, a bot, a meeting and an email about the same thing belong together.
+7. At most ${MAX_GROUPS} groups. Fewer and broader is better; merge near-duplicates. Use "${NO_AREA}" only for what fits nowhere.`;
+
+// Worked examples are indented so they never read as real items.
+const EXAMPLE_ITEMS = [
+  ['Example A items:', [
+    itemLine(1, { kind: 'Claude chat', title: 'Hero copy tweaks', folder: 'web-builds', asked: "tighten the hero on the listing page for Michael's agency", latest: 'Rewrote the headline and CTA' }),
+    itemLine(2, { kind: 'meeting', title: 'Site review', who: 'Michael Reyes', latest: 'Agreed to launch the agency site Friday' }),
+  ]],
+  ['Example B items:', [
+    itemLine(1, { kind: 'Grok bot', title: 'Outreach', latest: 'Posted 3 threads, sent 12 cold DMs, checked replies' }),
+    itemLine(2, { kind: 'Grok bot', title: 'Grok Bot', latest: 'Moved the Thursday call with Andrew to 3pm' }),
+    itemLine(3, { kind: 'Claude chat', title: 'Fix sidebar scroll', folder: 'switchboard', asked: 'the sidebar loses its scroll position on refresh' }),
+  ]],
+];
+const indent = (s) => s.split('\n').map((l) => `  ${l}`).join('\n');
+function examples(answers) {
+  return EXAMPLE_ITEMS.map(([head, lines], i) => `${head}\n${indent(lines.join('\n'))}\nAnswer:\n${indent(answers[i])}`).join('\n');
+}
+const TOPIC_ANSWERS = [
+  JSON.stringify({ clients: [{ label: 'Michael', client: true, projects: [{ label: 'Agency website', summary: 'Hero rewritten, launch set for Friday', items: [1, 2] }] }] }),
+  JSON.stringify({ clients: [
+    { label: MARKETING, client: false, projects: [{ label: 'Outreach', summary: 'Threads posted, 12 DMs sent', items: [1] }] },
+    { label: MAIN_BOT, client: false, projects: [{ label: 'Calendar', summary: 'Thursday call moved to 3pm', items: [2] }] },
+    { label: MINE, client: false, projects: [{ label: 'Switchboard', summary: 'Fixing sidebar scroll', items: [3] }] },
+  ] }),
+];
 
 const known = (clients) => clients.map((c) => [clientLabel(c), ...(c.emails || []), ...(c.domains || [])].filter(Boolean).join(' / ')).filter(Boolean).slice(0, 40);
 
-function groupingRules(rules) {
-  if (rules) return `- Use EXACTLY these top-level groups, with "client": true, and no others (plus "${NO_AREA}" for items that fit none):
-${rules.map((r) => `  "${r.label}"${r.hint ? `: ${r.hint}` : ''}`).join('\n')}
-`;
-  return `- PEOPLE FIRST: my clients are people. When the work is for a person (e.g. "Michael", "Andrew") or their company, make that person a top-level group with "client": true and put each of their projects inside it. Look at what was asked and the latest reply, not only the title.
-- My marketing bots and chats (posting, replying, outreach, SEO checking, social) all go in ONE group: "${MARKETING}".
-- My main Grok bot just handles my calendar: give it its own small group "${MAIN_BOT}". Do not spread it across other groups.
-- Research goes with the client or project it is about; only general research stands alone.
-- My own personal and dev work goes in ONE group: "${MINE}".
-`;
+// The items worth asking about first: live ones, then the most recent.
+const forPrompt = (list) => [...list].sort((a, b) => Number(isLive(b)) - Number(isLive(a)) || (b.updatedAt || 0) - (a.updatedAt || 0)).slice(0, MAX_ITEMS);
+
+function describe(e, i, clients) {
+  const m = e.meta || {};
+  const base = { kind: kindLabel(e), title: e.title, client: clientOf(e, clients) };
+  if (e.kind === 'session') {
+    const c = contentOf(e);
+    return itemLine(i + 1, { ...base, folder: folderOf(e), status: isLive(e) ? String(e.status || 'running') : '', asked: c.first !== e.title ? c.first : '', latest: c.last });
+  }
+  if (e.kind === 'meeting') {
+    const who = (m.attendees || []).slice(0, 3).map((a) => a && (a.name || a.email)).filter(Boolean).join(' & ');
+    return itemLine(i + 1, { ...base, who, latest: e.preview });
+  }
+  return itemLine(i + 1, { ...base, who: (m.participants || [])[0], latest: e.preview });
+}
+
+// The whole topics prompt for these items (already cut to MAX_ITEMS).
+function topicsPrompt(items, clients, rules = null) {
+  const names = known(clients);
+  const how = rules
+    ? `Use EXACTLY these top-level groups, with "client": true, and no others (plus "${NO_AREA}" for items that fit none):\n${rules.map((r) => `  "${r.label}"${r.hint ? `: ${r.hint}` : ''}`).join('\n')}\nInside a group, items about the same thing go in one project.`
+    : `${CRITERIA}\nInside a group, items about the same thing (same site, product, feature or task) go in one project.`;
+  return `You sort my AI chats, bots, meetings and emails from this week so I can see at a glance what I'm working on and for whom.
+Sort them into 2 to 8 topics as a tree: a few top-level groups (clients or areas), each holding projects.
+${how}
+${names.length ? `Known clients: ${names.join('; ')}.\n` : ''}Each item: number, [kind], title, then folder / client / with / asked (first request) / latest (latest reply), when known.
+${rules ? '' : `${examples(TOPIC_ANSWERS)}\n`}Reply with JSON only, no prose, no code fence: {"clients":[{"label":"Michael","client":true,"projects":[{"label":"Short name","summary":"What is happening now, under 12 words","items":[1,2]}]}]}
+Use every item number exactly once. Labels are 1 to 4 plain words, no emoji.
+
+Items:
+${items.map((e, i) => describe(e, i, clients)).join('\n')}`;
+}
+
+// The JSON object in Claude's answer, forgiving a code fence, prose around it and trailing commas.
+function readJson(text) {
+  const m = String(text || '').match(/\{[\s\S]*\}/);
+  if (!m) throw new Error('Claude did not answer with JSON');
+  try { return JSON.parse(m[0]); } catch { return JSON.parse(m[0].replace(/,\s*([}\]])/g, '$1')); }
+}
+
+const itemNo = (x) => Number(x && typeof x === 'object' ? x.n ?? x.item ?? x.id : x);
+const cleanLabel = (s) => truncate(String(s || '').replace(/[\u{1F000}-\u{1FFFF}☀-➿]/gu, '').replace(/^\s*\d+[.)]\s*/, '').replace(/\s+/g, ' ').trim(), 40);
+
+// Strict reading of a grouped answer: [{ label, client, projects: [{ label, summary, items }] }] over
+// items 1..count. Bad numbers are dropped, an item placed twice stays where it came first, groups and
+// projects with the same name merge, items left out go to "Other", and past `max` groups the
+// smallest fold into "Other".
+function repair(groups, count, max = MAX_GROUPS) {
+  const used = new Set();
+  const out = [];
+  for (const g of Array.isArray(groups) ? groups : []) {
+    const label = cleanLabel(g && g.label) || NO_AREA;
+    let group = out.find((x) => x.label.toLowerCase() === label.toLowerCase());
+    if (!group) { group = { label, client: !!(g && g.client) && label !== NO_AREA, projects: [] }; out.push(group); }
+    const projects = g && Array.isArray(g.projects) ? g.projects : [g];
+    for (const p of projects) {
+      const items = ((p && (p.items || p.ids)) || []).map(itemNo).filter((n) => Number.isInteger(n) && n >= 1 && n <= count && !used.has(n) && used.add(n));
+      if (!items.length) continue;
+      const plabel = cleanLabel(p && p.label) || label;
+      const same = group.projects.find((x) => x.label.toLowerCase() === plabel.toLowerCase());
+      if (same) same.items.push(...items);
+      else group.projects.push({ label: plabel, summary: truncate(String((p && p.summary) || ''), 90), items });
+    }
+  }
+  const missing = Array.from({ length: count }, (_, i) => i + 1).filter((n) => !used.has(n));
+  const otherOf = () => out.find((g) => g.label === NO_AREA) || (out.push({ label: NO_AREA, client: false, projects: [] }), out[out.length - 1]);
+  const addOther = (p) => {
+    const o = otherOf();
+    const same = o.projects.find((x) => x.label.toLowerCase() === p.label.toLowerCase());
+    if (same) same.items.push(...p.items); else o.projects.push({ ...p, items: [...p.items] });
+  };
+  if (missing.length) addOther({ label: NO_AREA, summary: '', items: missing });
+  const size = (g) => g.projects.reduce((n, p) => n + p.items.length, 0);
+  const named = out.filter((g) => g.label !== NO_AREA && size(g));
+  if (named.length > max) {
+    const drop = new Set([...named].sort((a, b) => size(b) - size(a)).slice(max));
+    for (const g of drop) for (const p of g.projects) addOther(p);
+    return out.filter((g) => !drop.has(g) && size(g));
+  }
+  return out.filter((g) => size(g));
+}
+
+// Claude's topics answer as flat topics over `items`. An older flat answer ({topics:[...]}) reads
+// as one project per topic, each its own group.
+function readTopics(text, items, clients, rules = null) {
+  const parsed = readJson(text);
+  const raw = Array.isArray(parsed.clients) ? parsed.clients : Array.isArray(parsed.groups) ? parsed.groups
+    : (parsed.topics || []).map((t) => ({ label: t && t.label, client: false, projects: [t] }));
+  const topics = [];
+  for (const g of repair(raw, items.length, rules ? rules.length : MAX_GROUPS)) {
+    const rule = rules && rules.find((r) => words(r.label) === words(g.label));
+    const group = rules ? (rule ? rule.label : NO_AREA) : g.label;
+    const isClient = !!rule || (group !== NO_AREA && (g.client || clients.some((c) => words(clientLabel(c)) === words(group))));
+    for (const p of g.projects) {
+      const id = topicId(group, p.label);
+      const ids = p.items.map((n) => items[n - 1].id);
+      const same = topics.find((x) => x.id === id);
+      if (same) same.ids.push(...ids); else topics.push({ id, label: p.label, group, client: isClient, summary: p.summary, ids });
+    }
+  }
+  if (!topics.length) throw new Error('Claude returned no topics');
+  return topics;
 }
 
 async function askClaude(list, clients, rules = rulesOf()) {
   const a = leastUsedAccount();
   if (!a) throw new Error('No Claude account');
-  const names = known(clients);
-  const text = `These are my AI chats and agents from this week, with my meetings and emails waiting on my reply.
-Sort them into 2 to 8 topics by WHAT THE WORK IS ABOUT, as a tree: at most ${MAX_GROUPS} top-level groups (plus "${NO_AREA}" only if needed), each holding projects.
-${groupingRules(rules)}- Items working on the same thing (same product, site, feature or task) go in ONE project, whatever app or folder they are in.
-- Fewer, broader groups beat many small ones. Merge near-duplicates.
-${names.length ? `My clients: ${names.join('; ')}.\n` : ''}Reply with JSON only, no prose: {"clients":[{"label":"Client or area","client":true,"projects":[{"label":"Short name","summary":"What is happening right now, under 12 words","items":[1,2]}]}]}
-Use every item number exactly once. Labels are 1 to 4 plain words, no emoji.
-
-${list.map((e, i) => describe(e, i, clients)).join('\n')}`;
+  const items = forPrompt(list);
   const quiet = { ...a, config: { ...a.config, permissionMode: undefined } };
-  const res = await claudeCode.prompt(quiet, { cwd: APP_DIR, text, signal: AbortSignal.timeout(25000), extraArgs: ['--model', 'sonnet', '--tools', '', ...hub.internalArgs()] });
-  const m = String(res.text || '').match(/\{[\s\S]*\}/);
-  if (!m) throw new Error('Claude did not answer with JSON');
-  const parsed = JSON.parse(m[0]);
-  // An older flat answer ({topics:[...]}) reads as one project per topic, each its own group.
-  const groups = Array.isArray(parsed.clients) ? parsed.clients
-    : (parsed.topics || []).map((t) => ({ label: t && t.label, client: false, projects: [t] }));
-  const used = new Set();
-  const topics = [];
-  for (const g of groups) {
-    const said = truncate(String((g && g.label) || '').trim(), 40) || NO_AREA;
-    const rule = rules && rules.find((r) => words(r.label) === words(said));
-    const group = rules ? (rule ? rule.label : NO_AREA) : said;
-    const isClient = !!rule || (group !== NO_AREA && (!!(g && g.client) || clients.some((c) => words(clientLabel(c)) === words(group))));
-    for (const p of (g && g.projects) || []) {
-      const label = truncate(String((p && p.label) || '').trim(), 40);
-      const ids = ((p && (p.items || p.ids)) || []).map(Number)
-        .filter((n) => Number.isInteger(n) && n >= 1 && n <= list.length && !used.has(n))
-        .map((n) => { used.add(n); return list[n - 1].id; });
-      if (!label || !ids.length) continue;
-      const summary = truncate(String((p && p.summary) || '').replace(/\s+/g, ' ').trim(), 90);
-      const id = topicId(group, label);
-      const same = topics.find((x) => x.id === id);
-      if (same) { same.ids.push(...ids); continue; }
-      topics.push({ id, label, group, client: isClient, summary, ids });
-    }
-  }
-  if (!topics.length) throw new Error('Claude returned no topics');
-  return mergeRest(topics, list.filter((_, i) => !used.has(i + 1)), clients);
+  const res = await claudeCode.prompt(quiet, { cwd: APP_DIR, text: topicsPrompt(items, clients, rules), signal: AbortSignal.timeout(25000), extraArgs: ['--model', 'sonnet', '--tools', '', ...hub.internalArgs()] });
+  const topics = readTopics(res.text, items, clients, rules);
+  const asked = new Set(items.map((e) => e.id));
+  return mergeRest(topics, list.filter((e) => !asked.has(e.id)), clients);
 }
 
 // Items the AI topics don't cover (left out, or new since) join the topic with the same name, or
@@ -459,7 +561,7 @@ async function recompute({ ai = true } = {}) {
     const key = keyOf(list);
     const rules = rulesOf();
     let topics = null, via = 'rules';
-    if (ai && list.length >= 2 && list.length <= AI_LIMIT) {
+    if (ai && list.length >= 2) {
       try { topics = capGroups(await askClaude(list, clients, rules), rules); via = 'ai'; } catch (e) { console.error('topics: falling back to rules:', e.message); }
     }
     if (!topics) topics = heuristic(list, clients, rules);
@@ -519,5 +621,6 @@ module.exports = {
     },
   },
   start,
+  prompt: { MAX_ITEMS, MAX_GROUPS, CRITERIA, MARKETING, MAIN_BOT, MINE, kindLabel, itemLine, contentOf, examples, topicsPrompt, readTopics, readJson, repair, forPrompt },
   _test: { heuristic, capGroups, peopleOf, ruleOf, cleanRules, projectOf, projectOther, project, keyOf, gather, decorate, describe, clientOf, tree },
 };

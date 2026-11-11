@@ -22,8 +22,10 @@ else
   osascript -e "tell application \"$(basename "$OLD_APP" .app)\" to quit" 2>/dev/null || true; sleep 2
   pkill -f "$OLD_APP/Contents/MacOS" 2>/dev/null || true
   R="$OLD_APP/Contents/Resources/app"
-  rm -rf "$R/electron" "$R/dist-renderer"
-  cp -R electron dist-renderer package.json "$R/"
+  # Everything package.json's build.files ships (top-level dirs/files), so new folders come along too.
+  for item in $(node -e "for (const g of require('./package.json').build.files) console.log(g.replace(/\/\*\*$/, ''))"); do
+    rm -rf "$R/$item"; mkdir -p "$R/$(dirname "$item")"; cp -R "$item" "$R/$item"
+  done
   plutil -replace CFBundleShortVersionString -string "$FULL" "$OLD_APP/Contents/Info.plist"
   plutil -replace CFBundleVersion -string "$FULL" "$OLD_APP/Contents/Info.plist"
   [ "$OLD_APP" != "$NEW_APP" ] && mv "$OLD_APP" "$NEW_APP"

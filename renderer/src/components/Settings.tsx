@@ -4,6 +4,7 @@ import { useStore } from '../lib/store';
 import Accounts from '../views/Accounts';
 import Clients from '../views/Clients';
 import Brain from '../views/Brain';
+import PreviewToggle from './PreviewToggle';
 import './shell.css';
 
 export type SettingsTab = 'accounts' | 'clients' | 'brain';
@@ -54,6 +55,7 @@ export default function Settings() {
         </div>
         <div className="settings-body" key={view}>
           {view === 'accounts' ? <Accounts /> : view === 'clients' ? <Clients /> : <Brain />}
+          {view === 'accounts' && <PreviewToggle />}
         </div>
       </aside>
     </>

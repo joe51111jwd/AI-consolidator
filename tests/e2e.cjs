@@ -21,9 +21,11 @@ const BIN = path.join(__dirname, 'fixtures', 'bin');
 const LOG = path.join(os.tmpdir(), `switchboard-e2e-${RUN}-calls.log`);
 const LOGINS = path.join(os.tmpdir(), `switchboard-e2e-${RUN}-logins.json`);
 const OPENED = path.join(os.tmpdir(), `switchboard-e2e-${RUN}-opened.log`);
+// Notifications are logged here instead of shown (SB_TEST_NOTIFY_LOG), one JSON line each.
+const NOTIFY = path.join(os.tmpdir(), `switchboard-e2e-${RUN}-notify.log`);
 // Own folder and port per run, so two runs (or a run beside the installed app) never collide.
 const PORT = String(47911 + (process.pid % 2000));
-process.on('exit', () => { if (!process.env.SB_KEEP) for (const p of [HOME, LOG, LOGINS, OPENED]) { try { fs.rmSync(p, { recursive: true, force: true }); } catch {} } });
+process.on('exit', () => { if (!process.env.SB_KEEP) for (const p of [HOME, LOG, LOGINS, OPENED, NOTIFY]) { try { fs.rmSync(p, { recursive: true, force: true }); } catch {} } });
 const shot = async (name) => { if (process.env.SB_SHOTS && page) await page.screenshot({ path: path.join(process.env.SB_SHOTS, `${name}.png`) }).catch(() => {}); };
 
 const S = {
@@ -100,7 +102,7 @@ const node = (id) => page.locator(`.react-flow__node[data-id="${id}"]`);
 async function launch() {
   const env = {
     ...process.env, HOME, PATH: `${BIN}:${process.env.PATH}`, SB_PORT: PORT,
-    SB_TEST_LOG: LOG, SB_TEST_LOGINS: LOGINS, SB_TEST_OPEN_LOG: OPENED, SB_USER_DATA: path.join(HOME, 'electron-profile'), SB_TEST_ACCESSIBILITY: '0', ...mock.env,
+    SB_TEST_LOG: LOG, SB_TEST_LOGINS: LOGINS, SB_TEST_OPEN_LOG: OPENED, SB_TEST_NOTIFY_LOG: NOTIFY, SB_USER_DATA: path.join(HOME, 'electron-profile'), SB_TEST_ACCESSIBILITY: '0', ...mock.env,
   };
   delete env.ANTHROPIC_API_KEY; delete env.CLAUDE_CONFIG_DIR; delete env.ELECTRON_RUN_AS_NODE;
   const args = [ROOT];
@@ -314,6 +316,190 @@ async function startRelay() {
   return { url, call, agent, close: () => new Promise((r) => server.close(r)) };
 }
 
+// Notifications (electron/ext/notify.cjs). They're logged to NOTIFY instead of shown; 'notify:test'
+// pretends the window is or isn't in front, forgets the per-card minute, and looks at the cards now.
+const notes = () => { try { return fs.readFileSync(NOTIFY, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)); } catch { return []; } };
+const BATCH_MS = 2000; // how long notify.cjs gathers events before showing them
+async function notificationChecks() {
+  console.log('\nNotifications');
+  const nt = (o) => api('notify:test', o);
+  const since = (n0) => notes().slice(n0);
+  const about = (n0, id) => since(n0).filter((x) => x.ids.includes(id));
+  const titleOf = async (id) => ((await api('entities', {})).find((e) => e.id === id) || {}).title;
+  const inspectorTitle = async () => ((await page.locator('.inspector .title').count()) ? page.locator('.inspector .title').first().innerText() : '');
+  const closeInspector = () => page.locator('.inspector .insp-head button[title="Close"]').click().catch(() => {});
+  // Prompts a card and waits for its reply (the fake Claude Code answers at once).
+  const ask = async (id, text) => {
+    const t0 = Date.now();
+    await api('prompt', id, text);
+    await until(async () => (await api('runs')).some((r) => r.entityId === id && r.startedAt >= t0 && r.status === 'done'), `${id} replied`);
+  };
+  const quiet = () => sleep(BATCH_MS + 800);
+
+  await check('a chat that finishes while Switchboard is in the back notifies; clicking it opens that chat', async () => {
+    await view('Board');
+    await closeInspector();
+    await nt({ front: false, reset: true });
+    const n0 = notes().length;
+    const title = await titleOf(S.crew);
+    await ask(S.crew, 'Add a notes column to the crew export');
+    const n = await until(() => about(n0, S.crew)[0], 'a notification for the finished chat');
+    const name = title.length > 60 ? `${title.slice(0, 59)}…` : title; // long names are shortened
+    assert(n.kind === 'finished' && n.title === `${name} finished` && n.ids.length === 1, JSON.stringify(n));
+    assert(/notes column/.test(n.body), `the reply is in the body: ${n.body}`);
+    assert(await api('notify:click', n.key), 'the click was handled');
+    await until(async () => (await inspectorTitle()).includes(title), 'the chat opened');
+    await until(async () => (await api('notify:status')).open === S.crew, 'the window reported the open chat');
+  });
+
+  await check('nothing for the chat you have open while Switchboard is in front; other chats still notify', async () => {
+    if ((await api('notify:status')).open !== S.crew) {
+      await center(S.crew, 0.8);
+      await node(S.crew).locator('.card-title').click();
+      await until(async () => (await api('notify:status')).open === S.crew, 'the chat is open');
+    }
+    await nt({ front: true, reset: true });
+    const n0 = notes().length;
+    await Promise.all([ask(S.crew, 'Rename the export button'), ask(S.seo, 'Add FAQ schema to the menu page')]);
+    await until(() => about(n0, S.seo).length === 1, 'a notification for the other chat');
+    await quiet();
+    assert(about(n0, S.crew).length === 0, 'none for the open chat');
+    await closeInspector();
+    await until(async () => (await api('notify:status')).open === null, 'the window reported it closed');
+  });
+
+  await check('at most one notification per chat per minute, and a burst becomes one summary', async () => {
+    await nt({ front: false, reset: true });
+    let n0 = notes().length;
+    await ask(S.seo, 'Shorten the title tags');
+    await until(() => about(n0, S.seo).length === 1, 'the first one shows');
+    await ask(S.seo, 'Now the meta descriptions');
+    await quiet();
+    assert(about(n0, S.seo).length === 1, `one per chat per minute (${about(n0, S.seo).length})`);
+    await nt({ reset: true });
+    n0 = notes().length;
+    const ids = [S.seo, S.crew, S.news];
+    await Promise.all(ids.map((id) => ask(id, 'Send me a one-line status update')));
+    const sum = await until(() => since(n0).find((x) => x.ids.length > 1), 'a summary');
+    await quiet();
+    assert(sum.title === '3 chats finished' && sum.kind === 'finished', JSON.stringify(sum));
+    assert(ids.every((id) => sum.ids.includes(id)), `names every chat: ${sum.ids}`);
+    assert(since(n0).length === 1, `one notification for the burst (${since(n0).map((x) => x.title).join(' | ')})`);
+  });
+
+  await check('Settings → Notifications: a switch per kind, and "Only when Switchboard isn\'t in front"', async () => {
+    await view('Accounts');
+    const box = page.getByTestId('notify-settings');
+    await box.scrollIntoViewIfNeeded();
+    assert(/Notifications/.test(await box.innerText()), 'the section is there');
+    for (const k of ['finished', 'waiting', 'grok', 'todo', 'onlyAway', 'badge']) assert((await box.getByTestId(`notify-${k}`).count()) === 1, `a switch for ${k}`);
+    assert((await box.getByTestId('notify-onlyAway').getAttribute('aria-checked')) === 'false', '"Only when not in front" starts off');
+    const sw = box.getByTestId('notify-onlyAway');
+    await until(async () => (await sw.isEnabled()), 'loaded');
+    await sw.click();
+    await until(async () => (await api('notify:settings')).onlyAway === true, 'saved');
+    await nt({ front: true, reset: true });
+    let n0 = notes().length;
+    await ask(S.seo, 'Check the alt text');
+    await quiet();
+    assert(about(n0, S.seo).length === 0, 'quiet while Switchboard is in front');
+    await nt({ front: false });
+    await ask(S.seo, 'And the image sizes');
+    await until(() => about(n0, S.seo).length === 1, 'notifies once it is in the back');
+    await box.getByTestId('notify-finished').click();
+    await until(async () => (await api('notify:settings')).finished === false, 'finished chats off');
+    await nt({ reset: true });
+    n0 = notes().length;
+    await ask(S.crew, 'Add a total row');
+    await quiet();
+    assert(about(n0, S.crew).length === 0, 'no notification with that kind off');
+    await box.getByTestId('notify-finished').click();
+    await sw.click();
+    await until(async () => { const s = await api('notify:settings'); return s.finished && !s.onlyAway; }, 'switched back');
+    n0 = notes().length;
+    await box.getByTestId('notify-sample').click();
+    await toast(/Sent a test notification/);
+    assert(since(n0).some((x) => x.kind === 'sample'), 'a test notification was sent');
+    await view('Board');
+  });
+
+  await check('a Grok bot posting something new notifies; so does a bot waiting on you', async () => {
+    await center(GB.cal, 0.8);
+    await nt({ front: false, reset: true });
+    let n0 = notes().length;
+    const now = Date.now();
+    const said = 'Moved the Harbor call to Friday 3pm';
+    grokWrite('u1.transcript.replicas.bot_cal', { entries: [
+      { id: 'c1', seq: 1, kind: 'message', role: 'assistant', content: 'Booked Friday 2pm', timestampMs: now - 21 * 60000 },
+      { id: 'c2', seq: 2, kind: 'message', role: 'assistant', content: said, timestampMs: now },
+    ] });
+    const cal = { lastEntry: { kind: 'message', text: said }, unreadCount: 1, lastActivityAt: now };
+    grokRoster({ bot_cal: cal });
+    await nt({ check: true });
+    const post = await until(() => about(n0, GB.cal)[0], 'a notification for the new post');
+    assert(post.kind === 'grok' && post.title === 'Calendar' && post.body === said, JSON.stringify(post));
+    await nt({ reset: true });
+    n0 = notes().length;
+    grokRoster({ bot_cal: { ...cal, awaitingUserResponse: true, lastActivityAt: now + 1000 } });
+    await nt({ check: true });
+    const wait = await until(() => about(n0, GB.cal)[0], 'a notification that the bot waits on you');
+    assert(wait.kind === 'waiting' && wait.title === 'Calendar is waiting on you', JSON.stringify(wait));
+  });
+
+  await check('the Dock badge counts what needs you, in step with the blue dots', async () => {
+    const flagged = () => page.evaluate(() => (window.__sbAttention || []).slice());
+    const inStep = async () => { const [s, a] = [await api('notify:status'), await flagged()]; return s.badge === a.length ? a : false; };
+    await page.evaluate(() => window.__sbRefresh());
+    await until(async () => (await flagged()).includes(GB.cal), 'Calendar needs you on the board');
+    const before = await until(inStep, 'the badge matches the blue dots');
+    assert(before.length >= 1, 'counts at least Calendar');
+    const wait = notes().reverse().find((x) => x.ids.includes(GB.cal) && x.kind === 'waiting');
+    await api('notify:click', wait.key);
+    await until(async () => (await inspectorTitle()).includes('Calendar'), 'clicking the notification opened Calendar');
+    await closeInspector();
+    const after = await until(async () => { const a = await inStep(); return a && !a.includes(GB.cal) ? a : false; }, 'opening it took it off the badge');
+    assert(after.length === before.length - 1 || !before.includes(GB.cal), `${before.length} → ${after.length}`);
+    await api('notify:set', { badge: false });
+    await until(async () => (await api('notify:status')).badge === 0, 'the badge switch clears it');
+    await api('notify:set', { badge: true });
+    await until(inStep, 'and brings it back');
+  });
+
+  await check('a new to-do notifies and opens its client', async () => {
+    await nt({ front: false, reset: true });
+    const n0 = notes().length;
+    const id = await api('client:save', { name: 'Notify Test Co', company: 'Notify Test Co', emails: [], domains: [], status: 'active', next_action: 'Send the Notify Test Co proposal', due: new Date().toISOString().slice(0, 10), project_paths: [] });
+    await nt({ check: true });
+    const todo = await until(() => about(n0, `cl:${id}`)[0], 'a notification for the new to-do');
+    assert(todo.kind === 'todo' && todo.title === 'New to-do for Notify Test Co' && todo.body === 'Send the Notify Test Co proposal', JSON.stringify(todo));
+    await api('notify:click', todo.key);
+    await until(async () => (await inspectorTitle()).includes('Notify Test Co'), 'the client opened');
+    await closeInspector();
+  });
+
+  await check('an output a bot posts through the relay notifies and opens the output', async () => {
+    const relay = await startRelay();
+    try {
+      await api('relay:configure', { url: relay.url, appToken: 'e2e-app-token', enabled: true });
+      await nt({ front: false, reset: true, check: true });
+      await quiet();
+      const n0 = notes().length;
+      await relay.call('post_output', { agent: 'Marketing', title: 'Launch tweet', content: 'Spring is here: try the maple latte at Harbor Coffee.' });
+      await api('relay:sync');
+      await nt({ check: true });
+      const post = await until(() => about(n0, GB.mkt)[0], 'a notification for the output');
+      assert(post.kind === 'grok' && post.title === 'Marketing posted “Launch tweet”' && /maple latte/.test(post.body) && post.open.startsWith('out:'), JSON.stringify(post));
+      await api('notify:click', post.key);
+      await until(async () => (await inspectorTitle()).includes('Launch tweet'), 'the output opened');
+      await closeInspector();
+    } finally {
+      await api('relay:configure', { enabled: false }).catch(() => {});
+      await relay.close();
+      await nt({ front: null, reset: true });
+    }
+  });
+}
+
 async function main() {
   require('../scripts/seed.cjs').seed(HOME);
   grokSeed();
@@ -358,7 +544,7 @@ async function main() {
     db.setSetting('attentionSeen', { [S.waiting]: Date.now() - 10 * 60000 });
     db.db.close();
   }
-  for (const f of [LOG, OPENED]) fs.rmSync(f, { force: true });
+  for (const f of [LOG, OPENED, NOTIFY]) fs.rmSync(f, { force: true });
   // The fake Claude sign-in: which account each Claude Code folder ends up signed in to.
   // Two plans on one email, as with a Team organization and a personal Max plan.
   fs.writeFileSync(LOGINS, JSON.stringify({
@@ -1620,6 +1806,8 @@ async function main() {
     await until(async () => !(await waiting()).length, 'withdrawn once nobody waits for the answer');
     await until(async () => (await todoAsks().count()) === 0, 'gone from the to-do list');
   });
+
+  await notificationChecks();
 
   await section('After a restart');
   movedTo = await boardRow('nt:n1');

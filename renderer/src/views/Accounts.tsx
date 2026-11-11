@@ -6,6 +6,7 @@ import { SOURCE, tokens } from '../lib/format';
 import { AgentLogo } from '../components/Logos';
 import { useTour } from '../components/Tour';
 import RelaySettings from '../components/RelaySettings';
+import NotifySettings from '../components/NotifySettings';
 
 type Kind = { kind: string; label: string; blurb: string };
 const KINDS: Kind[] = [
@@ -263,6 +264,8 @@ export default function Accounts() {
           {bus && <p className="hint">Listening on 127.0.0.1:{bus.port}. Only programs that can read <span className="mono">{bus.tokenFile}</span> can use it.</p>}
         </details>
       </div>
+
+      <NotifySettings />
 
       {edit && (
         <div className="overlay" onClick={() => setEdit(null)}>

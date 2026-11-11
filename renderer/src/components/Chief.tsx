@@ -1,12 +1,12 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowUp, ChevronDown, ChevronRight, X, GripVertical, Copy, FileOutput, MessageSquarePlus, StickyNote, LayoutTemplate, Zap, Compass, Plug } from 'lucide-react';
+import { ArrowUp, ChevronDown, ChevronRight, X, GripVertical, Copy, FileOutput, MessageSquarePlus, StickyNote, LayoutTemplate, Compass, Plug } from 'lucide-react';
 import { useStore } from '../lib/store';
 import { api, Message } from '../lib/api';
 import { md } from '../lib/format';
 import { AgentLogo } from './Logos';
-import { useUsage, weeklyPct } from './UsagePill';
 import { useTour } from './Tour';
 import ConnectAgents, { useConnectAgents } from './ConnectAgents';
+import NewChat, { openNewChat } from './NewChat';
 import './chief.css';
 
 export interface Nudge {
@@ -151,38 +151,13 @@ function reloadAll() {
 
 // Quick actions across the top of the agent panel.
 function Actions({ onDone }: { onDone: () => void }) {
-  const accounts = useStore((s) => s.accounts);
   const notify = useStore((s) => s.notify);
-  const { rows, budgets } = useUsage();
-  const [picker, setPicker] = useState(false);
-  const list = accounts.filter((a) => a.kind === 'claude-code' || a.kind === 'grok-bot' || a.kind === 'codex');
-  const pct = useMemo(() => {
-    const m: Record<string, number> = {};
-    for (const a of accounts) { const r = rows.find((x) => x.id === a.id); if (r) m[a.id] = Math.round(weeklyPct(r, accounts, budgets)); }
-    return m;
-  }, [accounts, rows, budgets]);
-  const chat = (id: string) => { setPicker(false); onDone(); window.dispatchEvent(new CustomEvent('sb:dock-pick', { detail: id })); };
   const run = (label: string, fn: () => Promise<any>) => async () => {
     try { await fn(); await reloadAll(); notify(label); } catch (e: any) { notify(e.message || 'Something went wrong'); }
   };
   return (
     <div className="cf-actions">
-      <div className="cf-act-wrap">
-        <button className={`cf-act ${picker ? 'on' : ''}`} onClick={() => setPicker(!picker)}><MessageSquarePlus size={14} />New chat</button>
-        {picker && (
-          <div className="cf-pick" role="menu">
-            {list.map((a) => (
-              <button key={a.id} role="menuitem" onClick={() => chat(a.id)}>
-                <AgentLogo source={a.kind} size={14} /><span>{a.label}</span><em>{pct[a.id] != null ? `${pct[a.id]}%` : ''}</em>
-              </button>
-            ))}
-            {list.some((a) => a.kind === 'claude-code') && (
-              <button role="menuitem" data-testid="dock-new" onClick={() => chat('auto')}><Zap size={14} /><span>Least-used Claude</span></button>
-            )}
-            {!list.length && <span className="cf-pick-empty">Add an account in Settings</span>}
-          </div>
-        )}
-      </div>
+      <button className="cf-act" data-testid="dock-new" title="New chat  ⌘N" onClick={() => { onDone(); openNewChat(); }}><MessageSquarePlus size={14} />New chat</button>
       <button className="cf-act" onClick={run('Note added', () => api.saveNote({ text: '' }))}><StickyNote size={14} />New note</button>
       <button className="cf-act" onClick={run('Blank board', () => api.call('boards:blank'))}><LayoutTemplate size={14} />New blank board</button>
       <button className="cf-act" data-testid="chief-tour" onClick={() => { onDone(); useTour.getState().start(); }}><Compass size={14} />Tour</button>
@@ -334,6 +309,7 @@ export default function Chief() {
         </div>
       </div>
       <ConnectAgents />
+      <NewChat />
     </div>
   );
 }

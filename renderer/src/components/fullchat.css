@@ -1,0 +1,36 @@
+/* ---------- full-window chat ---------- */
+.fc.pn { position: fixed; inset: 0; z-index: 40; background: #fff; display: flex; flex-direction: column; animation: fade-in .16s ease; }
+.fc-head { display: flex; align-items: center; gap: 12px; height: 52px; padding: 0 18px; border-bottom: 1px solid var(--line); font-size: 12.5px; color: var(--ink-3); flex: none; }
+.fc-back { display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: 9px; color: var(--ink-2); font-weight: 550; }
+.fc-back:hover { background: var(--well); color: var(--ink); }
+.fc-src { display: inline-flex; align-items: center; gap: 7px; color: var(--ink-2); font-weight: 550; white-space: nowrap; }
+.fc-title { color: var(--ink); font-weight: 650; font-size: 14px; letter-spacing: -0.01em; flex: 1; }
+.fc-body { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr); }
+.fc-body.side { grid-template-columns: minmax(0, 1fr) 260px; }
+.fc-scroll { overflow-y: auto; min-height: 0; }
+.fc-col { width: 100%; max-width: 760px; margin: 0 auto; padding: 0 24px; }
+.fc .fc-col.msgs { padding-top: 28px; padding-bottom: 28px; overflow: visible; animation: none; gap: 6px; }
+.fc .msg .body { font-size: 15px; line-height: 1.65; margin-left: 23px; }
+.fc .msg.user .body { padding: 10px 14px; border-radius: 16px; }
+.fc .msg.first { margin-top: 18px; }
+.fc .msg .who b { max-width: 420px; }
+.fc .msg .body pre { background: #f6f6f5; border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; overflow-x: auto; font-size: 12.5px; line-height: 1.5; }
+.fc .msg .body code { font-family: ui-monospace, Menlo, monospace; font-size: .9em; background: var(--well); padding: 1px 5px; border-radius: 5px; }
+.fc .msg .body pre code { background: none; padding: 0; }
+.fc .pn-steps { margin: 4px 0 4px 23px; }
+.fc .pn-recap { margin: 14px 0 10px 23px; padding: 14px 16px; border-radius: 14px; background: var(--well); border-left: 3px solid var(--ink); font-size: 14px; }
+.fc-foot { flex: none; padding: 10px 0 18px; }
+.fc-foot .composer { box-shadow: var(--shadow); border-radius: 18px; }
+.fc-side { border-left: 1px solid var(--line); overflow-y: auto; padding: 22px 18px; display: flex; flex-direction: column; gap: 22px; }
+.fc-side h4 { margin: 0 0 8px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; color: var(--ink-3); display: flex; justify-content: space-between; }
+.fc-side h4 span { font-variant-numeric: tabular-nums; }
+.fc-sub { display: flex; align-items: center; gap: 8px; padding: 4px 0; font-size: 12.5px; color: var(--ink-2); min-width: 0; }
+.fc-sub i { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--line-2); }
+.fc-sub.on { color: var(--ink); font-weight: 550; }
+.fc-sub.on i { background: var(--ink); animation: pn-pulse 1.4s ease-in-out infinite; }
+.fc-typing { display: inline-flex; gap: 4px; margin: 8px 0 0 23px; }
+.fc-typing i { width: 6px; height: 6px; border-radius: 50%; background: var(--ink-3); animation: fc-dot 1.2s ease-in-out infinite; }
+.fc-typing i:nth-child(2) { animation-delay: .15s; }
+.fc-typing i:nth-child(3) { animation-delay: .3s; }
+@keyframes fc-dot { 0%, 80%, 100% { opacity: .25; transform: none; } 40% { opacity: 1; transform: translateY(-2px); } }
+@media (max-width: 900px) { .fc-body.side { grid-template-columns: minmax(0, 1fr); } .fc-side { display: none; } }

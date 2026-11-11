@@ -70,8 +70,12 @@
 .pn-composer .chip.pin button:hover { background: var(--well-2); color: var(--ink); }
 .pn-composer.multi .row { align-items: flex-end; border-radius: 14px; padding: 7px 7px 7px 13px; background: var(--well); border: 1px solid transparent; }
 .pn-composer.multi .row:focus-within { background: var(--card); border-color: var(--line-2); box-shadow: 0 0 0 3px rgba(24, 24, 27, .04); }
-.pn-composer.multi textarea { flex: 1; border: 0; outline: 0; background: transparent; resize: none; min-height: 22px; max-height: 160px; line-height: 1.45; padding: 2px 0; }
+.pn-composer.multi textarea { flex: 1; border: 0; outline: 0; background: transparent; resize: none; min-height: 22px; max-height: 280px; line-height: 1.45; padding: 2px 0; }
 .pn-composer.multi .send { width: 28px; height: 28px; border-radius: 9px; }
+.pn-composer.multi .row { padding-left: 5px; gap: 4px; }
+.pn-composer .attach { width: 28px; height: 28px; border-radius: 9px; display: grid; place-items: center; color: var(--ink-3); flex: none; }
+.pn-composer .attach:hover { color: var(--ink); background: var(--well-2); }
+.pn-composer.dropping .row { border-color: var(--ink); border-style: dashed; background: var(--card); }
 
 /* ⌘K search */
 .overlay.pn-overlay { padding-top: 14vh; }

@@ -156,3 +156,5 @@ button.dp-row:hover { background: var(--well); }
 .dock { transition: opacity .25s var(--ease); }
 .dock.under { opacity: .38; }
 .dock.under:hover, .dock.under:focus-within { opacity: 1; }
+
+.version-tag { position: fixed; right: 12px; bottom: 8px; z-index: 4; font-size: 10.5px; font-weight: 600; letter-spacing: .02em; color: #A1A1AA; pointer-events: none; user-select: none; }

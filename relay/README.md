@@ -4,7 +4,7 @@ One always-on MCP connector for all your AI agents: Grok bots, Claude chats (the
 
 ```
 Grok bots, Claude, Cursor, … ──MCP (BOT_TOKEN)──▶  relay on Vercel  ◀──HTTPS (APP_TOKEN)── Switchboard app
-                                                   Upstash Redis
+                                                   Neon Postgres or Upstash Redis
 ```
 
 Gmail and Granola are data sources rather than agents: Switchboard reads them through their own APIs and sign-ins, not through the relay.
@@ -24,7 +24,7 @@ You need the [Vercel CLI](https://vercel.com/docs/cli) signed in.
 
    Accept the suggested settings (no build command, no framework). Note the production address, for example `https://switchboard-relay.vercel.app`.
 
-2. Add storage. In the Vercel dashboard open the project, then **Storage → Create Database → Upstash (Redis)** from the Marketplace, and connect it to this project. That adds `KV_REST_API_URL` and `KV_REST_API_TOKEN` to the project (a database created on upstash.com works too: set `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN`). Without it the relay keeps events in memory and loses them whenever the function restarts.
+2. Add storage. In the Vercel dashboard open the project, then **Storage → Create Database → Neon (Postgres)** from the Marketplace (recommended, free tier), and connect it to this project. That adds `DATABASE_URL` (and `POSTGRES_URL`); the relay creates its tables on first use. Upstash Redis works too (**Storage → Upstash**, which sets `KV_REST_API_URL` and `KV_REST_API_TOKEN`, or `UPSTASH_REDIS_REST_URL`/`_TOKEN` from upstash.com) and wins if both are set. Without either the relay keeps events in memory and loses them whenever the function restarts.
 
 3. Make two different random tokens, add them to the project and note them down: `BOT_TOKEN` is for your agents, `APP_TOKEN` for Switchboard.
 
@@ -42,7 +42,7 @@ You need the [Vercel CLI](https://vercel.com/docs/cli) signed in.
    vercel deploy --prod
    ```
 
-5. Check it (it should say `"storage":"upstash"` with no warnings):
+5. Check it (it should say `"storage":"postgres"`, or `"upstash"`, with no warnings):
 
    ```bash
    curl -H "Authorization: Bearer $APP_TOKEN" https://switchboard-relay.vercel.app/api/health
@@ -105,6 +105,7 @@ Missing or wrong tokens get 401, and tokens are compared in constant time. The a
 | `APP_TOKEN` | Switchboard sends it to `/api/*`. Must differ from `BOT_TOKEN`. |
 | `KV_REST_API_URL`, `KV_REST_API_TOKEN` | Upstash Redis, set by the Vercel Marketplace integration. |
 | `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN` | The same, for a database made on upstash.com. |
+| `DATABASE_URL` or `POSTGRES_URL` | Neon Postgres, set by the Vercel Marketplace integration. Used when Upstash is not set. |
 
 ## Local run and tests
 

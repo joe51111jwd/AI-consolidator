@@ -98,7 +98,7 @@ async function health({ store }) {
   const warnings = [];
   if (!process.env.BOT_TOKEN) warnings.push('BOT_TOKEN is not set, so agents cannot connect.');
   else if (process.env.BOT_TOKEN === process.env.APP_TOKEN) warnings.push('BOT_TOKEN and APP_TOKEN are the same. Use two different tokens.');
-  if (store.kind === 'memory') warnings.push('No Redis configured: events are kept in memory and lost when the function restarts. Add Upstash Redis.');
+  if (store.kind === 'memory') warnings.push('No database configured: events are kept in memory and lost when the function restarts. Add Neon (Postgres) or Upstash Redis.');
   return { ok: true, storage: store.kind, cursor: await store.head(), warnings };
 }
 

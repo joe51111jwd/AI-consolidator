@@ -1,0 +1,22 @@
+.nc-scrim { position: fixed; inset: 0; z-index: 40; display: grid; place-items: center; background: rgba(20, 20, 22, .18); animation: nc-fade .16s var(--ease); }
+.nc-sheet { width: min(520px, calc(100vw - 48px)); max-height: calc(100vh - 80px); overflow: auto; background: var(--card); color: var(--ink); border-radius: 18px; box-shadow: var(--shadow-lg); padding: 14px 16px 16px; animation: nc-in .2s var(--ease); }
+.nc-head { display: flex; align-items: center; justify-content: space-between; font-weight: 600; font-size: 14px; margin-bottom: 6px; }
+.nc-label { font-size: 11px; font-weight: 600; color: var(--ink-3); text-transform: uppercase; letter-spacing: .04em; margin: 12px 0 6px; }
+.nc-row, .nc-folders { display: flex; flex-wrap: wrap; gap: 6px; }
+.nc-chip, .nc-folder { height: 30px; display: inline-flex; align-items: center; gap: 6px; padding: 0 11px; border-radius: 999px; background: var(--well); color: var(--ink-2); font-size: 12.5px; font-weight: 500; max-width: 220px; transition: background .15s, color .15s; }
+.nc-chip span, .nc-folder span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nc-chip em { font-style: normal; color: var(--ink-3); font-size: 11.5px; }
+.nc-chip:hover, .nc-folder:hover { color: var(--ink); }
+.nc-chip.on, .nc-folder.on { background: var(--ink); color: #fff; }
+.nc-chip.on em { color: rgba(255, 255, 255, .65); }
+.nc-empty { font-size: 12.5px; color: var(--ink-3); }
+.nc-seg { display: inline-flex; gap: 2px; padding: 2px; border-radius: 999px; background: var(--well); }
+.nc-seg button { height: 26px; padding: 0 12px; border-radius: 999px; font-size: 12.5px; font-weight: 500; color: var(--ink-2); }
+.nc-seg button.on { background: var(--card); color: var(--ink); box-shadow: var(--shadow); }
+.nc-compose { position: relative; margin-top: 14px; }
+.nc-compose textarea { width: 100%; resize: none; border: 1px solid var(--line-2); border-radius: 14px; padding: 10px 46px 10px 12px; font: inherit; font-size: 13.5px; color: var(--ink); background: var(--card); outline: none; }
+.nc-compose textarea:focus { border-color: var(--ink-3); }
+.nc-send { position: absolute; right: 8px; bottom: 10px; width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; background: var(--ink); color: #fff; }
+.nc-send:disabled { opacity: .3; }
+@keyframes nc-fade { from { opacity: 0; } }
+@keyframes nc-in { from { opacity: 0; transform: translateY(6px) scale(.98); } }

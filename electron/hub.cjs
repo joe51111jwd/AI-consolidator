@@ -529,7 +529,8 @@ async function dispatch(id, text, onText, opts = {}) {
     if (kind === 'pj') { cwd = id.slice(3); a = pickAccount(['claude-code', 'codex', 'anthropic-api', 'openai-compatible'], { ...pickOpts, cwd }); }
     if (kind === 'cl') { const c = clients().find((x) => x.id === accId); const p = c && c.project_paths[0]; if (p) cwd = p; a = pickAccount(['claude-code', 'anthropic-api', 'openai-compatible'], { ...pickOpts, cwd: p || null }); }
     if (!a) throw new Error('Add a Claude account first');
-    if (a.kind === 'claude-code') { const r = await claudeCode.prompt(a, { cwd, text, onText }); return { ...r, entityId: `cc:${a.id}:${r.sessionId}` }; }
+    const model = typeof opts.model === 'string' && /^[\w.\-\[\]]{1,60}$/.test(opts.model) ? opts.model : null;
+    if (a.kind === 'claude-code') { const r = await claudeCode.prompt(a, { cwd, text, onText, extraArgs: model ? ['--model', model] : [] }); return { ...r, entityId: `cc:${a.id}:${r.sessionId}` }; }
     if (a.kind === 'codex') return codex.prompt(a, { cwd, text, onText });
     if (a.kind === 'anthropic-api' || a.kind === 'openai-compatible') { const r = await apiChat.prompt(a, { text, onText }); return { ...r, entityId: `lc:${a.id}:${r.chatId}` }; }
     if (a.kind === 'grok-bot') return grokAccountSend(text, opts);

@@ -1,11 +1,12 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { X, Copy, FileOutput, Brain, GripVertical, ExternalLink, Send, FolderOpen, Terminal, Tag, Paperclip, ArrowRight, User } from 'lucide-react';
+import { X, Maximize2, Copy, FileOutput, Brain, GripVertical, ExternalLink, Send, FolderOpen, Terminal, Tag, Paperclip, ArrowRight, User } from 'lucide-react';
 import { useStore } from '../lib/store';
 import { api, Message, Flow, Entity, Account } from '../lib/api';
 import { ago, md, SOURCE, PROMPTABLE } from '../lib/format';
 import { dragOutput } from '../nodes/nodes';
 import { AgentLogo } from './Logos';
 import Composer from './Composer';
+import FullChat from './FullChat';
 import './panels.css';
 
 type Who = { key: string; name: string; source?: string; color?: string; you?: boolean };
@@ -82,6 +83,7 @@ export default function Inspector() {
   const end = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(() => Number(localStorage.getItem('sb.inspectorW')) || 480);
   const [resizing, setResizing] = useState(false);
+  const [full, setFull] = useState(false);
 
   // Publish how much of the window the inspector covers, so the board can centre cards in the free area.
   useEffect(() => {
@@ -107,7 +109,7 @@ export default function Inspector() {
     window.addEventListener('pointermove', move); window.addEventListener('pointerup', up);
   };
 
-  useEffect(() => { setMsgs([]); setFlows([]); setEcho(null); setSendMenu(null); }, [id]);
+  useEffect(() => { setMsgs([]); setFlows([]); setEcho(null); setSendMenu(null); if (!id) setFull(false); }, [id]);
   useEffect(() => {
     if (!id) return;
     let alive = true;
@@ -115,21 +117,38 @@ export default function Inspector() {
     api.transcript(id).then((m) => alive && setMsgs(m)).catch((err) => alive && notify(err.message)).finally(() => alive && setLoading(false));
     api.flows(id).then((f) => alive && setFlows(f)).catch(() => {});
     // Keep the open chat in sync with the session file, like the Claude app does.
-    const t = setInterval(() => { api.transcript(id).then((m) => alive && setMsgs((prev) => (prev.length === m.length && prev[prev.length - 1]?.text === m[m.length - 1]?.text ? prev : m))).catch(() => {}); }, 3000);
+    const t = setInterval(() => { api.transcript(id).then((m) => alive && setMsgs((prev) => (prev.length === m.length && prev[prev.length - 1]?.text === m[m.length - 1]?.text ? prev : m))).catch(() => {}); }, full ? 2000 : 3000);
     return () => { alive = false; clearInterval(t); };
-  }, [id, e?.updatedAt, live?.status]);
+  }, [id, e?.updatedAt, live?.status, full]);
 
   useEffect(() => {
     const onKey = (ev: KeyboardEvent) => {
-      if (ev.key !== 'Escape' || useStore.getState().paletteOpen) return;
-      if (sendMenu) { setSendMenu(null); return; }
+      if (useStore.getState().paletteOpen) return;
       const t = ev.target as HTMLElement;
+      const typing = t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable;
+      if ((ev.key === 'f' || ev.key === 'F') && !typing && !ev.metaKey && !ev.ctrlKey && !ev.altKey && useStore.getState().inspector) { ev.preventDefault(); setFull(true); return; }
+      if (ev.key !== 'Escape') return;
+      if (sendMenu) { setSendMenu(null); return; }
+      if (full) { setFull(false); return; }
       if (!t.closest?.('.inspector') && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) return;
       open(null);
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [sendMenu]);
+  }, [sendMenu, full]);
+
+  // Double-clicking a chat card opens it full size.
+  useEffect(() => {
+    const onDbl = (ev: MouseEvent) => {
+      const el = ev.target as HTMLElement;
+      const n = el.closest?.('.react-flow__node');
+      if (!n || n.classList.contains('react-flow__node-note') || n.classList.contains('react-flow__node-group')) return;
+      if (el.closest('input, textarea, [contenteditable="true"], .composer')) return;
+      setTimeout(() => { const s = useStore.getState(); if (s.inspector && s.byId[s.inspector]?.kind !== 'note') setFull(true); }, 0);
+    };
+    window.addEventListener('dblclick', onDbl);
+    return () => window.removeEventListener('dblclick', onDbl);
+  }, []);
 
   const acc = e?.accountId ? accounts.find((a) => a.id === e.accountId) : undefined;
   const src = (e && SOURCE[e.source]) || { label: e?.source || '', color: '#999' };
@@ -232,6 +251,36 @@ export default function Inspector() {
 
   const latestPlan = (() => { for (let k = items.length - 1; k >= 0; k--) if (items[k].kind === 'plan') return (items[k] as any).plan as { content: string; status: string }[]; return null; })();
 
+  const subs = Array.isArray(e.meta?.subagents) ? e.meta.subagents : [];
+  const composer = PROMPTABLE(id) ? (
+    <Composer key={id} id={id} multiline autoFocus placeholder={e.kind === 'account' ? 'Start a new session…' : 'Message…'}
+      onSent={(t) => setEcho({ id: `echo:${Date.now()}`, role: 'user', text: t, ts: Date.now() })} />
+  ) : null;
+  const sendMenuEl = sendMenu && (
+    <div className="menu pn-menu" style={{ position: 'fixed', zIndex: 60, left: Math.min(sendMenu.x, window.innerWidth - 280), top: Math.min(sendMenu.y, window.innerHeight - 400) }} onMouseLeave={() => setSendMenu(null)}>
+      <div className="hint">Attach to…</div>
+      {targets.map((t) => (
+        <button key={t.id} onClick={() => { useStore.getState().addAttach(t.id, { text: sendMenu.text, title: `From ${e.title}`.slice(0, 80), sourceId: id }); setSendMenu(null); notify(`Attached to ${t.title}`); }}>
+          <Avatar who={cardWho(t.id, byId, accounts)} />
+          <span className="pn-ell">{t.title}</span>
+        </button>
+      ))}
+    </div>
+  );
+
+  if (full) {
+    const tail = [...rows];
+    if (live?.status === 'error') tail.push(<div key="err" className="well err">{live.error}</div>);
+    if (spawned) tail.push(<button key="spawned" className="pn-follow" onClick={() => open(spawned)}>Open the new session<ArrowRight size={13} /></button>);
+    return (
+      <>
+        <FullChat title={e.title} source={e.source} color={agent.color} agentName={agent.name} working={working}
+          rows={tail} streaming={live?.text || ''} plan={latestPlan} subs={subs} composer={composer} onClose={() => setFull(false)} />
+        {sendMenuEl}
+      </>
+    );
+  }
+
   return (
     <div className={`inspector pn ${outputsOpen ? 'shift' : ''} ${resizing ? 'resizing' : ''}`} style={{ width: Math.min(width, window.innerWidth - 24) }}
       onKeyDown={(ev) => { if (ev.key === 'Delete' || ev.key === 'Backspace') ev.stopPropagation(); }}>
@@ -245,6 +294,7 @@ export default function Inspector() {
             {e.meta?.url && <button className="icon-btn" onClick={() => api.openExternal(e.meta.url)} title={`Open in ${src.label}`}><ExternalLink size={14} /></button>}
             {e.meta?.cwd && <button className="icon-btn" onClick={() => api.openPath(e.meta.cwd)} title="Open folder"><FolderOpen size={14} /></button>}
             {e.meta?.sessionId && e.source === 'claude-code' && <button className="icon-btn" onClick={() => { api.copy(`claude --resume ${e.meta.sessionId}`); notify('Resume command copied'); }} title="Copy resume command"><Terminal size={14} /></button>}
+            <button className="icon-btn" onClick={() => setFull(true)} title="Expand (F)" data-testid="expand-chat"><Maximize2 size={14} /></button>
             <button className={`icon-btn ${pinned ? 'on' : ''}`} onClick={togglePin} title={pinned ? 'Remove from context' : 'Tag as context'}><Tag size={14} /></button>
             <button className="icon-btn" onClick={() => open(null)} title="Close"><X size={16} /></button>
           </span>
@@ -270,23 +320,8 @@ export default function Inspector() {
         {spawned && <button className="pn-follow" onClick={() => open(spawned)}>Open the new session<ArrowRight size={13} /></button>}
         <div ref={end} />
       </div>
-      {PROMPTABLE(id) && (
-        <div className="insp-foot">
-          <Composer key={id} id={id} multiline autoFocus placeholder={e.kind === 'account' ? 'Start a new session…' : 'Message…'}
-            onSent={(t) => setEcho({ id: `echo:${Date.now()}`, role: 'user', text: t, ts: Date.now() })} />
-        </div>
-      )}
-      {sendMenu && (
-        <div className="menu pn-menu" style={{ position: 'fixed', left: Math.min(sendMenu.x, window.innerWidth - 280), top: Math.min(sendMenu.y, window.innerHeight - 400) }} onMouseLeave={() => setSendMenu(null)}>
-          <div className="hint">Attach to…</div>
-          {targets.map((t) => (
-            <button key={t.id} onClick={() => { useStore.getState().addAttach(t.id, { text: sendMenu.text, title: `From ${e.title}`.slice(0, 80), sourceId: id }); setSendMenu(null); notify(`Attached to ${t.title}`); }}>
-              <Avatar who={cardWho(t.id, byId, accounts)} />
-              <span className="pn-ell">{t.title}</span>
-            </button>
-          ))}
-        </div>
-      )}
+      {composer && <div className="insp-foot">{composer}</div>}
+      {sendMenuEl}
     </div>
   );
 }

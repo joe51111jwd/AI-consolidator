@@ -9,6 +9,7 @@ import Palette from './components/Palette';
 import Onboarding from './components/Onboarding';
 import Tour from './components/Tour';
 import ImportChats from './components/ImportChats';
+import VersionTag from './components/VersionTag';
 import Outputs from './components/Outputs';
 import Dock from './components/Dock';
 import UsagePill from './components/UsagePill';
@@ -99,6 +100,7 @@ export default function App() {
         <Onboarding />
         <Tour />
         <ImportChats />
+        <VersionTag />
         <Settings />
       </ReactFlowProvider>
       {toast && <div className="toast">{toast}</div>}

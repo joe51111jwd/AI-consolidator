@@ -6,7 +6,7 @@ import http from 'node:http';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { handler, setStore } from '../lib/app.js';
-import { memoryStore, upstashStore } from '../lib/store.js';
+import { memoryStore, upstashStore, postgresStore, storeFromEnv } from '../lib/store.js';
 import { agentKey } from '../lib/util.js';
 
 process.env.BOT_TOKEN = 'bot-secret';
@@ -239,4 +239,33 @@ test('the Upstash store keeps events, tasks and the board through Redis commands
   assert.equal((await appApi('GET', '/api/health')).body.storage, 'upstash');
   assert.ok(calls.some((c) => Array.isArray(c[0]) && c[0][0] === 'ZADD'), 'events written in a transaction');
   await client.close();
+});
+
+test('storage is picked from the environment: Upstash, then Postgres, then memory', () => {
+  const kv = { KV_REST_API_URL: 'https://kv.example.com', KV_REST_API_TOKEN: 't' };
+  const pg = 'postgres://u:p@db.example.com/x';
+  assert.equal(storeFromEnv({ ...kv, DATABASE_URL: pg }).kind, 'upstash');
+  assert.equal(storeFromEnv({ DATABASE_URL: pg }).kind, 'postgres');
+  assert.equal(storeFromEnv({ POSTGRES_URL: pg }).kind, 'postgres');
+  assert.equal(storeFromEnv({ KV_REST_API_URL: 'https://kv.example.com' }).kind, 'memory');
+  assert.equal(storeFromEnv({}).kind, 'memory');
+});
+
+test('the Postgres store creates its tables once and maps rows back to events', async () => {
+  const sent = [];
+  const query = async (text, params) => {
+    sent.push(text);
+    if (text.startsWith('INSERT INTO events')) return [{ id: '7' }];
+    if (text.startsWith('SELECT id, data FROM events')) return [{ id: '7', data: { type: 'action', text: 'hi' } }];
+    if (text.startsWith('DELETE FROM tasks WHERE key = $1 RETURNING')) return [{ id: '2', ts: String(Date.now()), data: { text: 'b' } }, { id: '1', ts: String(Date.now()), data: { text: 'a' } }];
+    if (text.includes('events_id_seq')) return [{ v: '7' }];
+    return [];
+  };
+  const s = postgresStore('postgres://x', query);
+  assert.equal(s.kind, 'postgres');
+  assert.deepEqual(await s.addEvent({ type: 'action', text: 'hi' }), { type: 'action', text: 'hi', id: 7 });
+  assert.deepEqual(await s.eventsAfter(0, 10), [{ type: 'action', text: 'hi', id: 7 }]);
+  assert.equal(await s.head(), 7);
+  assert.deepEqual((await s.takeTasks('k')).map((t) => t.text), ['a', 'b']);
+  assert.equal(sent.filter((t) => t.startsWith('CREATE TABLE')).length, 3);
 });

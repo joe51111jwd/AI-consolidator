@@ -179,6 +179,9 @@ app.whenReady().then(() => {
   // tests) fall back to Electron's built-in key so the app still runs.
   const { safeStorage } = require('electron');
   if (process.platform === 'linux' && !safeStorage.isEncryptionAvailable()) safeStorage.setUsePlainTextEncryption(true);
+  // Saved sign-ins are read from the Keychain in the background (macOS may ask first); work that
+  // needs a token picks up once they are in, and nothing waits on the prompt.
+  require('./secrets.cjs').warm().then(() => { hub.invalidate(); send({ type: 'entities-changed' }); }).catch((e) => console.error('secrets:', e.message));
   hub.firstRunSetup();
   bus.start(Number(process.env.SB_PORT || 47821));
   try { installCli(); } catch {}

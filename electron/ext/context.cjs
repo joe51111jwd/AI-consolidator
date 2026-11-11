@@ -199,12 +199,23 @@ function inputOf(e, msgs) {
   return [...lines, ...(tail.length ? ['Latest:', ...tail] : [])].join('\n');
 }
 
+// The owner's own name never counts as a client (bots they run name them all the time). Setting
+// 'ownerName', else git's user.name on this Mac.
+let gitName;
+function ownerNames() {
+  if (gitName === undefined) {
+    try { gitName = require('child_process').execFileSync('git', ['config', '--global', 'user.name'], { encoding: 'utf8', timeout: 3000 }).trim(); } catch { gitName = ''; }
+  }
+  return [db.getSetting('ownerName', ''), gitName].map((x) => String(x || '').trim()).filter((x) => x.length > 2);
+}
+const isOwner = (name) => { const n = String(name || '').toLowerCase().trim(); return !!n && ownerNames().some((o) => { const x = o.toLowerCase(); return n === x || n.includes(x) || x.includes(n) && n.split(/\s+/).length > 1; }); };
+
 function promptFor(items, clients) {
   const names = (clients || []).map((c) => (c.company && c.company !== c.name ? `${c.name} (${c.company})` : c.name)).filter(Boolean).slice(0, 40);
   return `${MARKER}. They are my AI chats and agents, many doing work for my clients; I want to see at a glance who each one is for and where it stands.
 For every chat give one JSON object:
 {"n": <chat number>, "about": "<one line, under 12 words: what the work is>", "client": "<the person, company or school the work is for, or null when it is my own work>", "project": "<short project name, 1 to 4 words>", "status": "working" | "waiting on you" | "done" | "stuck", "nextStep": "<one line: the next thing to do>", "people": ["<names of people involved>"]}
-- client is a real person or organization, never the AI, an app, or me. ${names.length ? 'Use the names from my client list when they match.' : ''}
+- client is a real person or organization, never the AI, an app, or me${ownerNames()[0] ? ` (I am ${ownerNames()[0]})` : ''}. ${names.length ? 'Use the names from my client list when they match.' : ''}
 - status: "waiting on you" when the AI asked me something or needs my answer or approval; "stuck" when it hit an error or blocker it could not get past; "done" when the task is finished; else "working".
 - Use only what the chat says. Plain words, no emoji.
 Reply with a JSON array only, no prose, one object per chat.
@@ -228,7 +239,7 @@ function parse(text) {
 
 function clean(o) {
   const s = (v, n) => truncate(flat(typeof v === 'string' ? v : ''), n);
-  const client = s(o.client, 60);
+  const client = isOwner(o.client) ? '' : s(o.client, 60);
   const project = s(o.project, 40);
   const st = flat(o.status).toLowerCase();
   return {
@@ -299,6 +310,7 @@ async function pass({ ids } = {}) {
   if (ids) {
     cands = ids.map((id) => list.find((e) => e.id === id) || hub.find(id)).filter(eligible).map((e) => ({ e, sig: sigOf(e) }));
   } else cands = due(list);
+  if (process.env.SB_DEBUG_CONTEXT) console.log(`context: ${list.length} cards, ${list.filter(eligible).length} eligible, ${cands.length} due`);
   if (!cands.length) return { summarized: 0, pending: 0 };
   const batch = cands.slice(0, BATCH);
   const summarized = await run(batch);
@@ -313,6 +325,7 @@ function schedule(ms) {
 }
 async function tick() {
   let next = GAP;
+  if (process.env.SB_DEBUG_CONTEXT) console.log(`context tick: enabled=${enabled()} busy=${busy} wait=${lastCall + GAP + backoff - Date.now()}`);
   try {
     if (enabled() && !busy) {
       const wait = lastCall + GAP + backoff - Date.now();

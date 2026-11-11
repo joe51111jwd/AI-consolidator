@@ -5,6 +5,13 @@
 # the app's dependencies changed.  Usage: scripts/push-update.sh 3.8
 set -euo pipefail
 cd "$(dirname "$0")/.."
+# Quits every running Switchboard (whatever its bundle is called now) and waits until it has really
+# exited, force-quitting after 10 s. Without this the old process kept running under the new name.
+quit_switchboard() {
+  osascript -e 'tell application id "com.switchboard.desktop" to quit' >/dev/null 2>&1 || true
+  for _ in $(seq 1 20); do pgrep -f "/Applications/Switchboard v[^/]*\.app/Contents/MacOS/Switchboard" >/dev/null || return 0; sleep 0.5; done
+  pkill -9 -f "/Applications/Switchboard v[^/]*\.app/Contents/MacOS/Switchboard" 2>/dev/null || true; sleep 1
+}
 NEW="${1:?version, e.g. 3.8}"
 FULL="$NEW.0"; [[ "$NEW" == *.*.* ]] && FULL="$NEW"
 OLD_APP=$(ls -d /Applications/Switchboard\ v*.app 2>/dev/null | head -1)
@@ -15,12 +22,11 @@ deps() { node -e "const p=require(process.argv[1]);console.log(JSON.stringify(p.
 if [ -z "$OLD_APP" ] || [ "$(deps ./package.json)" != "$(deps "$OLD_APP/Contents/Resources/app/package.json")" ]; then
   echo "Dependencies changed (or no app installed): full rebuild"
   rm -rf release && npx electron-builder --mac --dir >/dev/null
-  osascript -e "tell application \"$(basename "${OLD_APP:-x}" .app)\" to quit" 2>/dev/null || true; sleep 2
+  quit_switchboard
   [ -n "$OLD_APP" ] && rm -rf "$OLD_APP"
   mv release/mac-arm64/Switchboard.app "$NEW_APP" && rm -rf release
 else
-  osascript -e "tell application \"$(basename "$OLD_APP" .app)\" to quit" 2>/dev/null || true; sleep 2
-  pkill -f "$OLD_APP/Contents/MacOS" 2>/dev/null || true
+  quit_switchboard
   R="$OLD_APP/Contents/Resources/app"
   # Everything package.json's build.files ships (top-level dirs/files), so new folders come along too.
   for item in $(node -e "for (const g of require('./package.json').build.files) console.log(g.replace(/\/\*\*$/, ''))"); do

@@ -39,26 +39,74 @@ if (args[0] === 'mcp') { log({ args, configDir: process.env.CLAUDE_CONFIG_DIR ||
 
 let input = '';
 process.stdin.on('data', (d) => { input += d; });
-process.stdin.on('end', () => {
+process.stdin.on('end', () => { answer().catch((e) => { process.stderr.write(`${e.stack || e.message}\n`); process.exit(1); }); });
+
+// A prompt line `TOOL <Name> <json input>` makes the stand-in use that tool, as Claude would. With
+// --permission-prompt-tool it first asks that tool (served by the MCP server --mcp-config names, the
+// same way Claude Code does) and goes ahead only on {"behavior":"allow"}.
+async function answer() {
   const resume = val('--resume');
   const id = resume || crypto.randomUUID();
   const cwd = process.cwd();
   log({ args, cwd, configDir: process.env.CLAUDE_CONFIG_DIR || null, sessionId: id, prompt: input });
-  const first = input.trim().split('\n').pop().slice(0, 120);
-  const reply = process.env.SB_STUB_REPLY || smartGroup(input) || topics(input) || `Done (${path.basename(dir)}): ${first}`;
+  const tools = [];
+  const said = input.split('\n').filter((l) => {
+    const m = l.match(/^TOOL (\w+) (\{.*\})\s*$/);
+    if (m) tools.push({ name: m[1], input: JSON.parse(m[2]) });
+    return !m;
+  });
+  const first = said.join('\n').trim().split('\n').pop().slice(0, 120);
   const out = (o) => process.stdout.write(JSON.stringify(o) + '\n');
+  const file = path.join(dir, 'projects', cwd.replace(/[/.]/g, '-'), `${id}.jsonl`);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  // Session rows are written in one go at the end, and before waiting on a permission answer so the
+  // chat's card is there to answer on.
+  const rows = [];
+  const save = (r) => rows.push({ sessionId: id, cwd, timestamp: new Date().toISOString(), uuid: crypto.randomUUID(), ...r });
+  const flush = () => { if (rows.length) fs.appendFileSync(file, rows.splice(0).map((r) => JSON.stringify(r)).join('\n') + '\n'); };
   out({ type: 'system', subtype: 'init', session_id: id, cwd, model: 'claude-sonnet-5-5' });
+  save({ type: 'user', message: { role: 'user', content: input } });
+  const outcomes = [];
+  for (const t of tools) {
+    const tid = 'toolu_' + crypto.randomBytes(6).toString('hex');
+    const use = { id: 'msg_' + crypto.randomBytes(6).toString('hex'), role: 'assistant', model: 'claude-sonnet-5-5', content: [{ type: 'tool_use', id: tid, name: t.name, input: t.input }], usage: { input_tokens: 100, output_tokens: 20 } };
+    out({ type: 'assistant', session_id: id, message: use });
+    save({ type: 'assistant', message: use });
+    const promptTool = val('--permission-prompt-tool');
+    flush();
+    const result = promptTool ? await askPermission(promptTool, { tool_name: t.name, input: t.input, tool_use_id: tid }) : { behavior: 'allow', updatedInput: t.input };
+    log({ permission: { tool: t.name, input: t.input, result, asked: !!promptTool }, sessionId: id });
+    const ok = result.behavior === 'allow';
+    const res = { role: 'user', content: [{ type: 'tool_result', tool_use_id: tid, content: ok ? 'ok' : result.message, is_error: !ok }] };
+    out({ type: 'user', session_id: id, message: res });
+    save({ type: 'user', message: res });
+    outcomes.push(ok ? `${t.name} allowed` : `${t.name} denied (${result.message})`);
+  }
+  const reply = process.env.SB_STUB_REPLY || smartGroup(input) || topics(input) || `Done (${path.basename(dir)}): ${first}${outcomes.length ? ` · ${outcomes.join(' · ')}` : ''}`;
   const mid = 'msg_' + crypto.randomBytes(6).toString('hex');
   out({ type: 'assistant', session_id: id, message: { id: mid, role: 'assistant', model: 'claude-sonnet-5-5', content: [{ type: 'text', text: reply }], usage: { input_tokens: 1200, output_tokens: 300 } } });
   out({ type: 'result', subtype: 'success', session_id: id, result: reply, usage: { input_tokens: 1200, output_tokens: 300 }, total_cost_usd: 0.01 });
-  const file = path.join(dir, 'projects', cwd.replace(/[/.]/g, '-'), `${id}.jsonl`);
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  const ts = new Date().toISOString();
-  fs.appendFileSync(file, [
-    { type: 'user', sessionId: id, cwd, timestamp: ts, uuid: crypto.randomUUID(), message: { role: 'user', content: input } },
-    { type: 'assistant', sessionId: id, cwd, timestamp: ts, uuid: crypto.randomUUID(), message: { id: mid, role: 'assistant', model: 'claude-sonnet-5-5', content: [{ type: 'text', text: reply }], usage: { input_tokens: 1200, output_tokens: 300 } } },
-  ].map((r) => JSON.stringify(r)).join('\n') + '\n');
-});
+  save({ type: 'assistant', message: { id: mid, role: 'assistant', model: 'claude-sonnet-5-5', content: [{ type: 'text', text: reply }], usage: { input_tokens: 1200, output_tokens: 300 } } });
+  flush();
+}
+
+// Calls mcp__<server>__<tool> over stdio and returns the JSON it answers with.
+async function askPermission(ref, request) {
+  const m = ref.match(/^mcp__(.+?)__(.+)$/);
+  if (!m) throw new Error(`not an MCP tool: ${ref}`);
+  const conf = val('--mcp-config');
+  const servers = JSON.parse(conf.trim().startsWith('{') ? conf : fs.readFileSync(conf, 'utf8')).mcpServers || {};
+  const srv = servers[m[1]];
+  if (!srv) throw new Error(`--mcp-config has no "${m[1]}" server`);
+  const { Client } = require('@modelcontextprotocol/sdk/client/index.js');
+  const { StdioClientTransport } = require('@modelcontextprotocol/sdk/client/stdio.js');
+  const client = new Client({ name: 'claude-stand-in', version: '1.0.0' });
+  await client.connect(new StdioClientTransport({ command: srv.command, args: srv.args || [], env: { ...process.env, ...(srv.env || {}) }, stderr: 'inherit' }));
+  try {
+    const r = await client.callTool({ name: m[2], arguments: request }, undefined, { timeout: 11 * 60000 });
+    return JSON.parse(r.content[0].text);
+  } finally { await client.close().catch(() => {}); }
+}
 
 // The real item lines ("12. [kind] Title | folder: x | client: y | ..."), not the indented examples.
 function itemRows(text) {

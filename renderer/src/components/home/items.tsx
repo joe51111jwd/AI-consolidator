@@ -3,6 +3,7 @@ import { Bot } from 'lucide-react';
 import { useStore } from '../../lib/store';
 import { Account, Entity, Run } from '../../lib/api';
 import { needsAttention, useSeen } from '../../lib/attention';
+import { approvalFor } from '../../lib/approvals';
 import { ago, baseName, isNoise, PROMPTABLE } from '../../lib/format';
 import { AgentLogo, ClaudeLogo } from '../Logos';
 import { GrokAvatar, GroupAvatar } from '../GrokAvatar';
@@ -116,6 +117,7 @@ export function useItems(): Item[] {
   const entities = useStore((s) => s.entities);
   const live = useStore((s) => s.liveByEntity);
   const accounts = useStore((s) => s.accounts);
+  const asks = useStore((s) => s.approvals);
   const seen = useSeen((s) => s.seen);
   const base = useSeen((s) => s.base);
   return useMemo(() => {
@@ -138,19 +140,20 @@ export function useItems(): Item[] {
       // A Grok bot whose Claude CLI run is live is working, even if the bot itself is quiet.
       const running = e.status === 'running' || run?.status === 'running' || !!(e.meta?.activity?.running) || subsLive > 0;
       const acc = e.accountId ? accById[e.accountId] : undefined;
+      const ask = asks.find((a) => approvalFor(a, e.id));
       out.push({
         e, family, running,
         group: `${family}:${family === 'desktop' ? '' : e.accountId || ''}`,
         groupLabel: family === 'desktop' || family === 'cursor' ? FAMILY_LABEL[family] : acc?.label || FAMILY_LABEL[family],
-        attn: flagged.has(e.id) || needsAttention(e, run, seen[e.id] ?? base),
-        activity: activityOf(e, run, running),
+        attn: !!ask || flagged.has(e.id) || needsAttention(e, run, seen[e.id] ?? base),
+        activity: ask ? `Needs your OK · ${ask.summary.line}` : activityOf(e, run, running),
         chip: clientChip(e, clientPaths),
         subs: subs.length,
         subsLive,
       });
     }
     return out.sort((x, y) => (y.e.updatedAt || 0) - (x.e.updatedAt || 0));
-  }, [entities, live, accounts, seen, base]);
+  }, [entities, live, accounts, asks, seen, base]);
 }
 
 export function groupItems(items: Item[]): Group[] {

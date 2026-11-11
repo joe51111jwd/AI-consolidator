@@ -4,6 +4,7 @@ One place on your Mac to manage the AI chats you already have: every Claude Code
 
 - **Chats home (⌘2).** All your chats in one list, grouped into topics by what they're doing. Each topic shows how many are working and how many need you; a blue dot marks a chat waiting on you. Filter and search the list at the top.
 - **Open and reply.** Click a chat to open it and talk. Hover a row to send a quick reply without opening it.
+- **Approve what Claude wants to do.** When a Claude chat you run from Switchboard wants to run a command or edit a file, it asks you on the chat's card, in the open chat and in the to-do list (**Approve: …**), not in the Claude app. Answer **Allow once**, **Always allow** (that tool, in that chat) or **Deny**.
 - **Import chats.** Bring any older chat from any Claude account into the app.
 - **Dock.** The account bubbles at the bottom start a new chat; each shows its usage this week so you can spread work across accounts. Hover one to see what it's working on.
 - **Main agent (⌘J).** The **+** in the dock opens an agent that sees everything: ask "what needs me?", get a daily recap, or ask any question across your chats. It also starts chats, notes and boards, and runs the Showcase.
@@ -47,7 +48,22 @@ claude.ai has no public API for chats, so the app works through **Claude Code**,
 
 1. **Accounts → Add account → Claude account.** Give it a name and a folder. `~/.claude` is usually your first account; use `~/.claude-2`, `~/.claude-3` and so on for the others. The app won't let two cards share a folder.
 2. Press **Sign in** on the card. Your browser opens claude.ai's sign-in page. When you finish there, the card turns to **Signed in** and shows the email, organization and plan it's signed in to, for example `you@example.com · Acme Studio · Team`.
-3. Under **Edit** choose what Claude may do when you prompt it from the board: read and plan only (the default), edit files, or anything.
+3. Under **Edit → Permissions** choose what Claude may do in chats you run from Switchboard:
+   - **Ask first** (the default): Claude asks you before it runs a command or changes a file.
+   - **Edit files**: Claude edits files without asking, but still asks before most commands.
+   - **Full access**: Claude never asks.
+
+#### Approving what Claude wants to do
+
+With **Ask first** or **Edit files**, the questions Claude Code would ask in its own app come to Switchboard instead. While Claude waits for your answer:
+
+- the chat's card turns blue and says **Needs your OK · npm test** (or **Edit menu.html**). Hover the card to see the command, or the file and the lines that change, with the buttons;
+- the open chat shows the same request above the message box;
+- the to-do list has a row **Approve: …** that opens the chat.
+
+Choose **Allow once**, **Always allow … in this chat** (that tool won't ask again in that chat; the open chat lists what you've always allowed, with × to undo it) or **Deny** (Claude is told you said no and carries on without it). A request you don't answer within 10 minutes is denied. If the chat stops first, its request goes away.
+
+This works for every Claude chat you continue or start in Switchboard, on any account. Switchboard runs `claude` with `--permission-prompt-tool mcp__switchboard__approve_tool`, a tool in its own `sb mcp` server that asks the app and waits for your answer. Chats you run in a terminal or the Claude app keep asking there.
 
 If the browser never comes back to the app, press **Terminal** on the card instead: it opens Terminal in that card's folder, where you type `/login`.
 
@@ -118,6 +134,8 @@ Under Settings → **Accounts**, press **Add Switchboard tools to my agents**. T
 - post finished work as an output card,
 - check what's due for clients.
 
+The same server has `approve_tool`, which Claude Code calls on its own to ask you for permission (see [Approving what Claude wants to do](#approving-what-claude-wants-to-do)). Agents don't call it themselves.
+
 The same things work from any terminal:
 
 ```bash
@@ -147,7 +165,7 @@ Only programs running as you can use it: it listens on 127.0.0.1 and needs the t
 
 ## Where things are kept
 
-- `~/.switchboard/switchboard.db` holds the board, clients, outputs and settings.
+- `~/.switchboard/switchboard.db` holds the board, clients, outputs and settings, including the tools you chose to always allow in each chat.
 - `~/.switchboard/brain.md` is the shared brain.
 - API keys and Google sign-ins are encrypted with your Mac's Keychain.
 
@@ -157,13 +175,14 @@ Only programs running as you can use it: it listens on 127.0.0.1 and needs the t
 npm test
 ```
 
-This builds the app and runs `tests/e2e.cjs`, which starts the real app in a throwaway home folder with stand-in `claude`, `codex` and Grok Bot commands and a stand-in Google server, then clicks through it. On Linux run it under `xvfb-run -a npm test`. It checks 73 things, including:
+This builds the app and runs `tests/e2e.cjs`, which starts the real app in a throwaway home folder with stand-in `claude`, `codex` and Grok Bot commands and a stand-in Google server, then clicks through it. On Linux run it under `xvfb-run -a npm test`. It checks 101 things, including:
 
 - **Board:** cards from every source show up while project folders and scratch sessions don't; Smart group (asking Claude, keeping agents' diagrams); one click opens a card; dragging, grouping by hand (⌘G, rename, ungroup), frame goals, the filter, `sb board` diagrams; positions, groups and lines survive a restart.
 - **Lines and messages:** drawing a line (auto-send on by default, switchable), a reply flowing down it, `sb send --from grok-bot --wait` drawing and lighting a line.
 - **Drag and drop:** a message dragged onto a card goes with the next prompt; dropped on empty space it becomes an output card that can be saved to the brain, copied, opened, and dragged onto another agent.
 - **Prompting every kind of card:** a project folder found with ⌘K starts a session in it; the dock; ⌘K tagging; split usage picks the least-used Claude account; an account card uses that account; Codex resumes the right session; Grok Bot gets the text on the clipboard; Granola notes open.
 - **Overall agent:** answers, works on the selected cards, keeps history, flags what needs you (open or dismiss), and doesn't show its own runs as cards.
+- **Permission requests:** in **Ask first** the stand-in `claude` gets `--permission-prompt-tool mcp__switchboard__approve_tool`, calls that tool through `sb mcp` and the app, and gets back the JSON Claude Code expects. The request shows on the chat's card, in the open chat and in the to-do list. Each answer is checked: **Allow once** (`{"behavior":"allow","updatedInput":…}`), a file edit with its diff, **Always allow** (the next edit doesn't ask, and it's kept after a restart), and **Deny** from the board card (`{"behavior":"deny","message":…}`). It also checks a new chat asking on its own card; **Edit files** still asking before commands while **Full access** and Switchboard's own background runs never ask; and a request leaving once Claude Code stops waiting.
 - **Claude sign-in:** two plans on one email signed in to separate folders and shown with their own organization and plan; the same-login warning; signing out one card leaves the other signed in; cancelling a slow sign-in; agent tools added to every Claude folder.
 - **Gmail:** the Google consent link (read-only scope, PKCE, state check), a wrong state refused, the token stored encrypted, the token refreshed after it expires and after a restart, a revoked token asking you to reconnect, and removing the account deleting its keys.
 - **Clients:** replies owed, follow-ups, people you email added as leads, deleted clients not re-added, adding and editing a client.
@@ -179,7 +198,8 @@ The test can't sign in to real accounts, so check these once after installing:
 3. **Granola:** open a meeting card and check the notes are there.
 4. **Grok Bot:** turn on "Execution on this computer" in Grok Bot, press **Copy note for Grok Bot** under Settings → **Accounts** and paste it into Grok Bot, then ask Grok Bot to send something to a Claude card and watch the line light up.
 5. **Agent tools:** press **Add Switchboard tools to my agents**, then in any Claude session ask it to list your Switchboard cards.
-6. **App build:** `npm run dist`, open the app from `release`, and check it starts with your board.
+6. **Permission requests:** with a Claude card on **Ask first**, ask a chat in Switchboard to "run `ls` in this folder". Check that **Approve: ls** appears in the to-do list, that **Allow once** lets Claude run it, and that **Deny** makes Claude say it wasn't allowed.
+7. **App build:** `npm run dist`, open the app from `release`, and check it starts with your board.
 
 ## Development
 

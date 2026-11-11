@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { api, Entity, Run } from './api';
 import { useStore } from './store';
+import { hasApproval } from './approvals';
 
 // A card needs you when it's your turn, it failed, a run finished since you last opened it,
 // or a Grok bot is waiting on a reply. Opening the card clears it.
@@ -37,15 +38,17 @@ export function needsAttention(e: Entity | undefined, live: Run | undefined, see
   return false;
 }
 
+// A chat waiting for your OK to run a tool needs you until you answer, opened or not.
 export function useAttention(id: string): boolean {
   const e = useStore((s) => s.byId[id]);
   const live = useStore((s) => s.liveByEntity[id]);
+  const asks = useStore((s) => hasApproval(s.approvals, id));
   const seenAt = useSeen((s) => s.seen[id] ?? s.base);
-  return needsAttention(e, live, seenAt);
+  return asks || needsAttention(e, live, seenAt);
 }
 
 export function attentionIds(ids: string[]): string[] {
-  const { byId, liveByEntity } = useStore.getState();
+  const { byId, liveByEntity, approvals } = useStore.getState();
   const { seen, base: b } = useSeen.getState();
-  return ids.filter((id) => needsAttention(byId[id], liveByEntity[id], seen[id] ?? b));
+  return ids.filter((id) => hasApproval(approvals, id) || needsAttention(byId[id], liveByEntity[id], seen[id] ?? b));
 }

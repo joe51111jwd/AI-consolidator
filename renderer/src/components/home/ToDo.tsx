@@ -4,7 +4,9 @@ import { useStore } from '../../lib/store';
 import { api } from '../../lib/api';
 import { dueLabel } from '../../lib/format';
 import { Item, useItems } from './items';
+import { approvalTarget, hasApproval } from '../../lib/approvals';
 import '../live.css';
+import '../approval.css';
 
 interface Todo { id: string; text: string; done: boolean; ts: number; ref?: string }
 
@@ -13,6 +15,8 @@ interface Todo { id: string; text: string; done: boolean; ts: number; ref?: stri
 export default function ToDo({ items, className = '' }: { items: Item[]; className?: string }) {
   const due = useStore((s) => s.due);
   const open = useStore((s) => s.open);
+  const asks = useStore((s) => s.approvals);
+  const byId = useStore((s) => s.byId);
   const [todos, setTodos] = useState<Todo[]>([]);
   const [text, setText] = useState('');
   const [all, setAll] = useState(false);
@@ -21,10 +25,11 @@ export default function ToDo({ items, className = '' }: { items: Item[]; classNa
   const add = () => { const t = text.trim(); if (!t) return; save([{ id: `td${Date.now().toString(36)}`, text: t, done: false, ts: Date.now() }, ...todos]); setText(''); };
   const toggle = (t: Todo) => save(todos.map((x) => (x.id === t.id ? { ...x, done: !x.done } : x)));
   const remove = (t: Todo) => save(todos.filter((x) => x.id !== t.id));
-  const needs = items.filter((i) => i.attn);
+  // A chat asking for your OK is listed once, as "Approve: …", not again as "Reply to …".
+  const needs = items.filter((i) => i.attn && !hasApproval(asks, i.e.id));
   const working = items.filter((i) => i.running && !i.attn);
   const mine = todos.filter((t) => !t.done || all);
-  const total = todos.filter((t) => !t.done).length + needs.length + working.length + due.length;
+  const total = todos.filter((t) => !t.done).length + asks.length + needs.length + working.length + due.length;
   return (
     <section className={`lv-section flat lv-todo ${className}`} data-testid="home-todo">
       <h3 className="lv-h">To do<span>{total}</span></h3>
@@ -32,6 +37,14 @@ export default function ToDo({ items, className = '' }: { items: Item[]; classNa
         <input value={text} placeholder="Add a to-do…" data-testid="todo-input" onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => { e.stopPropagation(); if (e.key === 'Enter') add(); }} />
       </div>
+      {asks.map((a) => {
+        const to = approvalTarget(a, byId);
+        return (
+          <button key={a.id} className="lv-todo-row ask" onClick={() => to && open(to)} data-testid="todo-approval" title={a.summary.title}>
+            <i className="lv-todo-dot attn" /><span className="lv-todo-t">Approve: {a.summary.line}</span><span className="lv-todo-m">{(to && byId[to]?.title) || 'Claude'}</span>
+          </button>
+        );
+      })}
       {mine.map((t) => (
         <div key={t.id} className={`lv-todo-row mine ${t.done ? 'done' : ''}`} data-testid="todo-mine">
           <button className={`lv-todo-check ${t.done ? 'on' : ''}`} onClick={() => toggle(t)} title={t.done ? 'Mark not done' : 'Mark done'}>{t.done ? <Check size={10} strokeWidth={3} /> : null}</button>
@@ -67,9 +80,10 @@ const COLLAPSED_KEY = 'sb.boardTodo';
 export function BoardToDo() {
   const items = useItems();
   const due = useStore((s) => s.due);
+  const asks = useStore((s) => s.approvals);
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem(COLLAPSED_KEY) === '1');
   const flip = () => { const v = !collapsed; setCollapsed(v); localStorage.setItem(COLLAPSED_KEY, v ? '1' : '0'); };
-  const needs = items.filter((i) => i.attn).length;
+  const needs = asks.length + items.filter((i) => i.attn && !hasApproval(asks, i.e.id)).length;
   const working = items.filter((i) => i.running && !i.attn).length;
   return (
     <aside className={`board-todo ${collapsed ? 'collapsed' : ''}`} data-testid="board-todo" data-tour="board-todo" onKeyDown={(e) => e.stopPropagation()}>

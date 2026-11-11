@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { api, Entity, BoardRow, EdgeRow, Run, Account, Attach, DueItem } from './api';
+import { api, Entity, BoardRow, EdgeRow, Run, Account, Attach, DueItem, Approval } from './api';
 
 export type View = 'board' | 'clients' | 'brain' | 'accounts';
 
@@ -25,6 +25,8 @@ interface State {
   outputsOpen: boolean;
   chiefMin: boolean;
   pins: string[];                     // entity ids tagged as context for the next prompt
+  approvals: Approval[];              // tools Claude chats are waiting for your OK to use
+  approvalRules: Record<string, string[]>; // chat id -> tools always allowed there
   set: (p: Partial<State>) => void;
   refresh: (force?: boolean) => Promise<void>;
   boardLoaded: boolean;
@@ -39,6 +41,7 @@ interface State {
 export const useStore = create<State>((set, get) => ({
   view: 'board', entities: [], byId: {}, board: [], edges: [], runs: {}, liveByEntity: {}, accounts: [], due: [],
   boardLoaded: false, inspector: null, selected: [], attach: {}, activeEdges: {}, toast: null, auth: {}, paletteOpen: false, chiefOpen: false, settingsTab: null, outputsOpen: false, chiefMin: false, pins: [],
+  approvals: [], approvalRules: {},
   set: (p) => set(p as any),
   refresh: async (force = false) => {
     const [entities, accounts] = await Promise.all([api.entities(force), api.accounts()]);
@@ -63,9 +66,15 @@ let wired = false;
 export function wireEvents() {
   if (wired) return; wired = true;
   let t: any;
+  api.approvals().then((r) => useStore.setState({ approvals: r.approvals, approvalRules: r.rules })).catch(() => {});
   api.onEvent((e) => {
     const s = useStore.getState();
     if (e.type === 'entities-changed') { clearTimeout(t); t = setTimeout(() => { s.refresh(); }, 250); }
+    if (e.type === 'approvals') {
+      useStore.setState({ approvals: e.approvals || [], approvalRules: e.rules || {} });
+      // A brand-new chat can ask before its card has been loaded; load it so the request has a home.
+      if (e.added?.chat && !s.byId[e.added.chat]) s.refresh(true);
+    }
     if (e.type === 'board-changed') s.refreshBoard();
     if (e.type === 'auth') {
       useStore.setState((st) => ({ auth: { ...st.auth, [e.accountId]: { phase: e.phase, url: e.url ?? (e.phase === 'waiting' && st.auth[e.accountId]?.phase === 'waiting' ? st.auth[e.accountId]?.url : undefined), error: e.error } } }));

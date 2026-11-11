@@ -9,6 +9,8 @@ import Composer from '../components/Composer';
 import { AgentLogo } from '../components/Logos';
 import { GrokAvatar, GroupAvatar, botLook } from '../components/GrokAvatar';
 import { useAttention, needsAttention, useSeen } from '../lib/attention';
+import { hasApproval, useApprovals } from '../lib/approvals';
+import { ApprovalCard } from '../components/Approval';
 import { ARRANGED_KEY, COMPACT_H } from '../lib/layout';
 
 const Handles = () => (
@@ -332,12 +334,17 @@ function AgentCard({ id, e, selected }: { id: string; e: Entity; selected?: bool
   const subs: Sub[] = Array.isArray(e.meta?.subagents) ? e.meta.subagents : [];
   const running = pill === 'running';
   const sized = useStore((s) => !!s.board.find((b) => b.id === id)?.h);
+  const asks = useApprovals(id);
   const now = a?.tool || lastLine(a?.text) || lastLine(latest.text);
   return (
     <Compact id={id} selected={selected} stripe={colorOf(e, useStore.getState().accounts)} title={e.title} pill={pill}
       avatar={<AgentLogo source={e.source} size={16} color={acc?.color || src.color} working={running} />}
-      now={<NowLine running={running} now={now} fallback={latest.text} error={latest.error} />}
+      now={asks.length
+        ? <div className="card-now ap-now" data-testid="card-approval-line" title={asks[0].summary.line}>Needs your OK · {asks[0].summary.line}</div>
+        : <NowLine running={running} now={now} fallback={latest.text} error={latest.error} />}
       meta={<Meta parts={[acc?.label || src.label, cat && <span className={`kind-chip ${cat}`}>{cat === 'coding' ? 'Code' : 'Chat'}</span>, folder && <span className="mono" title={e.meta?.cwd}>{folder}{branch && <em> · {branch}</em>}</span>, ago(e.updatedAt)]} chip={subsLabel(subs)} />}>
+      {asks.length > 0 && <ApprovalCard a={asks[0]} compact />}
+      {asks.length > 1 && <button className="ap-more nodrag" onClick={(ev) => { ev.stopPropagation(); useStore.getState().open(id); }}>{asks.length - 1} more waiting · open the chat</button>}
       <Steps steps={[['Asked', a?.prompt], ['Said', running && a?.tool ? a?.text : undefined]]} />
       {sized && <Reply id={id} text={latest.text} title={e.title} live={latest.live} />}
       <SubRows id={id} subs={subs} />
@@ -352,6 +359,7 @@ export const AccountNode = memo(({ id, selected }: NodeProps) => {
   const e = useEntity(id);
   const week = useStore(useShallow((s) => s.entities.filter((x) => x.kind === 'account').map((x) => x.meta?.usage?.d7 || 0)));
   const running = useStore((s) => s.entities.filter((x) => x.accountId === e?.accountId && x.kind === 'session' && x.status === 'running').length);
+  const asks = useApprovals(id);
   if (!e) return <Gone />;
   const src = SOURCE[e.source] || { label: e.source, color: '#71717A' };
   const u = e.meta?.usage;
@@ -380,6 +388,7 @@ export const AccountNode = memo(({ id, selected }: NodeProps) => {
         </div>
       )}
       <LiveOrPreview id={id} title={e.title} />
+      {asks.length > 0 && <ApprovalCard a={asks[0]} compact />}
       {promptable && <Composer id={id} placeholder={e.source === 'grok-bot' ? 'Hand off to Grok Bot…' : 'New session…'} />}
     </Card>
   );
@@ -585,7 +594,7 @@ export const GroupNode = memo(({ id, data, selected }: NodeProps) => {
   const input = useRef<HTMLInputElement>(null);
   const cancel = useRef(false);
   const seen = useSeen((s) => s.seen); const base = useSeen((s) => s.base);
-  const need = useStore((s) => s.board.filter((r) => r.parent_id === id && !r.hidden && needsAttention(s.byId[r.id], s.liveByEntity[r.id], seen[r.id] ?? base)).length);
+  const need = useStore((s) => s.board.filter((r) => r.parent_id === id && !r.hidden && (hasApproval(s.approvals, r.id) || needsAttention(s.byId[r.id], s.liveByEntity[r.id], seen[r.id] ?? base))).length);
   useEffect(() => { if (!editing) setLabel(d.label || 'Group'); }, [d.label]);
   useEffect(() => { if (editing) { input.current?.focus(); input.current?.select(); } }, [editing]);
 

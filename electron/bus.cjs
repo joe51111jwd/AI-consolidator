@@ -7,6 +7,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const hub = require('./hub.cjs');
+const approvals = require('./approvals.cjs');
 const { APP_DIR } = require('./util.cjs');
 
 const TOKEN_FILE = path.join(APP_DIR, 'bus-token');
@@ -97,6 +98,13 @@ function start(port = 47821) {
         return send(200, { ok: true, ...hub.makeBoard({ title: j.title, nodes: j.nodes, edges: j.edges, from }) });
       }
       if (req.method === 'POST' && url.pathname === '/group') return send(200, hub.requestRegroup(j.instruction));
+      // Claude Code asks permission through approve_tool (sb mcp); this waits for the owner's answer.
+      // If approve_tool hangs up first (Claude Code stopped), the question is taken off the card.
+      if (req.method === 'POST' && url.pathname === '/approve') {
+        const { id, answer } = approvals.request(j);
+        res.on('close', () => { if (id && !res.writableFinished) approvals.withdraw(id); });
+        return send(200, await answer);
+      }
       if (req.method === 'GET' && url.pathname === '/due') return send(200, await hub.due());
       return send(404, { error: 'unknown route' });
     } catch (e) { return send(500, { error: e.message }); }

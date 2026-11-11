@@ -1294,6 +1294,138 @@ async function main() {
     assert(/Changed in the test/.test(e.preview), 'note saved');
   });
 
+  // The stand-in claude uses a tool for each "TOOL <Name> <json>" line of a prompt. Given
+  // --permission-prompt-tool, it first calls that MCP tool (`sb mcp`'s approve_tool, which asks the
+  // app over the bus) and logs Claude Code's answer as { permission: { tool, input, result } }.
+  console.log('\nPermission requests: answered in Switchboard, not the Claude app');
+  const sidOf = (id) => id.split(':')[2];
+  const answered = (sid, tool) => calls().filter((x) => x.permission && x.sessionId === sid && (!tool || x.permission.tool === tool));
+  const waiting = async () => (await api('approvals')).approvals;
+  const todoAsks = () => page.getByTestId('board-todo').getByTestId('todo-approval');
+  const closeChat = () => page.locator('.inspector .insp-head button[title="Close"]').click({ timeout: 1000 }).catch(() => {});
+  async function todoOpen() {
+    if ((await page.getByTestId('board-todo-toggle').getAttribute('aria-expanded')) === 'false') await page.getByTestId('board-todo-toggle').click();
+  }
+  await check('in "Ask first" a chat asks on its card before running a command, and "Allow once" lets it run', async () => {
+    await view('Board');
+    await closeChat();
+    await center(S.menu, 0.8);
+    await api('prompt', S.menu, 'Run the test suite\nTOOL Bash {"command":"npm test","description":"Run the tests"}');
+    const ap = await until(async () => (await waiting()).find((a) => a.chat === S.menu), 'the chat waits for an OK', 20000);
+    assert(ap.tool === 'Bash' && ap.summary.command === 'npm test', JSON.stringify(ap));
+    const c = promptCalls().find((x) => /Run the test suite/.test(x.prompt));
+    const i = c.args.indexOf('--permission-prompt-tool');
+    assert(i > 0 && c.args[i + 1] === 'mcp__switchboard__approve_tool' && c.args.includes('--mcp-config') && c.args.includes('--resume'), `the chat asks through Switchboard (${c.args.join(' ')})`);
+    // On the board card: the attention style and what it wants to run, and the answers on hover.
+    await until(async () => /needs-you/.test(await node(S.menu).locator('.card').first().getAttribute('class')), 'the card is marked as needing you');
+    await until(async () => /Needs your OK · npm test/.test(await node(S.menu).getByTestId('card-approval-line').innerText()), 'the card says what it wants to run');
+    await node(S.menu).hover();
+    await node(S.menu).getByTestId('approval-allow').waitFor({ state: 'visible' });
+    assert((await node(S.menu).getByTestId('approval-command').innerText()) === 'npm test', 'the card shows the command and the answers on hover');
+    await sleep(300); await shot('approval-card');
+    await page.mouse.move(5, 300);
+    // In the to-do list, which opens the chat, where the request sits above the message box.
+    await todoOpen();
+    await until(async () => /Approve: npm test/.test(await todoAsks().innerText()), 'the to-do list has "Approve: npm test"');
+    const shown = await todoAsks().locator('.lv-todo-t').boundingBox();
+    assert(shown && shown.width > 80, `the request is readable in the to-do list (${shown && shown.width}px wide)`);
+    await todoAsks().click();
+    const panel = page.locator('.inspector');
+    await until(async () => /menu page/i.test(await panel.locator('.insp-head .title').innerText()), 'the to-do opened the chat');
+    const card = panel.getByTestId('approval');
+    await until(async () => /Run the tests/.test(await card.innerText()) && (await card.getByTestId('approval-command').innerText()) === 'npm test', 'the chat panel shows what it wants to run');
+    await sleep(400); await shot('approval-panel');
+    await card.getByTestId('approval-allow').click();
+    const got = await until(() => answered(sidOf(S.menu), 'Bash').pop(), 'Claude Code got an answer');
+    assert(JSON.stringify(got.permission.result) === JSON.stringify({ behavior: 'allow', updatedInput: { command: 'npm test', description: 'Run the tests' } }), `answered ${JSON.stringify(got.permission.result)}`);
+    await until(async () => !(await waiting()).length && (await panel.getByTestId('approval').count()) === 0, 'the request left the panel');
+    assert((await todoAsks().count()) === 0, 'and the to-do list');
+    await until(async () => /Bash allowed/.test(await panel.innerText()), 'the chat went on and ran it');
+  });
+  await check('an edit shows the file and the change; "Always allow" stops asking for edits in that chat', async () => {
+    const panel = page.locator('.inspector');
+    const file = path.join(HOME, 'code', 'harbor-coffee-site', 'menu.html');
+    const edit = (before, after) => `TOOL Edit ${JSON.stringify({ file_path: file, old_string: before, new_string: after })}`;
+    await api('prompt', S.menu, `Fix the menu heading\n${edit('<h1>Menu</h1>\n<p>Hours</p>', '<h1>Our menu</h1>\n<p>Hours</p>')}`);
+    const card = panel.getByTestId('approval');
+    await until(async () => (await card.count()) === 1 && /menu\.html$/.test(await card.getByTestId('approval-file').innerText()), 'the panel names the file', 20000);
+    assert(/\+1/.test(await card.innerText()) && /−1/.test(await card.innerText()), 'with how many lines change');
+    const diff = await card.getByTestId('approval-diff').innerText();
+    assert(/-\s*<h1>Menu<\/h1>/.test(diff) && /\+\s*<h1>Our menu<\/h1>/.test(diff) && /<p>Hours<\/p>/.test(diff), `and the change itself:\n${diff}`);
+    assert(/Always allow edits in this chat/.test(await card.getByTestId('approval-always').innerText()), '"Always" says what it covers');
+    await sleep(400); await shot('approval-edit');
+    await card.getByTestId('approval-always').click();
+    const first = await until(() => answered(sidOf(S.menu), 'Edit').pop(), 'answered');
+    assert(first.permission.result.behavior === 'allow' && first.permission.result.updatedInput.new_string === '<h1>Our menu</h1>\n<p>Hours</p>', JSON.stringify(first.permission.result));
+    await until(async () => /edits/.test(await panel.getByTestId('approval-rules').innerText()), 'the panel lists edits as always allowed here');
+    // The next edit in this chat goes ahead without a request ever showing.
+    await page.evaluate(() => { window.__asked = []; window.sbBridge.onEvent((e) => { if (e.type === 'approvals' && e.added) window.__asked.push(e.added.tool); }); });
+    const before = answered(sidOf(S.menu), 'Edit').length;
+    await api('prompt', S.menu, `Tidy the footer\n${edit('<footer>', '<footer class="site">')}`);
+    const next = await until(() => answered(sidOf(S.menu), 'Edit')[before], 'the second edit went through', 20000);
+    assert(next.permission.asked && next.permission.result.behavior === 'allow', JSON.stringify(next.permission));
+    assert(!(await page.evaluate(() => window.__asked)).length, 'without asking again');
+    assert((await api('approvals')).rules[S.menu].includes('Edit'), 'remembered for this chat');
+    await closeChat();
+  });
+  await check('"Deny" on the board card tells Claude no, and other tools still ask after "Always allow" edits', async () => {
+    await center(S.menu, 0.8);
+    await api('prompt', S.menu, 'Clean the build folder\nTOOL Bash {"command":"rm -rf build"}');
+    await until(async () => /rm -rf build/.test(await node(S.menu).getByTestId('card-approval-line').innerText()), 'the card asks', 20000);
+    await node(S.menu).hover();
+    await node(S.menu).getByTestId('approval-deny').click();
+    const r = await until(() => answered(sidOf(S.menu), 'Bash').find((x) => x.permission.input.command === 'rm -rf build'), 'answered');
+    assert(r.permission.result.behavior === 'deny' && /said no/.test(r.permission.result.message), JSON.stringify(r.permission.result));
+    await until(async () => /Bash denied/.test(await node(S.menu).innerText()), 'the card shows Claude was told no');
+    assert(!(await waiting()).length, 'nothing left waiting');
+    await page.mouse.move(5, 300);
+  });
+  await check('a new chat started from an account asks on its own card, and the to-do opens it there', async () => {
+    const known = new Set((await api('entities', {})).map((e) => e.id));
+    await api('prompt', 'ac:a_claude1', 'Start the dev server\nTOOL Bash {"command":"npm run dev"}');
+    const ap = await until(async () => (await waiting()).find((a) => a.summary.command === 'npm run dev'), 'the new chat asks', 20000);
+    assert(ap.origin === 'ac:a_claude1' && ap.chat && ap.chat.startsWith('cc:a_claude1:') && !known.has(ap.chat), `tied to the new chat (${ap.chat}, sent from ${ap.origin})`);
+    await todoOpen();
+    await until(async () => /Approve: npm run dev/.test(await todoAsks().innerText()) && /Start the dev server/.test(await todoAsks().innerText()), 'the to-do row names the new chat');
+    await todoAsks().click();
+    await until(async () => /Start the dev server/.test(await page.locator('.inspector .insp-head .title').innerText()), 'the to-do opened the new chat');
+    await page.locator('.inspector').getByTestId('approval-allow').click();
+    await until(() => calls().find((x) => x.permission && x.permission.input.command === 'npm run dev' && x.permission.result.behavior === 'allow'), 'it ran');
+    await closeChat();
+  });
+  await check('"Full access" chats and Switchboard\'s own runs never ask; "Edit files" chats still ask before a command', async () => {
+    const studio = (await api('accounts')).find((a) => a.id === 'a_claude2');
+    const mode = (m) => api('account:save', { ...studio, config: { ...studio.config, permissionMode: m } });
+    await mode('bypassPermissions');
+    await api('prompt', S.crew, 'Rebuild the schedule\nTOOL Bash {"command":"npm run build"}');
+    const full = await until(() => promptCalls().find((x) => /Rebuild the schedule/.test(x.prompt)), 'called');
+    assert(full.args.includes('bypassPermissions') && !full.args.includes('--permission-prompt-tool'), full.args.join(' '));
+    await until(() => calls().find((x) => x.permission && x.permission.input.command === 'npm run build' && !x.permission.asked), 'it ran without asking');
+    await mode('acceptEdits');
+    await api('prompt', S.crew, 'Lint the schedule\nTOOL Bash {"command":"npm run lint"}');
+    const ap = await until(async () => (await waiting()).find((a) => a.chat === S.crew), '"Edit files" asks before a command', 20000);
+    await api('approval:answer', ap.id, 'once');
+    await until(() => calls().find((x) => x.permission && x.permission.input.command === 'npm run lint' && x.permission.result.behavior === 'allow'), 'and runs it once allowed');
+    await mode(studio.config.permissionMode || 'default');
+    const own = topicCalls();
+    assert(own.length && own.every((x) => !x.args.includes('--permission-prompt-tool')), "Switchboard's own background runs don't ask");
+  });
+  await check('a request Claude Code stops waiting on leaves the card and the to-do list', async () => {
+    const dir = path.join(HOME, '.switchboard');
+    const token = fs.readFileSync(path.join(dir, 'bus-token'), 'utf8').trim(), port = fs.readFileSync(path.join(dir, 'bus-port'), 'utf8').trim();
+    const ctl = new AbortController();
+    const req = fetch(`http://127.0.0.1:${port}/approve`, {
+      method: 'POST', signal: ctl.signal, headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ from: S.menu, tool_name: 'WebFetch', input: { url: 'https://example.com/menu' } }),
+    }).catch(() => null);
+    const ap = await until(async () => (await waiting()).find((a) => a.tool === 'WebFetch'), 'asked');
+    assert(ap.origin === S.menu && /example\.com/.test(ap.summary.line), JSON.stringify(ap));
+    await until(async () => (await todoAsks().count()) === 1, 'listed in the to-do');
+    ctl.abort(); await req;
+    await until(async () => !(await waiting()).length, 'withdrawn once nobody waits for the answer');
+    await until(async () => (await todoAsks().count()) === 0, 'gone from the to-do list');
+  });
+
   console.log('\nAfter a restart');
   movedTo = await boardRow('nt:n1');
   const refreshesBefore = mock.state.tokenRequests.filter((r) => r.grant_type === 'refresh_token').length;
@@ -1329,6 +1461,10 @@ async function main() {
     assert(!gm.secrets.refresh, 'the dead token was cleared');
     await view('Accounts');
     await until(async () => (await page.locator('.accounts-grid .card', { hasText: 'Gmail' }).locator('button', { hasText: 'Sign in with Google' }).count()) === 1, 'button asks to sign in again');
+  });
+  await check('"Always allow" for a chat is kept', async () => {
+    const r = await api('approvals');
+    assert((r.rules[S.menu] || []).includes('Edit') && !r.approvals.length, JSON.stringify(r));
   });
   await check('the brain, chief history and dismissed nudges are kept', async () => {
     assert(/My own line\./.test(await api('brain')), 'brain kept');

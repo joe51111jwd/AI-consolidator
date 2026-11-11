@@ -1,6 +1,7 @@
 'use strict';
-// ⌘K smart search: ranks every card's title, preview and metadata, then looks inside
-// local transcripts (Claude, Codex, Granola, chats, outputs, Grok Bot) for the best candidates.
+// ⌘K smart search: ranks every card's title, AI summary (what it's about, client, project), preview
+// and metadata, then looks inside local transcripts (Claude, Codex, Granola, chats, outputs, Grok
+// Bot) for the best candidates.
 const hub = require('../hub.cjs');
 
 const PREFIX = {
@@ -49,6 +50,14 @@ function passes(e, filter) {
   return true;
 }
 
+// A chat's AI summary (ext/context.cjs): what the work is, who it's for, the project and people.
+function contextText(e) {
+  const c = e.meta && e.meta.context;
+  if (!c || typeof c !== 'object') return '';
+  return [c.about, c.client, c.project, ...(Array.isArray(c.people) ? c.people : [])].filter(Boolean).join(' ').toLowerCase();
+}
+const contextSnippet = (e) => { const c = e.meta.context; return [c.about, [c.client, c.project].filter(Boolean).join(' · ')].filter(Boolean).join(' — '); };
+
 function metaText(e) {
   const m = e.meta || {};
   const parts = [m.cwd, m.gitBranch, m.from, m.category, e.source];
@@ -84,9 +93,11 @@ function rank(e, terms, phrase, now) {
   const title = (e.title || '').toLowerCase();
   const preview = (e.preview || '').toLowerCase();
   const meta = metaText(e);
+  const context = contextText(e);
   let score = 0; const missing = []; let where = 'title';
   for (const t of terms) {
     if (title.includes(t)) score += title.startsWith(t) || title.includes(' ' + t) ? 12 : 9;
+    else if (context.includes(t)) { score += 5; if (where === 'title') where = 'context'; }
     else if (preview.includes(t)) { score += 4; if (where === 'title') where = 'preview'; }
     else if (meta.includes(t)) score += 3;
     else missing.push(t);
@@ -113,7 +124,7 @@ async function query(q, { limit = 40, deadline = 450 } = {}) {
   const hits = []; const partial = [];
   for (const e of list) {
     const r = rank(e, terms, phrase, now);
-    if (!r.missing.length) hits.push(out(e, r.score, r.where === 'preview' ? snippet(e.preview, terms) : (e.preview ? snippet(e.preview, []) : '')));
+    if (!r.missing.length) hits.push(out(e, r.score, r.where === 'context' ? contextSnippet(e) : r.where === 'preview' ? snippet(e.preview, terms) : (e.preview ? snippet(e.preview, []) : '')));
     else if (LOCAL.test(e.id) || (e.kind === 'account' && e.source === 'grok-bot')) partial.push({ e, r });
   }
   // Look inside transcripts for the most promising cards that metadata alone didn't fully match.

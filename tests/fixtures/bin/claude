@@ -45,7 +45,7 @@ process.stdin.on('end', () => {
   const cwd = process.cwd();
   log({ args, cwd, configDir: process.env.CLAUDE_CONFIG_DIR || null, sessionId: id, prompt: input });
   const first = input.trim().split('\n').pop().slice(0, 120);
-  const reply = process.env.SB_STUB_REPLY || smartGroup(input) || topics(input) || `Done (${path.basename(dir)}): ${first}`;
+  const reply = process.env.SB_STUB_REPLY || chatContext(input) || smartGroup(input) || topics(input) || `Done (${path.basename(dir)}): ${first}`;
   const out = (o) => process.stdout.write(JSON.stringify(o) + '\n');
   out({ type: 'system', subtype: 'init', session_id: id, cwd, model: 'claude-sonnet-5-5' });
   const mid = 'msg_' + crypto.randomBytes(6).toString('hex');
@@ -59,6 +59,27 @@ process.stdin.on('end', () => {
     { type: 'assistant', sessionId: id, cwd, timestamp: ts, uuid: crypto.randomUUID(), message: { id: mid, role: 'assistant', model: 'claude-sonnet-5-5', content: [{ type: 'text', text: reply }], usage: { input_tokens: 1200, output_tokens: 300 } } },
   ].map((r) => JSON.stringify(r)).join('\n') + '\n');
 });
+
+// Chat context (electron/ext/context.cjs) asks for a JSON array, one summary per "### Chat n" block.
+// Each summary is made from the block: "Gist: <first ask>", the client named after "for" in the first
+// ask (else null), the folder as the project, and "Next: check <title>".
+function chatContext(text) {
+  if (!text.startsWith('Summarize each of these AI chats for my dashboard')) return null;
+  const out = [];
+  for (const block of text.split(/^### Chat /m).slice(1)) {
+    const n = Number(block.match(/^(\d+)/)[1]);
+    const field = (k) => ((block.match(new RegExp(`^${k}: (.*)$`, 'm')) || [])[1] || '').trim();
+    const title = field('Title') || 'Untitled';
+    const ask = field('First ask') || title;
+    const folder = field('Folder').replace(/ \(branch .*\)$/, '');
+    const client = ((ask.match(/\bfor ((?:[A-Z][\w&'-]*\s?){1,3})/) || [])[1] || '').trim() || null;
+    out.push({
+      n, about: `Gist: ${ask.split(/[.!?:]/)[0].slice(0, 70)}`, client, project: folder || null,
+      status: /Right now: working/.test(block) ? 'working' : 'done', nextStep: `Next: check ${title.slice(0, 40)}`, people: client ? [client] : [],
+    });
+  }
+  return '```json\n' + JSON.stringify(out) + '\n```';
+}
 
 // Smart group asks for JSON: group the numbered cards by the client each one mentions.
 function smartGroup(text) {

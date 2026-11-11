@@ -6,6 +6,7 @@ import { SOURCE, tokens } from '../lib/format';
 import { AgentLogo } from '../components/Logos';
 import { useTour } from '../components/Tour';
 import RelaySettings from '../components/RelaySettings';
+import ContextSettings from '../components/ContextSettings';
 
 type Kind = { kind: string; label: string; blurb: string };
 const KINDS: Kind[] = [
@@ -252,6 +253,7 @@ export default function Accounts() {
           <div className="txt"><b>Balance usage</b><span className="hint">On: new work goes to the Claude account used least in the last 5 hours. Off: the first account. Dedicated folders always win.</span></div>
           <Toggle label="Balance usage" on={split} onChange={(v) => { setSplit(v); api.setSetting('splitUsage', v); }} />
         </div>
+        <ContextSettings />
         <details className="more">
           <summary>Let a Grok bot message your other agents (optional)</summary>
           <p className="hint">Needs "Execution on this computer" on in Grok Bot. Paste this into the bot once.</p>

@@ -69,10 +69,14 @@ async function until(fn, msg, ms = 10000) {
   throw new Error(`${msg} (waited ${ms / 1000}s${last && last !== true ? `; last: ${String(last).slice(0, 200)}` : ''})`);
 }
 const calls = () => { try { return fs.readFileSync(LOG, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)); } catch { return []; } };
-// The chats home sorts chats into topics with its own background Claude runs; leave those out.
+// The chats home sorts chats into topics with its own background Claude runs, and chat context
+// summarizes chats in the background (their prompts quote the chats); leave those out.
 const TOPICS_RE = /Sort them into 2 to 8 topics/;
-const promptCalls = () => calls().filter((c) => c.prompt != null && !TOPICS_RE.test(c.prompt));
+const CONTEXT_RE = /^Summarize each of these AI chats for my dashboard/;
+const promptCalls = () => calls().filter((c) => c.prompt != null && !TOPICS_RE.test(c.prompt) && !CONTEXT_RE.test(c.prompt));
 const topicCalls = () => calls().filter((c) => c.prompt != null && TOPICS_RE.test(c.prompt));
+const contextCalls = () => calls().filter((c) => c.prompt != null && CONTEXT_RE.test(c.prompt));
+const chatBlocks = (c) => c.prompt.split(/^### Chat /m).slice(1);
 
 let mock, app, page;
 const api = (ch, ...args) => page.evaluate(([c, a]) => window.sbBridge.call(c, ...a), [ch, args]);
@@ -524,6 +528,115 @@ async function main() {
     await until(async () => (await node(S.crew).count()) === 1, 'shown again');
     await page.keyboard.press('Escape');
   });
+
+  console.log('\nChat context');
+  // A long chat for a client the CRM doesn't know, in a folder no client owns: only its summary
+  // can say who it is for. Removed again at the end of this part.
+  const ALPHA = 'cc:a_claude1:0a1b2c3d-1111-4aaa-8bbb-00000000000c';
+  fs.mkdirSync(path.join(HOME, 'code', 'lesson-plans'), { recursive: true });
+  const alphaFile = writeSession('.claude', path.join(HOME, 'code', 'lesson-plans'), ALPHA.split(':')[2], [
+    ['user', 'Draft the week 3 lesson plans for Alpha School. Keep each day to one page.'],
+    ...Array.from({ length: 24 }, (_, i) => [i % 2 ? 'user' : 'assistant', `Turn ${i + 1}: ${'more detail on the plan '.repeat(12)}`]),
+    ['assistant', 'Week 3 is drafted: five one-page days, the Friday quiz included.'],
+  ], Date.now() - 5 * 60000);
+  const summarized = (id) => until(async () => { await api('context:refresh'); const c = await api('context:get', id); return c && c.about ? c : false; }, `${id} has a summary`, 40000);
+  await check('every chat gets a short AI summary: what it is about, who it is for, the project and what is next', async () => {
+    const ctx = await summarized(S.menu);
+    assert(/^Gist: Build the new menu page for Harbor Coffee/.test(ctx.about), `about: ${ctx.about}`);
+    assert(ctx.client === 'Harbor Coffee' && ctx.project === 'harbor-coffee-site' && ctx.status === 'done' && /^Next: check/.test(ctx.nextStep), JSON.stringify(ctx));
+    assert(ctx.people.includes('Harbor Coffee'), `people: ${ctx.people}`);
+    for (const id of [S.crew, S.news, S.desktop, GB.mkt, GB.cal]) { const c = await summarized(id); assert(c.nextStep, `${id}: ${JSON.stringify(c)}`); }
+    assert(/^Gist: Plan the spring promo/.test((await api('context:get', GB.mkt)).about), 'Grok bots are summarized from their transcript');
+    const ents = await api('entities', { force: true });
+    assert(ents.find((e) => e.id === S.menu).meta.context.client === 'Harbor Coffee', 'the card carries its summary as meta.context');
+    assert(!ents.some((e) => e.kind === 'session' && /switchboard$/.test(e.meta.cwd || '')), 'the summary runs do not show up as chats');
+    const runs = contextCalls();
+    for (const c of runs) {
+      assert(c.args[c.args.indexOf('--model') + 1] === 'haiku', `a small model (${c.args.join(' ')})`);
+      assert(c.args.includes('--tools') && c.args.includes('--settings') && /\.switchboard$/.test(c.cwd), `no tools, no user hooks, inside ~/.switchboard (${c.cwd})`);
+      assert(chatBlocks(c).length >= 1 && chatBlocks(c).length <= 8, `${chatBlocks(c).length} chats in one call`);
+    }
+    assert(runs.some((c) => chatBlocks(c).length > 1), 'several chats are summarized in one call');
+  });
+  await check('a long chat is cut to its first ask and latest turns, and the home files it under the client its summary names', async () => {
+    const ctx = await summarized(ALPHA);
+    assert(ctx.client === 'Alpha School' && ctx.project === 'lesson-plans', JSON.stringify(ctx));
+    const block = contextCalls().flatMap(chatBlocks).filter((b) => b.includes('Week 3 is drafted')).pop();
+    assert(block.length <= 2700, `${block.length} characters of the chat were sent`);
+    assert(/^First ask: Draft the week 3 lesson plans for Alpha School/m.test(block), 'the first ask is kept');
+    assert(/Turn 24:/.test(block) && !/Turn 1:/.test(block), 'the latest turns are kept, the oldest left out');
+    const t = await until(async () => {
+      const r = await api('topics:refresh');
+      const hit = r.topics.find((x) => x.ids.includes(ALPHA));
+      return hit && hit.group === 'Alpha School' && hit.client ? hit : false;
+    }, 'the chat sits under Alpha School', 30000);
+    const c = topicCalls().pop();
+    assert(/client Alpha School/.test(c.prompt) && /about: Gist: Draft the week 3 lesson plans/.test(c.prompt), 'the topics run read the summary, not the raw chat');
+    assert(!/Week 3 is drafted/.test(c.prompt), 'and not the raw latest reply');
+    assert(t.label, 'in a named project');
+  });
+  await check('only chats whose transcript changed are summarized again', async () => {
+    await until(async () => { const r = await api('context:refresh'); return r.summarized === 0 && r.pending === 0; }, 'every chat summarized', 60000);
+    const n = contextCalls().length;
+    const r = await api('context:refresh');
+    assert(r.summarized === 0 && contextCalls().length === n, `nothing changed, so no call (${JSON.stringify(r)}, ${contextCalls().length - n} new)`);
+    const sid = S.news.split(':')[2];
+    const cwd = path.join(HOME, 'code', 'newsletter');
+    const ts = new Date().toISOString();
+    fs.appendFileSync(path.join(HOME, '.claude-3', 'projects', cwd.replace(/[/.]/g, '-'), `${sid}.jsonl`), [
+      { type: 'user', sessionId: sid, cwd, timestamp: ts, uuid: `${sid}-ctx-1`, message: { role: 'user', content: 'Add a second example for Grant Landscaping.' } },
+      { type: 'assistant', sessionId: sid, cwd, timestamp: ts, uuid: `${sid}-ctx-2`, message: { id: 'msg_ctx_news', role: 'assistant', model: 'claude-sonnet-5-5', content: [{ type: 'text', text: 'Added a Grant Landscaping example under the first one.' }], usage: { input_tokens: 10, output_tokens: 5 } } },
+    ].map((x) => JSON.stringify(x)).join('\n') + '\n');
+    await until(async () => { await api('context:refresh'); return contextCalls().length > n; }, 'the changed chat was summarized again', 30000);
+    await sleep(500);
+    const fresh = contextCalls().slice(n);
+    assert(fresh.length === 1, `one call (${fresh.length})`);
+    const blocks = chatBlocks(fresh[0]);
+    assert(blocks.length === 1 && /Added a Grant Landscaping example/.test(blocks[0]), `only the changed chat was sent (${blocks.map((b) => b.split('\n')[1]).join(' | ')})`);
+  });
+  await check('cards say what each chat is about, with who it is for and what is next in the drawer', async () => {
+    await page.evaluate(() => window.__sbRefresh());
+    await center(S.menu, 0.8);
+    await until(async () => /^Gist: Build the new menu page for Harbor Coffee/.test(await node(S.menu).getByTestId('card-about').innerText().catch(() => '')), 'the line under the title is the summary');
+    await node(S.menu).locator('.card-title').hover();
+    await until(async () => (await node(S.menu).locator('.card-more').evaluate((el) => el.getBoundingClientRect().height)) > 20, 'the drawer opened on hover');
+    assert(/^Next/.test(await node(S.menu).locator('.step[data-step="next"]').innerText()) && /Next: check/.test(await node(S.menu).locator('.step[data-step="next"]').innerText()), 'what is next is in the drawer');
+    assert(/Harbor Coffee · harbor-coffee-site/.test(await node(S.menu).locator('.step[data-step="for"]').innerText()), 'and who it is for');
+    await page.mouse.move(5, 300);
+    await center(GB.mkt, 0.8);
+    await until(async () => /^Gist: Plan the spring promo/.test(await node(GB.mkt).getByTestId('card-about').innerText().catch(() => '')), 'Grok bot cards too');
+    await page.mouse.move(5, 300);
+  });
+  await check('⌘K finds a chat by what its summary says', async () => {
+    const hits = await api('search:query', 'gist loyalty');
+    const hit = hits.find((h) => h.id === S.desktop);
+    assert(hit, `found by its summary: ${hits.map((h) => h.id).join(', ')}`);
+    assert(/^Gist: Plan the Harbor Coffee loyalty card/.test(hit.snippet), `the summary is the snippet (${hit.snippet})`);
+    await page.keyboard.press(mod('k'));
+    await page.locator('.palette input').fill('gist lesson plans');
+    await until(async () => /week 3 lesson plans/i.test(await page.locator('.palette .list').innerText()), 'the palette lists it');
+    await page.keyboard.press('Escape');
+  });
+  await check('"Summarize chats with AI" in Settings is on by default and turns summaries off and on', async () => {
+    await view('Accounts');
+    const toggle = page.getByTestId('context-toggle');
+    assert((await toggle.getAttribute('aria-checked')) === 'true', 'on by default');
+    assert(/Claude plan/.test(await page.getByTestId('context-setting').innerText()), 'says what it uses');
+    const n = contextCalls().length;
+    await toggle.click();
+    await until(async () => (await api('settings:get', 'chatContext', true)) === false, 'saved off');
+    assert(!(await api('entities', { force: true })).find((e) => e.id === S.menu).meta.context, 'cards drop their summaries');
+    const err = await api('context:refresh').then(() => '', (e) => e.message);
+    assert(/Turn on/.test(err), `no summaries while off (${err})`);
+    assert(contextCalls().length === n, 'and no calls');
+    await toggle.click();
+    await until(async () => (await api('settings:get', 'chatContext', false)) === true, 'saved on');
+    await until(async () => !!(await api('entities', { force: true })).find((e) => e.id === S.menu).meta.context, 'the summaries are back');
+    await view('Board');
+  });
+  fs.rmSync(alphaFile, { force: true });
+  await api('board:delete', [ALPHA]).catch(() => {});
+  await api('entities', { force: true });
 
   console.log('\nLive view');
   await check('Live lists every chat, grouped, with a summary line', async () => {

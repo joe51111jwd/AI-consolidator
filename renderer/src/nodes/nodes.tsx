@@ -139,14 +139,20 @@ function usePill(e: Entity, extraRunning = false): Pill {
 }
 
 // The latest thing a card said: a run that just streamed in wins over the stored preview.
-function useLatest(id: string, preview?: string): { text: string; live: boolean; error?: string } {
+function useLatest(id: string, preview?: string): { text: string; live: boolean; run?: boolean; error?: string } {
   const live = useStore((s) => s.liveByEntity[id]);
   if (live && (live.status === 'running' || Date.now() - live.startedAt < RECENT)) {
-    if (live.status === 'error') return { text: '', live: false, error: live.error || 'Failed' };
-    return { text: live.text || '', live: live.status === 'running' };
+    if (live.status === 'error') return { text: '', live: false, run: true, error: live.error || 'Failed' };
+    return { text: live.text || '', live: live.status === 'running', run: true };
   }
   return { text: preview || '', live: false };
 }
+
+// A chat's AI summary (electron/ext/context.cjs), when it has one.
+type ChatContext = { about: string; client?: string | null; project?: string | null; status?: string | null; nextStep?: string; people?: string[] };
+const contextOf = (e: Entity): ChatContext | null => (e.meta?.context && typeof e.meta.context === 'object' && e.meta.context.about ? e.meta.context : null);
+// Who and what it's for, for the drawer: "Harbor Coffee · Menu page".
+const forLine = (c: ChatContext | null) => (c ? [c.client, c.project].filter(Boolean).join(' · ') : '');
 
 const sortSubs = <T extends Sub>(subs: T[]) =>
   [...subs].sort((a, b) => (a.status === b.status ? (b.updatedAt || 0) - (a.updatedAt || 0) : a.status === 'running' ? -1 : 1));
@@ -162,10 +168,12 @@ function StatusPill({ pill }: { pill: Pill }) {
   return <span className={`status-pill ${pill}`}>{pill === 'running' && <i />}{PILL_LABEL[pill]}</span>;
 }
 
-// Row 2: what it's doing right now (shimmering while it works), else the latest reply.
-function NowLine({ running, now, fallback, error }: { running: boolean; now?: string; fallback?: string; error?: string }) {
+// Row 2: what it's doing right now (shimmering while it works), else what the chat is about (its AI
+// summary), else the latest reply.
+function NowLine({ running, now, fallback, error, about }: { running: boolean; now?: string; fallback?: string; error?: string; about?: string }) {
   if (error) return <div className="card-now err" title={error}>{error}</div>;
   if (running) return <div className="card-now act-now" title={now}>▸ <span className="shimmer">{oneLine(now) || 'Thinking'}</span></div>;
+  if (about && oneLine(about)) return <div className="card-now about" data-testid="card-about" title={oneLine(about)}>{oneLine(about)}</div>;
   const t = oneLine(fallback);
   return <div className={`card-now ${t ? '' : 'empty'}`} title={t}>{t || 'Nothing yet'}</div>;
 }
@@ -215,7 +223,7 @@ function Steps({ steps }: { steps: [string, string | undefined][] }) {
   if (!shown.length) return null;
   return (
     <div className="card-steps">
-      {shown.map(([k, v]) => <div key={k} className="step" title={oneLine(v)}><b>{k}</b>{oneLine(v)}</div>)}
+      {shown.map(([k, v]) => <div key={k} className="step" data-step={k.toLowerCase()} title={oneLine(v)}><b>{k}</b>{oneLine(v)}</div>)}
     </div>
   );
 }
@@ -288,7 +296,10 @@ function GrokNode({ id, e, selected }: { id: string; e: Entity; selected?: boole
   const attn = useAttention(id);
   const group = useGroupMembers(id, e);
   const nowText = live ? (a?.tool || a?.text || subs.find((x) => x.status === 'running')?.title) : '';
-  const shownNow = oneLine(live ? nowText : latest.text);
+  const ctx = contextOf(e);
+  // A reply that just came in from Switchboard shows on the face; otherwise what the bot is about.
+  const about = ctx && !latest.run ? ctx.about : undefined;
+  const shownNow = oneLine(live ? nowText : about || latest.text);
   // The card already shows the now line; previews are cut short, so compare their starts.
   const head = shownNow.replace(/…$/, '').slice(0, 60);
   const feed = actions.filter((x) => { const t = oneLine(x.text); return t && (!head || t.slice(0, head.length) !== head); });
@@ -297,8 +308,9 @@ function GrokNode({ id, e, selected }: { id: string; e: Entity; selected?: boole
     <Compact id={id} selected={selected} stripe={look.color} className="grok-card" title={group.title} pill={pill}
       avatar={group.isGroup ? <GroupAvatar members={group.members} size={20} attention={attn} /> : <GrokAvatar color={look.color} shape={look.shape} seed={id} size={20} working={live} attention={attn} title={e.title} />}
       extra={<button className="grok-hide nodrag" title="Hide bot" onClick={(ev) => { ev.stopPropagation(); (window as any).__sbHide?.([id]); }}><EyeOff size={11} /></button>}
-      now={<NowLine running={live} now={nowText} fallback={latest.text} error={latest.error} />}
+      now={<NowLine running={live} now={nowText} fallback={latest.text} error={latest.error} about={about} />}
       meta={<Meta parts={['Grok', e.meta?.unreadCount > 0 && `${e.meta.unreadCount} unread`, when > 0 ? ago(when) : '—']} chip={subsLabel(subs)} />}>
+      <Steps steps={[['For', forLine(ctx)], ['Next', ctx?.nextStep]]} />
       {feed.length > 0 && (
         <div className="grok-feed nowheel">
           {feed.slice(0, 15).map((x, i) => (
@@ -333,12 +345,16 @@ function AgentCard({ id, e, selected }: { id: string; e: Entity; selected?: bool
   const running = pill === 'running';
   const sized = useStore((s) => !!s.board.find((b) => b.id === id)?.h);
   const now = a?.tool || lastLine(a?.text) || lastLine(latest.text);
+  const ctx = contextOf(e);
+  // The face says what the chat is about; a reply that just came in from Switchboard wins.
+  const about = ctx && !latest.run ? ctx.about : undefined;
   return (
     <Compact id={id} selected={selected} stripe={colorOf(e, useStore.getState().accounts)} title={e.title} pill={pill}
       avatar={<AgentLogo source={e.source} size={16} color={acc?.color || src.color} working={running} />}
-      now={<NowLine running={running} now={now} fallback={latest.text} error={latest.error} />}
+      now={<NowLine running={running} now={now} fallback={latest.text} error={latest.error} about={about} />}
       meta={<Meta parts={[acc?.label || src.label, cat && <span className={`kind-chip ${cat}`}>{cat === 'coding' ? 'Code' : 'Chat'}</span>, folder && <span className="mono" title={e.meta?.cwd}>{folder}{branch && <em> · {branch}</em>}</span>, ago(e.updatedAt)]} chip={subsLabel(subs)} />}>
-      <Steps steps={[['Asked', a?.prompt], ['Said', running && a?.tool ? a?.text : undefined]]} />
+      <Steps steps={[['For', forLine(ctx)], ['Asked', a?.prompt], ['Said', running && a?.tool ? a?.text : undefined],
+        ['Latest', about && !running && !sized ? lastLine(latest.text) : undefined], ['Next', ctx?.nextStep]]} />
       {sized && <Reply id={id} text={latest.text} title={e.title} live={latest.live} />}
       <SubRows id={id} subs={subs} />
       <Composer id={id} placeholder="Reply…" />

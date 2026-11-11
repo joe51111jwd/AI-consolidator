@@ -3,6 +3,7 @@
 One place on your Mac to manage the AI chats you already have: every Claude Code session (across all your Claude accounts), Codex session, Grok Bot, Granola meeting, Gmail thread and Cursor cloud agent. See what each one is doing, answer the ones that need you, and then automate them.
 
 - **Chats home (⌘2).** All your chats in one list, grouped into topics by what they're doing. Each topic shows how many are working and how many need you; a blue dot marks a chat waiting on you. Filter and search the list at the top.
+- **Chat summaries.** Each chat gets a short AI summary: what the work is, who it's for (a client, person or company), the project, where it stands and the next step. Topics group by it, cards show it under the title (hover for the next step), and ⌘K searches it. It uses your own Claude plan: one small Haiku call for up to 8 changed chats, at most every 20 seconds, only for chats that changed. Turn it off in Settings → Accounts ("Summarize chats with AI").
 - **Open and reply.** Click a chat to open it and talk. Hover a row to send a quick reply without opening it.
 - **Import chats.** Bring any older chat from any Claude account into the app.
 - **Dock.** The account bubbles at the bottom start a new chat; each shows its usage this week so you can spread work across accounts. Hover one to see what it's working on.
@@ -147,7 +148,7 @@ Only programs running as you can use it: it listens on 127.0.0.1 and needs the t
 
 ## Where things are kept
 
-- `~/.switchboard/switchboard.db` holds the board, clients, outputs and settings.
+- `~/.switchboard/switchboard.db` holds the board, clients, outputs, chat summaries and settings.
 - `~/.switchboard/brain.md` is the shared brain.
 - API keys and Google sign-ins are encrypted with your Mac's Keychain.
 
@@ -163,6 +164,7 @@ This builds the app and runs `tests/e2e.cjs`, which starts the real app in a thr
 - **Lines and messages:** drawing a line (auto-send on by default, switchable), a reply flowing down it, `sb send --from grok-bot --wait` drawing and lighting a line.
 - **Drag and drop:** a message dragged onto a card goes with the next prompt; dropped on empty space it becomes an output card that can be saved to the brain, copied, opened, and dragged onto another agent.
 - **Prompting every kind of card:** a project folder found with ⌘K starts a session in it; the dock; ⌘K tagging; split usage picks the least-used Claude account; an account card uses that account; Codex resumes the right session; Grok Bot gets the text on the clipboard; Granola notes open.
+- **Chat summaries:** every chat (Claude, desktop app, Grok bots) summarized on a small model, several to a call, with no tools; a long chat cut to its first ask and latest turns; only changed chats summarized again; the home grouping a chat under the client its summary names; the summary on the card and the next step in its drawer; ⌘K matching it; the Settings switch.
 - **Overall agent:** answers, works on the selected cards, keeps history, flags what needs you (open or dismiss), and doesn't show its own runs as cards.
 - **Claude sign-in:** two plans on one email signed in to separate folders and shown with their own organization and plan; the same-login warning; signing out one card leaves the other signed in; cancelling a slow sign-in; agent tools added to every Claude folder.
 - **Gmail:** the Google consent link (read-only scope, PKCE, state check), a wrong state refused, the token stored encrypted, the token refreshed after it expires and after a restart, a revoked token asking you to reconnect, and removing the account deleting its keys.

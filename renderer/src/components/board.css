@@ -394,3 +394,5 @@
 /* ---------- related lines (client-side only, never saved, never send) ---------- */
 .board .react-flow__edge-path.edge-related { stroke: #D4D4D8; stroke-width: 1; stroke-dasharray: 3 5; pointer-events: none; }
 .board .react-flow__edge:has(.edge-related) { pointer-events: none; }
+.bt-week { padding: 0 12px 0 10px; }
+.bt-btn:disabled { opacity: .55; cursor: default; }

@@ -151,8 +151,12 @@ export default function Board() {
     const roots = rf.getNodes().filter((n) => !n.parentId && !isDemo(n.id) && !n.hidden);
     if (!roots.length) { rf.setViewport(START_VIEW, { duration }); return; }
     const b = getNodesBounds(roots);
-    const z = Math.max(0.55, Math.min(START_VIEW.zoom, (window.innerWidth - 96) / b.width, (window.innerHeight - 200) / b.height));
-    const x = b.width * z <= window.innerWidth - 96 ? (window.innerWidth - b.width * z) / 2 - b.x * z : START_VIEW.x - b.x * z;
+    // Start right of the floating to-do panel when it's open.
+    const todo = document.querySelector('.board-todo');
+    const left = todo ? todo.getBoundingClientRect().right + 24 : START_VIEW.x;
+    const avail = window.innerWidth - left - 48;
+    const z = Math.max(0.55, Math.min(START_VIEW.zoom, avail / b.width, (window.innerHeight - 200) / b.height));
+    const x = b.width * z <= avail ? left + (avail - b.width * z) / 2 - b.x * z : left - b.x * z;
     rf.setViewport({ x, y: START_VIEW.y - b.y * z, zoom: z }, { duration });
   };
 

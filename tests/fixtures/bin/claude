@@ -75,8 +75,10 @@ function smartGroup(text) {
 
 // The home asks for a client / project tree as JSON: one per client, else per project folder. Meetings, emails and
 // outputs (lines tagged "[meeting]" etc.) with no client join a folder topic named in their title.
+// With the owner's own groups, each item goes to the first group whose name it mentions, else Other.
 function topics(text) {
   if (!/Sort them into 2 to 8 topics/.test(text)) return null;
+  if (/Use EXACTLY these top-level groups/.test(text)) return ownGroups(text);
   const rows = [];
   for (const line of text.split('\n')) {
     const m = line.match(/^(\d+)\. (\[[^\]]+\] )?(.*?) \(([^)]*)\)/); if (!m) continue;
@@ -91,4 +93,16 @@ function topics(text) {
   }
   const clients = new Set(rows.filter((r) => r.client).map((r) => r.label));
   return JSON.stringify({ clients: [...groups].map(([label, items]) => ({ label, client: clients.has(label), projects: [{ label, summary: `${items.length} items`, items }] })) });
+}
+
+function ownGroups(text) {
+  const labels = [...text.matchAll(/^ {2}"([^"]+)"/gm)].map((m) => m[1]);
+  const groups = new Map(labels.map((l) => [l, []]));
+  groups.set('Other', []);
+  for (const line of text.split('\n')) {
+    const m = line.match(/^(\d+)\. /); if (!m) continue;
+    const hit = labels.find((l) => line.toLowerCase().includes(l.toLowerCase())) || 'Other';
+    groups.get(hit).push(Number(m[1]));
+  }
+  return JSON.stringify({ clients: [...groups].filter(([, items]) => items.length).map(([label, items]) => ({ label, client: label !== 'Other', projects: [{ label, summary: `${items.length} items`, items }] })) });
 }

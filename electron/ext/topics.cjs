@@ -29,7 +29,18 @@ const KEYWORDS = [
 ];
 // Where an item that matches nothing else goes, by kind.
 const FALLBACK = { meeting: 'Meetings', thread: 'Inbox' };
-const NO_AREA = 'Other work';
+const NO_AREA = 'Other';
+// The top level stays small: people (clients) first, then a few broad areas, then Other.
+const MAX_GROUPS = 6;
+const MARKETING = 'Marketing';
+const MAIN_BOT = 'Grok Bot · calendar';
+const MINE = 'My projects';
+const MARKETING_RE = /\bseo\b|keyword|backlink|serp|search console|outreach|cold (email|dm)|linkedin|prospect|lead(s|gen)?\b|newsletter|marketing|\b(ads?|tiktok|instagram|twitter|tweets?|reels?|social|posts?|posting|repl(y|ies|ying))\b/i;
+// Capitalised words that follow "for", "with" etc. but are not people.
+const NOT_PEOPLE = new Set(('the this that these my our your his her their a an all any each every some new next last today tomorrow monday tuesday wednesday thursday friday saturday sunday '
+  + 'january february march april may june july august september october november december claude grok codex cursor chatgpt openai anthropic switchboard google gmail granola slack notion '
+  + 'github vercel react electron next node python figma shopify webflow wordpress tiktok instagram linkedin twitter youtube seo api ui ux mcp ai me us it').split(' '));
+const PERSON_RE = /\b(?:for|with|from|to|client|call|meeting|email|tell|ask)\s+([A-Z][a-z]{2,15})\b|\b([A-Z][a-z]{2,15})['’]s\b/g;
 // How each kind is labelled for Claude.
 const KIND_TAG = { meeting: 'meeting', thread: 'email waiting on my reply' };
 
@@ -79,6 +90,26 @@ async function current() {
 
 const keyOf = (list) => list.map((e) => e.id).sort().join('|');
 
+// The owner's own top-level groups ({ groups: [{ label, hint }] }), or null when none are set.
+function rulesOf() {
+  const r = db.getSetting('groupRules', null);
+  const groups = r && Array.isArray(r.groups) ? r.groups.filter((g) => g && String(g.label || '').trim()) : [];
+  return groups.length ? groups.map((g) => ({ label: String(g.label).trim(), hint: String(g.hint || '').trim() })) : null;
+}
+const rulesKey = (rules) => (rules ? JSON.stringify(rules) : '');
+
+function cleanRules(input) {
+  const seen = new Set();
+  const groups = [];
+  for (const g of (input && Array.isArray(input.groups) ? input.groups : [])) {
+    const label = truncate(String((g && g.label) || '').replace(/\s+/g, ' ').trim(), 40);
+    if (!label || seen.has(label.toLowerCase()) || label.toLowerCase() === NO_AREA.toLowerCase()) continue;
+    seen.add(label.toLowerCase());
+    groups.push({ label, hint: truncate(String((g && g.hint) || '').replace(/\s+/g, ' ').trim(), 200) });
+  }
+  return { groups: groups.slice(0, 12) };
+}
+
 function matches(c, email) {
   if (!email) return false;
   const e = String(email).toLowerCase();
@@ -103,6 +134,64 @@ function clientOf(e, clients) {
   const hit = clients.find((c) => emails.some((x) => matches(c, x)));
   if (hit) return clientLabel(hit);
   return namedClient(`${e.title || ''} ${e.preview || ''}`, clients);
+}
+
+const textOf = (e) => {
+  const m = e.meta || {};
+  const act = m.activity && typeof m.activity === 'object' ? m.activity.text : m.activity;
+  return `${e.title || ''} ${e.preview || ''} ${typeof act === 'string' ? act : ''}`;
+};
+
+function peopleIn(text) {
+  const out = new Set();
+  for (const m of String(text).matchAll(PERSON_RE)) {
+    const n = m[1] || m[2];
+    if (n && !NOT_PEOPLE.has(n.toLowerCase())) out.add(n);
+  }
+  return out;
+}
+
+// People the work is for: names that come up as people ("for Michael", "Andrew's site") in at least
+// two items, and are not already a known client.
+function peopleOf(list, clients) {
+  const count = new Map();
+  for (const e of list) for (const n of peopleIn(textOf(e))) count.set(n, (count.get(n) || 0) + 1);
+  const knownWords = words(clients.map((c) => `${c.company || ''} ${c.name || ''}`).join(' '));
+  return new Set([...count].filter(([n, k]) => k >= 2 && !knownWords.includes(words(n))).map(([n]) => n));
+}
+
+function personOf(e, people) {
+  if (!people.size) return null;
+  for (const n of peopleIn(textOf(e))) if (people.has(n)) return n;
+  return null;
+}
+
+// The broad area of work with no client: marketing bots and chats, the main Grok bot, my own work.
+function areaOf(e) {
+  if (MARKETING_RE.test(textOf(e))) return MARKETING;
+  if (e.source === 'grok-bot') return MAIN_BOT;
+  return e.kind === 'session' ? MINE : null;
+}
+
+// With owner-defined groups: the one whose label or hint shares the most words with the item.
+const STOP = new Set('anything everything stuff work things thing about with from that this for and the his her their company client clients project projects'.split(' '));
+function ruleOf(e, clients, rules) {
+  const t = words(`${textOf(e)} ${folderOf(e) || ''} ${clientOf(e, clients) || ''} ${e.source || ''}`);
+  let best = null, top = 0;
+  for (const r of rules) {
+    const tokens = words(`${r.label} ${r.hint}`).trim().split(' ').filter((w) => w.length >= 3 && !STOP.has(w));
+    const score = (t.includes(words(r.label)) ? 3 : 0) + tokens.filter((w) => t.includes(` ${w} `)).length;
+    if (score > top) { top = score; best = r.label; }
+  }
+  return best;
+}
+
+function groupOf(e, clients, people, rules) {
+  if (rules) { const g = ruleOf(e, clients, rules); return g ? { group: g, client: true } : null; }
+  const client = clientOf(e, clients) || personOf(e, people);
+  if (client) return { group: client, client: true };
+  const area = areaOf(e);
+  return area ? { group: area, client: false } : null;
 }
 
 function folderOf(e) {
@@ -149,9 +238,11 @@ function summaryOf(items) {
 
 const topicId = (group, label) => `t:${slug(group)}:${slug(label)}`;
 
-// Rules: the client by email, domain, folder or name; the project by folder, bot or title words;
-// work with no client goes under the area its projects' words point to.
-function heuristic(list, clients) {
+// Rules: the client by email, domain, folder, name or a person the work is for; else marketing, the
+// main Grok bot or my own projects; the project by folder, bot or title words. With owner-defined
+// groups, those are the only top level.
+function heuristic(list, clients, rules = rulesOf()) {
+  const people = rules ? new Set() : peopleOf(list, clients);
   const projects = new Map();
   const add = (e, group, label, client) => {
     const id = topicId(group, label);
@@ -159,20 +250,41 @@ function heuristic(list, clients) {
     p.items.push(e); projects.set(id, p);
   };
   for (const e of list.filter((x) => x.kind === 'session')) {
-    const client = clientOf(e, clients);
-    const label = client && !folderOf(e) && e.source !== 'grok-bot' ? client : projectOf(e, clients);
-    if (client) add(e, client, label, true);
-    else add(e, keywordOf(e) || NO_AREA, label, false);
+    const g = groupOf(e, clients, people, rules);
+    const label = g && g.client && !folderOf(e) && e.source !== 'grok-bot' ? g.group : projectOf(e, clients);
+    if (g) add(e, g.group, label, g.client);
+    else add(e, NO_AREA, label, false);
   }
   const chatProjects = [...projects.values()];
   for (const e of list.filter((x) => x.kind !== 'session')) {
-    const client = clientOf(e, clients);
+    const g = groupOf(e, clients, people, rules);
+    const client = g && g.client ? g.group : null;
     const label = projectOther(e, client, chatProjects);
     const home = chatProjects.find((p) => p.label === label && (!client || p.group === client));
     if (home) add(e, home.group, label, home.client);
-    else add(e, client || keywordOf(e) || FALLBACK[e.kind] || NO_AREA, label, !!client);
+    else add(e, g ? g.group : NO_AREA, label, !!client);
   }
-  return [...projects.values()].map((p) => ({ id: p.id, label: p.label, group: p.group, client: p.client, summary: summaryOf(p.items), ids: p.items.map((e) => e.id) }));
+  const out = [...projects.values()].map((p) => ({ id: p.id, label: p.label, group: p.group, client: p.client, summary: summaryOf(p.items), ids: p.items.map((e) => e.id) }));
+  return capGroups(out, rules);
+}
+
+// At most MAX_GROUPS top-level groups (or exactly the owner's): the rest fold into Other.
+function capGroups(topics, rules = rulesOf()) {
+  const size = new Map();
+  const isClient = new Map();
+  for (const t of topics) { size.set(t.group, (size.get(t.group) || 0) + t.ids.length); if (t.client) isClient.set(t.group, true); }
+  const keep = rules ? new Set(rules.map((r) => r.label))
+    : new Set([...size.keys()].filter((g) => g !== NO_AREA)
+      .sort((a, b) => Number(!!isClient.get(b)) - Number(!!isClient.get(a)) || size.get(b) - size.get(a)).slice(0, MAX_GROUPS));
+  const out = [];
+  for (const t of topics) {
+    const group = keep.has(t.group) ? t.group : NO_AREA;
+    const id = topicId(group, t.label);
+    const same = out.find((x) => x.id === id);
+    if (same) { same.ids.push(...t.ids); continue; }
+    out.push({ ...t, id, group, client: group === NO_AREA ? false : t.client, ids: [...t.ids] });
+  }
+  return out;
 }
 
 // The flat projects as the client / area tree, biggest first.
@@ -185,7 +297,7 @@ function tree(topics) {
     groups.set(id, g);
   }
   const size = (g) => g.projects.reduce((n, p) => n + p.ids.length, 0);
-  return [...groups.values()].sort((a, b) => Number(b.client) - Number(a.client) || size(b) - size(a));
+  return [...groups.values()].sort((a, b) => Number(a.label === NO_AREA) - Number(b.label === NO_AREA) || Number(b.client) - Number(a.client) || size(b) - size(a));
 }
 
 // What each topic holds right now: how many items are working, how many need you, and by kind.
@@ -252,15 +364,26 @@ function describe(e, i, clients) {
 
 const known = (clients) => clients.map((c) => [clientLabel(c), ...(c.emails || []), ...(c.domains || [])].filter(Boolean).join(' / ')).filter(Boolean).slice(0, 40);
 
-async function askClaude(list, clients) {
+function groupingRules(rules) {
+  if (rules) return `- Use EXACTLY these top-level groups, with "client": true, and no others (plus "${NO_AREA}" for items that fit none):
+${rules.map((r) => `  "${r.label}"${r.hint ? `: ${r.hint}` : ''}`).join('\n')}
+`;
+  return `- PEOPLE FIRST: my clients are people. When the work is for a person (e.g. "Michael", "Andrew") or their company, make that person a top-level group with "client": true and put each of their projects inside it. Look at what was asked and the latest reply, not only the title.
+- My marketing bots and chats (posting, replying, outreach, SEO checking, social) all go in ONE group: "${MARKETING}".
+- My main Grok bot just handles my calendar: give it its own small group "${MAIN_BOT}". Do not spread it across other groups.
+- Research goes with the client or project it is about; only general research stands alone.
+- My own personal and dev work goes in ONE group: "${MINE}".
+`;
+}
+
+async function askClaude(list, clients, rules = rulesOf()) {
   const a = leastUsedAccount();
   if (!a) throw new Error('No Claude account');
   const names = known(clients);
   const text = `These are my AI chats and agents from this week, with my meetings and emails waiting on my reply.
-Sort them into 2 to 8 topics by WHAT THE WORK IS ABOUT, as a tree: clients, each holding projects.
-- Items working on the same thing (same product, site, feature or task) go in ONE project, whatever app or folder they are in.
-- Projects done for the same client go under that client. One client can have several projects.
-- Work with no client goes under a group named for its area, e.g. "Switchboard app", "Personal", "Research".
+Sort them into 2 to 8 topics by WHAT THE WORK IS ABOUT, as a tree: at most ${MAX_GROUPS} top-level groups (plus "${NO_AREA}" only if needed), each holding projects.
+${groupingRules(rules)}- Items working on the same thing (same product, site, feature or task) go in ONE project, whatever app or folder they are in.
+- Fewer, broader groups beat many small ones. Merge near-duplicates.
 ${names.length ? `My clients: ${names.join('; ')}.\n` : ''}Reply with JSON only, no prose: {"clients":[{"label":"Client or area","client":true,"projects":[{"label":"Short name","summary":"What is happening right now, under 12 words","items":[1,2]}]}]}
 Use every item number exactly once. Labels are 1 to 4 plain words, no emoji.
 
@@ -276,8 +399,10 @@ ${list.map((e, i) => describe(e, i, clients)).join('\n')}`;
   const used = new Set();
   const topics = [];
   for (const g of groups) {
-    const group = truncate(String((g && g.label) || '').trim(), 40) || NO_AREA;
-    const isClient = !!(g && g.client) || clients.some((c) => words(clientLabel(c)) === words(group));
+    const said = truncate(String((g && g.label) || '').trim(), 40) || NO_AREA;
+    const rule = rules && rules.find((r) => words(r.label) === words(said));
+    const group = rules ? (rule ? rule.label : NO_AREA) : said;
+    const isClient = !!rule || (group !== NO_AREA && (!!(g && g.client) || clients.some((c) => words(clientLabel(c)) === words(group))));
     for (const p of (g && g.projects) || []) {
       const label = truncate(String((p && p.label) || '').trim(), 40);
       const ids = ((p && (p.items || p.ids)) || []).map(Number)
@@ -309,7 +434,7 @@ function mergeRest(topics, rest, clients) {
 
 function cached() {
   const c = db.getSetting('topics', null);
-  return c && Array.isArray(c.topics) && c.topics.every((t) => t && 'group' in t) ? c : null;
+  return c && Array.isArray(c.topics) && c.topics.every((t) => t && 'group' in t) && (c.rules || '') === rulesKey(rulesOf()) ? c : null;
 }
 
 // The cached AI topics, trimmed to the items that are still current, with newcomers placed by rule.
@@ -323,7 +448,7 @@ function project(c, list, clients) {
 
 const strip = (topics) => topics.map(({ id, label, group, client, summary, ids }) => ({ id, label, group, client, summary, ids }));
 const answer = (topics, list, extra) => {
-  const flat = decorate(topics, list);
+  const flat = decorate(capGroups(topics), list);
   return { topics: flat, clients: tree(flat), ...extra };
 };
 
@@ -332,13 +457,14 @@ async function recompute({ ai = true } = {}) {
   inflight = (async () => {
     const { list, clients } = await current();
     const key = keyOf(list);
+    const rules = rulesOf();
     let topics = null, via = 'rules';
     if (ai && list.length >= 2 && list.length <= AI_LIMIT) {
-      try { topics = await askClaude(list, clients); via = 'ai'; } catch (e) { console.error('topics: falling back to rules:', e.message); }
+      try { topics = capGroups(await askClaude(list, clients, rules), rules); via = 'ai'; } catch (e) { console.error('topics: falling back to rules:', e.message); }
     }
-    if (!topics) topics = heuristic(list, clients);
+    if (!topics) topics = heuristic(list, clients, rules);
     const at = Date.now();
-    db.setSetting('topics', { topics: strip(topics), at, key, via });
+    db.setSetting('topics', { topics: strip(topics), at, key, via, rules: rulesKey(rules) });
     pending = null;
     emitChanged();
     return answer(topics, list, { at, key, via });
@@ -383,7 +509,15 @@ module.exports = {
   handlers: {
     'topics:get': () => get(),
     'topics:refresh': () => recompute(),
+    'groupRules:get': () => db.getSetting('groupRules', null) || { groups: [] },
+    'groupRules:set': (input) => {
+      const rules = cleanRules(input);
+      db.setSetting('groupRules', rules);
+      emitChanged();
+      Promise.resolve(inflight).catch(() => {}).then(() => recompute()).catch(() => {});
+      return rules;
+    },
   },
   start,
-  _test: { heuristic, projectOf, projectOther, project, keyOf, gather, decorate, describe, clientOf, tree },
+  _test: { heuristic, capGroups, peopleOf, ruleOf, cleanRules, projectOf, projectOther, project, keyOf, gather, decorate, describe, clientOf, tree },
 };

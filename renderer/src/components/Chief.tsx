@@ -1,11 +1,12 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowUp, ChevronDown, ChevronRight, X, GripVertical, Copy, FileOutput, MessageSquarePlus, StickyNote, LayoutTemplate, Zap, Compass } from 'lucide-react';
+import { ArrowUp, ChevronDown, ChevronRight, X, GripVertical, Copy, FileOutput, MessageSquarePlus, StickyNote, LayoutTemplate, Zap, Compass, Plug } from 'lucide-react';
 import { useStore } from '../lib/store';
 import { api, Message } from '../lib/api';
 import { md } from '../lib/format';
 import { AgentLogo } from './Logos';
 import { useUsage, weeklyPct } from './UsagePill';
 import { useTour } from './Tour';
+import ConnectAgents, { useConnectAgents } from './ConnectAgents';
 import './chief.css';
 
 export interface Nudge {
@@ -185,6 +186,7 @@ function Actions({ onDone }: { onDone: () => void }) {
       <button className="cf-act" onClick={run('Note added', () => api.saveNote({ text: '' }))}><StickyNote size={14} />New note</button>
       <button className="cf-act" onClick={run('Blank board', () => api.call('boards:blank'))}><LayoutTemplate size={14} />New blank board</button>
       <button className="cf-act" data-testid="chief-tour" onClick={() => { onDone(); useTour.getState().start(); }}><Compass size={14} />Tour</button>
+      <button className="cf-act" data-testid="chief-connect" onClick={() => { onDone(); useConnectAgents.getState().set(true); }}><Plug size={14} />Connect your agents</button>
     </div>
   );
 }
@@ -331,6 +333,7 @@ export default function Chief() {
           <button className="cf-go" disabled={!q.trim() || running} onClick={() => ask(q)} title="Send"><ArrowUp size={15} /></button>
         </div>
       </div>
+      <ConnectAgents />
     </div>
   );
 }

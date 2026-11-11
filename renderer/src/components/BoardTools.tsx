@@ -1,10 +1,11 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Funnel, Sparkles, Check, ChevronDown, Plus, Save, X, Loader2, Eye, CalendarDays } from 'lucide-react';
+import { Funnel, Sparkles, Check, ChevronDown, Plus, Save, X, Loader2, Eye, CalendarDays, Rows3 } from 'lucide-react';
 import { useStore } from '../lib/store';
 import { api } from '../lib/api';
 import { AgentLogo } from './Logos';
 import { SOURCE } from '../lib/format';
 import { srcKey } from '../lib/layout';
+import GroupRules from './GroupRules';
 
 const KINDS: [string, string][] = [['coding', 'Coding sessions'], ['chat', 'Chats'], ['mail', 'Mail'], ['meetings', 'Meetings'], ['notes', 'Notes & outputs']];
 const AGENTS = ['claude-code', 'grok-bot', 'cursor', 'codex', 'openai-compatible'];
@@ -120,6 +121,7 @@ export default function BoardTools({ busy, onSmart, onWeek, onArranged, off, set
 }) {
   const [open, setOpen] = useState(false);
   const [groupBy, setGroupBy] = useState(false);
+  const [rules, setRules] = useState(false);
   const toggle = (k: string) => setOff(off.includes(k) ? off.filter((x) => x !== k) : [...off, k]);
   return (
     <div className="board-tools" onClick={(e) => e.stopPropagation()}>
@@ -132,6 +134,12 @@ export default function BoardTools({ busy, onSmart, onWeek, onArranged, off, set
           <Funnel size={14} />{off.length > 0 && <i className="bt-dot" />}
         </button>
         {open && <FilterPanel off={off} toggle={toggle} reset={() => setOff([])} onClose={() => setOpen(false)} />}
+      </div>
+      <div className="bt-wrap">
+        <button className={`bt-btn bt-groups ${rules ? 'active' : ''}`} onClick={() => setRules(!rules)} title="Choose your own top-level groups" data-testid="group-rules">
+          <Rows3 size={14} /><span>Groups</span>
+        </button>
+        {rules && <GroupRules onClose={() => setRules(false)} />}
       </div>
       <button className={`bt-btn bt-overview ${overview ? 'active' : ''}`} onClick={onOverview} title={overview ? 'Back to your layout' : 'See everything going on, grouped by client'}>
         <Eye size={14} /><span>Overview</span>

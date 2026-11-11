@@ -4,6 +4,7 @@ import { create } from 'zustand';
 import { X } from 'lucide-react';
 import { useStore } from '../lib/store';
 import { api } from '../lib/api';
+import { useConnectAgents } from './ConnectAgents';
 import './tour.css';
 
 const DONE_KEY = 'sb.tourDone';
@@ -14,6 +15,7 @@ interface Step {
   body: string;
   mode?: 'live' | 'board';
   chief?: boolean;
+  connect?: boolean;
 }
 
 // Each target lists the preferred data-tour hook first, then older hooks that already exist.
@@ -24,8 +26,8 @@ const STEPS: Step[] = [
     title: 'To do', body: 'Your own to-dos, chats that need you, everything still working, and replies you owe.' },
   { target: ['.react-flow__node-session', '.react-flow__node'], mode: 'board',
     title: 'A chat', body: 'Click to open it: the plan, steps and recaps, live. Faint lines link meetings and email to the chat they belong with.' },
-  { target: ['[data-testid=week-board]'], mode: 'board',
-    title: 'This week', body: 'Lays the board out again from this week\'s work. Move things anywhere and it stays how you left it.' },
+  { target: [],
+    title: 'Connect your agents', body: 'Add Switchboard to Grok Bot, Claude, Cursor, Codex and ChatGPT once, and they report here automatically.', connect: true },
   { target: ['[data-tour=dock]', '[data-testid=dock]'],
     title: 'Start a chat', body: 'Pick an account to start something new. The % shows its usage, so you can spread work around.' },
   { target: ['[data-tour=agent-panel]', '.sb-chief.open .chief-panel'], chief: true,
@@ -36,8 +38,6 @@ const STEPS: Step[] = [
     title: 'List', body: 'The same chats as a list, sorted into topics. Switch back to Board any time.' },
   { target: ['[data-tour=import]', '[data-testid=live-import]'], mode: 'live',
     title: 'Import chats', body: 'Bring in any older chat from any Claude account.' },
-  { target: ['[data-tour=usage]', '[data-testid=usage-pill]'], mode: 'board',
-    title: 'Usage', body: 'Weekly usage for each account. Click for the details.' },
   { target: ['[data-tour=settings]', '[data-testid=settings-btn]'],
     title: 'Settings', body: 'Accounts, clients, the shared brain, and connecting Grok Bot.' },
 ];
@@ -80,7 +80,9 @@ function cardPos(box: Box, cardH: number) {
 
 // A spotlight walk-through of the real UI: the screen dims except the part being explained.
 export default function Tour() {
-  const open = useTour((s) => s.open);
+  const tourOpen = useTour((s) => s.open);
+  const connecting = useConnectAgents((s) => s.open);
+  const open = tourOpen && !connecting;
   const [i, setI] = useState(0);
   const [box, setBox] = useState<Box>(null);
   const [cardH, setCardH] = useState(150);
@@ -110,10 +112,10 @@ export default function Tour() {
   }, []);
 
   useEffect(() => {
-    if (!open) return;
+    if (!tourOpen) return;
     setI(0); setBox(null);
     startMode.current = localStorage.getItem('sb.mode') === 'live' ? 'live' : 'board';
-  }, [open]);
+  }, [tourOpen]);
 
   // Put the app in the right state for the step, then keep the spotlight on the target as things move.
   useEffect(() => {
@@ -185,6 +187,7 @@ export default function Tour() {
         <button className="tour-x" aria-label="Close tour" onClick={finish}><X size={13} /></button>
         <div className="tour-title">{step.title}</div>
         <p className="tour-body">{step.body}</p>
+        {step.connect && <button className="tour-btn tour-cta" data-testid="tour-connect" onClick={() => useConnectAgents.getState().set(true)}>Connect your agents</button>}
         <div className="tour-foot">
           <div className="tour-dots" aria-hidden>
             {STEPS.map((_, n) => <i key={n} className={n === i ? 'on' : ''} onClick={() => setI(n)} />)}

@@ -1,0 +1,18 @@
+/* ---------- your groups: owner-defined top-level groups for the home ---------- */
+.gr-panel { width: 340px; cursor: default; }
+.gr-rows { display: flex; flex-direction: column; gap: 4px; padding: 2px 4px; max-height: 280px; overflow: auto; }
+.gr-row { display: flex; gap: 4px; align-items: center; }
+.gr-row input { min-width: 0; height: 28px; border: 1px solid #E4E4E7; border-radius: 8px; padding: 0 8px; font-size: 12.5px; color: #18181B; background: #FFFFFF; outline: 0; }
+.gr-row input:focus { border-color: #18181B; }
+.gr-label { flex: 0 0 110px; font-weight: 550; }
+.gr-hint { flex: 1; }
+.gr-del { width: 22px; height: 22px; border-radius: 6px; display: grid; place-items: center; color: #A1A1AA; flex: none; }
+.gr-del:hover { background: #F4F4F5; color: #18181B; }
+.gr-actions { display: flex; gap: 4px; padding: 6px 4px 2px; }
+.gr-link { display: inline-flex; align-items: center; gap: 5px; height: 26px; padding: 0 8px; border-radius: 7px; font-size: 12px; color: #52525B; }
+.gr-link:hover { background: #F4F4F5; color: #18181B; }
+.gr-link:disabled { opacity: .6; cursor: default; }
+.gr-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 6px; padding: 8px 6px 2px; border-top: 1px solid #F0F0F2; }
+.gr-note { font-size: 11px; color: #A1A1AA; }
+.gr-save { height: 28px; padding: 0 14px; border-radius: 8px; background: #18181B; color: #FFFFFF; font-size: 12.5px; font-weight: 600; }
+.gr-save:hover { background: #3F3F46; }

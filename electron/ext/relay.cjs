@@ -323,6 +323,18 @@ function schedule() {
   ticker = enabled() ? setInterval(() => sync().catch(() => {}), POLL_MS) : null;
 }
 
+// A deploy script can leave ~/.switchboard/relay-setup.json ({ url, appToken, botToken }) once:
+// the tokens move into the Keychain and the file is deleted.
+async function importSetup() {
+  const f = require('path').join(require('../util.cjs').APP_DIR, 'relay-setup.json');
+  const fs = require('fs');
+  if (!fs.existsSync(f)) return;
+  let j = null;
+  try { j = JSON.parse(fs.readFileSync(f, 'utf8')); } catch {}
+  if (j && j.url && j.appToken) await configure({ url: j.url, appToken: j.appToken, botToken: j.botToken, enabled: true });
+  fs.rmSync(f, { force: true });
+}
+
 async function configure({ url: u, appToken, botToken, enabled: en } = {}) {
   if (u !== undefined) {
     const n = normalize(u);
@@ -361,6 +373,7 @@ module.exports = {
     'relay:copy': (template) => copy(template),
   },
   start() {
+    importSetup().catch((e) => console.error('relay setup import:', e.message));
     schedule();
     sync().catch(() => {});
   },

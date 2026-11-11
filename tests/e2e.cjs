@@ -29,6 +29,7 @@ const S = {
   crew: 'cc:a_claude2:0a1b2c3d-2222-4aaa-8bbb-000000000003',
   news: 'cc:a_claude3:0a1b2c3d-3333-4aaa-8bbb-000000000005',
   codex: 'cx:a_codex:0a1b2c3d-4444-4aaa-8bbb-000000000006',
+  scratch: 'cc:a_claude1:0a1b2c3d-9999-4aaa-8bbb-000000000009',
 };
 
 const results = [];
@@ -72,10 +73,22 @@ async function launch() {
 }
 async function quit() { if (app) await app.close().catch(() => {}); app = null; }
 
+// Everything that isn't the board lives in the Settings slide-over (gear, top right).
+const TABS = { Accounts: 'accounts', Clients: 'clients', 'Shared brain': 'brain' };
 async function view(name) {
-  await page.locator('.side .nav button', { hasText: name }).first().click();
-  await sleep(300);
+  if (name === 'Board') {
+    await page.evaluate(() => window.__sbView('board'));
+    await until(async () => (await page.locator('.settings').count()) === 0, 'settings closed');
+    return;
+  }
+  if (!(await page.locator('.settings').count())) await page.getByTestId('settings-btn').click();
+  await page.locator(`.settings [data-view="${TABS[name]}"]`).click();
+  await until(async () => (await page.locator('.settings-body .page').count()) === 1, `${name} shown`);
+  await sleep(250);
 }
+const mod = (k) => `${process.platform === 'darwin' ? 'Meta' : 'Control'}+${k}`;
+const frameLabels = () => page.locator('.frame-tab .name').allInnerTexts();
+const smartCalls = () => promptCalls().filter((c) => /Group these cards from my work whiteboard/.test(c.prompt));
 async function center(id, zoom = 0.9) {
   await view('Board');
   await until(() => page.evaluate(([i, z]) => window.__sbCenter && window.__sbCenter(i, z), [id, zoom]), `card ${id} is on the board`);
@@ -97,6 +110,24 @@ async function dragNode(id, dx, dy) {
   await page.mouse.move(x, y); await page.mouse.down();
   for (let i = 1; i <= 12; i++) await page.mouse.move(x + (dx * i) / 12, y + (dy * i) / 12);
   await page.mouse.up(); await sleep(500);
+}
+// Empty board space on screen, big enough for a card of w × h board units (away from the floating
+// controls). Returns its screen centre (sx, sy) and its top-left in board coordinates (x, y).
+async function emptySpot(w = 320, h = 260) {
+  const spot = await page.evaluate(([w, h]) => {
+    const vp = document.querySelector('.react-flow__viewport');
+    const m = new DOMMatrixReadOnly(getComputedStyle(vp).transform);
+    const z = m.a, sw = w * z, sh = h * z;
+    const free = (x, y) => { const el = document.elementFromPoint(x, y); return !!el && el.classList.contains('react-flow__pane'); };
+    for (let y = 100; y + sh < innerHeight - 110; y += 24) for (let x = 240; x + sw < innerWidth - 140; x += 24) {
+      let ok = true;
+      for (let yy = y; yy <= y + sh && ok; yy += 14) for (let xx = x; xx <= x + sw && ok; xx += 14) ok = free(xx, yy);
+      if (ok) return { sx: x + sw / 2, sy: y + sh / 2, x: (x - m.e) / z, y: (y - m.f) / z };
+    }
+    return null;
+  }, [w, h]);
+  assert(spot, 'found empty board space');
+  return spot;
 }
 // HTML drag and drop from a grip to a point. Chromium's native drag needs a real pointer, so the
 // events are dispatched the same way the browser would, with a shared DataTransfer.
@@ -132,6 +163,18 @@ function sb(...args) {
 
 async function main() {
   require('../scripts/seed.cjs').seed(HOME);
+  // A throwaway session in a scratch workspace: it must never become a card.
+  {
+    const cwd = path.join(os.tmpdir(), 'scratch-workspaces', 'e2e', 'scratch-1');
+    const sid = S.scratch.split(':')[2];
+    const f = path.join(HOME, '.claude', 'projects', cwd.replace(/[/.]/g, '-'), `${sid}.jsonl`);
+    const ts = new Date().toISOString();
+    fs.mkdirSync(path.dirname(f), { recursive: true });
+    fs.writeFileSync(f, [
+      { type: 'user', sessionId: sid, cwd, timestamp: ts, uuid: `${sid}-0`, message: { role: 'user', content: 'Scratch experiment, ignore me' } },
+      { type: 'assistant', sessionId: sid, cwd, timestamp: ts, uuid: `${sid}-1`, message: { id: 'msg_scratch', role: 'assistant', model: 'claude-sonnet-5-5', content: [{ type: 'text', text: 'Scratch reply' }], usage: { input_tokens: 10, output_tokens: 5 } } },
+    ].map((r) => JSON.stringify(r)).join('\n') + '\n');
+  }
   for (const f of [LOG, OPENED]) fs.rmSync(f, { force: true });
   // The fake Claude sign-in: which account each Claude Code folder ends up signed in to.
   // Two plans on one email, as with a Team organization and a personal Max plan.
@@ -148,11 +191,25 @@ async function main() {
       await until(async () => (await node(id).count()) === 1, `card ${id}`);
     }
     await until(async () => (await page.locator('.react-flow__node-meeting').count()) >= 2, 'two Granola meeting cards');
-    await until(async () => (await page.locator('.react-flow__node-project').count()) >= 3, 'project cards');
   });
-  await check('cards are grouped by project on first open', async () => {
-    const labels = await page.locator('.group-label input').evaluateAll((els) => els.map((e) => e.value));
-    assert(labels.some((l) => /harbor-coffee-site/.test(l)) && labels.some((l) => /fieldline-app/.test(l)), `group labels: ${labels.join(', ')}`);
+  await check('no meaningless cards: project folders and scratch sessions stay off the board', async () => {
+    const ents = await api('entities', {});
+    assert(ents.some((e) => e.kind === 'project'), 'project folders are still known (for search)');
+    const scratch = ents.find((e) => e.id === S.scratch);
+    assert(scratch && scratch.meta.noise === true, 'the scratch-workspace session is flagged as noise');
+    assert(ents.find((e) => e.id === S.menu).meta.noise === false, 'a real project session is not noise');
+    assert((await page.locator('.react-flow__node-project').count()) === 0, 'no project cards drawn');
+    assert((await node(S.scratch).count()) === 0, 'no scratch session card');
+    assert(/Code/.test(await node(S.menu).locator('.kind-chip').innerText()), 'coding sessions are marked Code');
+  });
+  await check('Smart group sorts the board into named frames on first open', async () => {
+    await until(async () => { const l = await frameLabels(); return l.includes('Maya Lin') && l.includes('Dev Patel') ? l : false; }, 'frames named by the AI grouping', 20000);
+    const c = smartCalls()[0];
+    assert(c && c.args.includes('--model') && c.args.includes('sonnet') && c.args.includes('--tools'), `asked Claude without tools (${c && c.args.join(' ')})`);
+    const r = await boardRow(S.menu); const g = await boardRow(r.parent_id || '');
+    assert(g && g.data.label === 'Maya Lin', `the Harbor session sits in ${g && g.data.label}`);
+    const own = (await api('entities', { force: true })).filter((e) => e.kind === 'session' && /switchboard$/.test(e.meta.cwd || ''));
+    assert(!own.length, 'the grouping run does not show up as a card');
   });
   await check('the seeded agent-to-agent lines are drawn', async () => {
     await until(async () => (await page.locator('.react-flow__edge').count()) >= 3, 'three lines');
@@ -160,50 +217,103 @@ async function main() {
 
   let movedTo;
   await check('dragging a card moves it and saves where it was dropped', async () => {
-    await center('nt:n1');
+    await center('nt:n1', 0.6);
     const before = await boardRow('nt:n1');
-    await dragNode('nt:n1', 160, 90);
+    const spot = await emptySpot();
+    const grip = await node('nt:n1').locator('.card-top').boundingBox();
+    await dragNode('nt:n1', spot.sx - (grip.x + grip.width / 2), spot.sy - 60 - (grip.y + grip.height / 2));
     const after = await until(async () => { const r = await boardRow('nt:n1'); return r && (Math.abs(r.x - before.x) > 40 || Math.abs(r.y - before.y) > 40 || r.parent_id !== before.parent_id) ? r : false; }, 'saved position changed');
     movedTo = { x: after.x, y: after.y, parent: after.parent_id };
   });
+  await check('one click opens a card with the cursor in its message box; Escape closes it', async () => {
+    await center(S.menu, 0.7);
+    await node(S.menu).locator('.card-title').click();
+    await until(async () => (await page.locator('.inspector .title').count()) === 1 && /menu page/i.test(await page.locator('.inspector .title').innerText()), 'the card opened');
+    await until(() => page.evaluate(() => !!document.activeElement && !!document.activeElement.closest('.inspector .composer')), 'the cursor is in the message box');
+    await page.keyboard.press('Escape');
+    await until(async () => (await page.locator('.inspector').count()) === 0, 'closed');
+  });
 
   let manualGroup;
-  await check('select two cards and press ⌘G to group them', async () => {
+  await check('shift-click selects without opening, and ⌘G groups the selection', async () => {
     await center(S.menu, 0.6);
     await node(S.menu).locator('.card-title').click();
+    await page.keyboard.press('Escape');
     await node(S.seo).locator('.card-title').click({ modifiers: ['Shift'] });
-    await page.keyboard.press(process.platform === 'darwin' ? 'Meta+g' : 'Control+g');
+    assert((await page.locator('.inspector').count()) === 0, 'shift-click did not open a card');
+    await page.keyboard.press(mod('g'));
     manualGroup = await until(async () => (await api('board')).find((r) => r.id.startsWith('grp:manual')), 'a new group');
     const kids = (await api('board')).filter((r) => r.parent_id === manualGroup.id).map((r) => r.id).sort();
     assert(kids.length === 2 && kids.includes(S.menu) && kids.includes(S.seo), `group holds ${kids.join(', ')}`);
     await until(async () => (await node(manualGroup.id).count()) === 1, 'group shows on the board');
   });
-  await check('rename a group', async () => {
-    const input = node(manualGroup.id).locator('.group-label input');
+  await check('rename a frame by double-clicking its name tab', async () => {
+    const tab = node(manualGroup.id).locator('.frame-tab');
+    await tab.dblclick();
+    const input = tab.locator('input');
     await input.fill('Harbor launch'); await input.press('Tab'); await sleep(400);
     const r = await boardRow(manualGroup.id);
     assert(r.data.label === 'Harbor launch', `label saved as ${r.data.label}`);
+    assert(/Harbor launch/.test(await tab.innerText()), 'tab shows the new name');
   });
   await check('ungroup from the right-click menu', async () => {
-    await node(manualGroup.id).locator('.group-label i').click({ button: 'right' });
+    await node(manualGroup.id).locator('.frame-tab').click({ button: 'right' });
     await page.locator('.menu button', { hasText: 'Ungroup' }).click();
     await until(async () => !(await boardRow(manualGroup.id)), 'group removed');
     const r = await boardRow(S.menu);
     assert(!r.parent_id, 'card left the group');
   });
-  await check('Group by Account', async () => {
-    await page.locator('.seg button', { hasText: 'Account' }).click();
-    await until(async () => { const l = await page.locator('.group-label input').evaluateAll((els) => els.map((e) => e.value)); return l.includes('Claude (work)') && l.includes('Claude (studio)') && l.includes('Granola'); }, 'one group per account');
+  let diagram;
+  await check('an agent draws its own diagram on the board (sb board)', async () => {
+    const spec = { nodes: [{ id: 'a', text: 'Menu page live' }, { id: 'b', text: 'Local SEO pages' }, { id: 'c', text: 'Newsletter feature' }], edges: [{ from: 'a', to: 'b', label: 'then' }, { from: 'b', to: 'c' }] };
+    const out = sb('board', 'Harbor launch plan', '--json', JSON.stringify(spec));
+    diagram = out.split('\t')[0].trim();
+    assert(diagram.startsWith('grp:ai:'), `sb printed the frame id (${out})`);
+    await until(async () => (await node(diagram).count()) === 1, 'the diagram frame is drawn');
+    const kids = (await api('board')).filter((r) => r.parent_id === diagram);
+    assert(kids.length === 3, `${kids.length} notes in the frame`);
+    for (const k of kids) await until(async () => (await node(k.id).count()) === 1, `note ${k.id} drawn`);
+    const arrows = (await api('edges')).filter((e) => e.data.diagram === diagram);
+    assert(arrows.length === 2, `${arrows.length} arrows`);
+    await until(async () => (await page.locator('.edge-text', { hasText: 'then' }).count()) === 1, 'arrow label shown');
+    assert(/Harbor launch plan/.test(await node(diagram).locator('.frame-tab').innerText()), 'frame titled');
   });
-  await check('Group by Client', async () => {
-    await page.locator('.seg button', { hasText: 'Client' }).click();
-    await until(async () => { const l = await page.locator('.group-label input').evaluateAll((els) => els.map((e) => e.value)); return l.includes('Maya Lin') && l.includes('Dev Patel'); }, 'one group per client');
-    const r = await boardRow(S.menu); const g = await boardRow(r.parent_id || '');
-    assert(g && g.data.label === 'Maya Lin', `the Harbor session sits under ${g && g.data.label}`);
+  await check('Smart group re-sorts the board and keeps agent diagrams', async () => {
+    await api('board:save', [{ id: 'grp:manual:old', x: -3000, y: -3000, w: 400, h: 300, parent_id: null, data: { label: 'Old group' } }]);
+    await page.evaluate(() => window.__sbRefresh());
+    const n = smartCalls().length;
+    await view('Board');
+    await page.locator('.bt-smart').click();
+    await until(() => smartCalls().length > n, 'asked Claude to group the cards');
+    await until(async () => !(await boardRow('grp:manual:old')), 'old frames replaced');
+    await until(async () => { const l = await frameLabels(); return l.includes('Maya Lin') && l.includes('Dev Patel') && l.includes('Rosa Grant') ? l : false; }, 'frames named by client');
+    const r = await boardRow(S.crew); const g = await boardRow(r.parent_id || '');
+    assert(g && g.data.label === 'Dev Patel', `the crew session sits in ${g && g.data.label}`);
+    assert(await boardRow(diagram), 'the agent diagram kept its frame');
+    assert((await api('board')).filter((x) => x.parent_id === diagram).length === 3, 'and its notes');
   });
-  await check('Group by Project again', async () => {
-    await page.locator('.seg button', { hasText: 'Project' }).click();
-    await until(async () => { const l = await page.locator('.group-label input').evaluateAll((els) => els.map((e) => e.value)); return l.some((x) => /harbor-coffee-site/.test(x)); }, 'project groups back');
+  await check('a frame goal is saved and "Work toward goal" prompts the agents in it', async () => {
+    const g = (await api('board')).find((r) => r.id.startsWith('grp:') && r.data.label === 'Dev Patel');
+    await center(g.id, 0.5);
+    await node(g.id).locator('.goal-add').click();
+    const input = node(g.id).locator('.goal-edit input');
+    await input.fill('Ship release 2.3'); await input.press('Enter');
+    await until(async () => (await boardRow(g.id)).data.goal === 'Ship release 2.3', 'goal saved');
+    await node(g.id).locator('.goal-go').click();
+    const c = await until(() => promptCalls().find((x) => /Goal for "Dev Patel": Ship release 2.3/.test(x.prompt) && x.args.includes(S.crew.split(':')[2])), 'the crew session got the goal');
+    assert(c.configDir && c.configDir.endsWith('.claude-2'), 'on its own account');
+  });
+  await check('the filter hides kinds of cards and remembers it', async () => {
+    await view('Board');
+    await page.locator('.bt-filter').click();
+    assert((await page.locator('.bt-panel .bt-row', { hasText: 'Codex' }).count()) === 1, 'Codex is offered because there is a Codex account');
+    await page.locator('.bt-panel .bt-row', { hasText: 'Coding sessions' }).click();
+    await until(async () => (await node(S.crew).count()) === 0, 'coding sessions hidden');
+    assert((await node('nt:n1').count()) === 1, 'notes still shown');
+    assert(((await api('settings:get', 'boardFilter', {})).off || []).includes('coding'), 'filter saved');
+    await page.locator('.bt-panel .bt-reset').click();
+    await until(async () => (await node(S.crew).count()) === 1, 'shown again');
+    await page.keyboard.press('Escape');
   });
 
   console.log('\nConnections and messages between agents');
@@ -211,9 +321,9 @@ async function main() {
   await check('draw a line from one card to another', async () => {
     await center(S.menu, 0.5);
     await page.evaluate(() => { const vp = document.querySelector('.react-flow__viewport'); return !!vp; });
-    // Put the target next to the source so both handles are on screen.
-    const src = await boardRow(S.menu);
-    await api('board:save', [{ id: S.news, x: (src.x || 0) + 420, y: (src.y || 0), parent_id: src.parent_id || null, data: {} }]);
+    // Put the target in empty space near the source so both handles are on screen.
+    const spot = await emptySpot();
+    await api('board:save', [{ id: S.news, x: spot.x, y: spot.y, parent_id: null, data: {} }]);
     await page.evaluate(() => window.__sbRefresh()); await sleep(400); await center(S.menu, 0.5);
     const a = await node(S.menu).locator('.react-flow__handle.source').boundingBox();
     const b = await node(S.news).locator('.react-flow__handle.target').boundingBox();
@@ -222,16 +332,22 @@ async function main() {
     for (let i = 1; i <= 15; i++) await page.mouse.move(a.x + (b.x - a.x) * i / 15, a.y + (b.y - a.y) * i / 15);
     await page.mouse.move(b.x + b.width / 2, b.y + b.height / 2); await page.mouse.up();
     link = await until(async () => (await api('edges')).find((e) => e.source === S.menu && e.target === S.news && e.kind === 'link'), 'a saved connection');
+    assert(link.data.autoForward === true, 'a new line sends outputs automatically');
   });
-  await check('click the line and turn on auto-send', async () => {
+  await check('the line menu switches auto-send off and on', async () => {
     await until(async () => (await page.locator(`[data-testid="rf__edge-${link.id}"]`).count()) === 1, 'the new line is drawn');
+    await until(async () => (await page.locator(`[data-testid="rf__edge-${link.id}"] path.edge-auto`).count()) >= 1, 'drawn as an auto-send line');
     await page.evaluate((id) => {
       const el = document.querySelector(`[data-testid="rf__edge-${id}"] .react-flow__edge-interaction`) || document.querySelector(`[data-testid="rf__edge-${id}"] path`);
       el.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX: 500, clientY: 300 }));
     }, link.id);
-    await page.locator('.menu button', { hasText: 'Auto-send outputs along this line' }).click();
-    await until(async () => (await api('edges')).find((e) => e.id === link.id).data.autoForward, 'auto-send saved');
-    await until(async () => (await page.locator(`[data-testid="rf__edge-${link.id}"]`).count()) === 1 && /Auto-sends/.test(await page.locator('.edge-label').allInnerTexts().then((t) => t.join(' '))), 'line labelled');
+    const row = page.locator('.menu button', { hasText: 'Sends outputs automatically' });
+    assert((await row.locator('.board-switch.on').count()) === 1, 'switch shows on');
+    await row.click();
+    await until(async () => (await api('edges')).find((e) => e.id === link.id).data.autoForward === false, 'auto-send off');
+    await row.click();
+    await until(async () => (await api('edges')).find((e) => e.id === link.id).data.autoForward === true, 'auto-send back on');
+    await page.mouse.click(5, 300);
   });
   await check('prompting a card replies in place and auto-sends the reply down the line', async () => {
     await sendFromCard(S.menu, 'Add a pastry section');
@@ -264,7 +380,7 @@ async function main() {
   console.log('\nDrag and drop, outputs');
   await check('drag a message from an open chat onto another card attaches it', async () => {
     await center(S.seo, 0.55);
-    await node(S.seo).dblclick({ position: { x: 60, y: 20 } });
+    await node(S.seo).click({ position: { x: 60, y: 20 } });
     await until(async () => (await page.locator('.inspector .msg.assistant').count()) > 0, 'chat opens');
     const r = await htmlDrag('.inspector .msg.assistant .tools button[draggable]', { nodeId: S.menu });
     assert(r === 'ok', r);
@@ -296,7 +412,7 @@ async function main() {
   });
   await check('open an output card to read it in full', async () => {
     await center(newOut.id);
-    await node(newOut.id).dblclick({ position: { x: 40, y: 14 } });
+    await node(newOut.id).click({ position: { x: 40, y: 14 } });
     await until(async () => /LocalBusiness|schema|ferry/i.test(await page.locator('.inspector').innerText()), 'output text in the reader');
     await page.locator('.inspector .insp-head button[title="Close"]').click();
   });
@@ -312,18 +428,25 @@ async function main() {
     for (let i = 1; i <= 14; i++) await page.mouse.move(ob.x + 20 + (tb.x + 40 - ob.x - 20) * i / 14, ob.y + ob.height / 2 + (tb.y + 10 - ob.y - ob.height / 2) * i / 14);
     await page.mouse.up();
     await until(async () => (await node(S.crew).locator('.att .chip.green').count()) > 0, 'attachment chip on the agent card');
+    assert((await page.locator('.inspector').count()) === 0, 'dragging did not open the card');
     void o; void tAbs;
   });
 
   console.log('\nPrompting each kind of card');
-  await check('a new task on a project starts a new Claude session in that folder', async () => {
-    const pj = (await api('entities', {})).find((e) => e.kind === 'project' && /fieldline-app/.test(e.meta.cwd || ''));
-    await center(pj.id, 0.7);
-    await sendFromCard(pj.id, 'Write a changelog');
+  await check('a new task on a project folder (found with ⌘K) starts a Claude session in that folder', async () => {
+    await view('Board');
+    await page.keyboard.press(mod('k'));
+    await page.locator('.palette input').fill('project fieldline');
+    await until(async () => /fieldline-app/.test(await page.locator('.palette .list').innerText()), 'the project folder is found');
+    await page.keyboard.press('Enter');
+    await until(async () => (await page.locator('.inspector .title').count()) === 1 && /fieldline-app/.test(await page.locator('.inspector .title').innerText()), 'opened');
+    const box = page.locator('.inspector .composer textarea');
+    await box.fill('Write a changelog'); await box.press('Enter');
     const c = await until(() => promptCalls().find((x) => /Write a changelog/.test(x.prompt)), 'Claude Code called');
     assert(!c.args.includes('--resume'), 'new session, not a resume');
     assert(c.cwd.endsWith('fieldline-app'), `in the project folder (${c.cwd})`);
     await until(async () => (await api('entities', { force: true })).some((e) => e.kind === 'session' && /Write a changelog/.test(e.title)), 'the new session appears as a card');
+    await page.keyboard.press('Escape');
   });
   await check('split usage starts new work on the least-used Claude account', async () => {
     const usage = await api('usage');
@@ -366,9 +489,36 @@ async function main() {
   await check('a Granola meeting opens with its notes', async () => {
     const m = (await api('entities', {})).find((e) => e.kind === 'meeting' && /Harbor Coffee kickoff/.test(e.title));
     await center(m.id, 0.8);
-    await node(m.id).dblclick({ position: { x: 60, y: 30 } });
+    await node(m.id).click({ position: { x: 60, y: 30 } });
     await until(async () => /Budget agreed/.test(await page.locator('.inspector').innerText()), 'meeting notes shown');
     await page.locator('.inspector .insp-head button[title="Close"]').click();
+  });
+  await check('the quick-add dock starts a new session on the picked account', async () => {
+    await view('Board');
+    const bubbles = await page.locator('[data-testid="dock"] .dock-b[data-testid^="dock-a_"]').evaluateAll((els) => els.map((e) => e.dataset.testid));
+    assert(bubbles.includes('dock-a_claude1') && bubbles.includes('dock-a_claude3') && bubbles.includes('dock-a_grok') && bubbles.includes('dock-a_codex'), `bubbles: ${bubbles.join(', ')}`);
+    await page.getByTestId('dock-a_claude3').click();
+    await until(() => page.evaluate(() => !!document.activeElement && document.activeElement.dataset.testid === 'dock-input'), 'the dock input has the cursor');
+    const input = page.getByTestId('dock-input');
+    await input.fill('Plan the spring promo'); await input.press('Enter');
+    const c = await until(() => promptCalls().find((x) => /Plan the spring promo/.test(x.prompt)), 'Claude Code called');
+    assert(c.configDir && c.configDir.endsWith('.claude-3') && !c.args.includes('--resume'), `new session on the third account (${c.configDir})`);
+  });
+  await check('⌘K tags a card as context, and the next prompt from the dock carries it', async () => {
+    await page.keyboard.press(mod('k'));
+    await page.locator('.palette input').fill('CSV export');
+    await until(async () => (await page.locator('.palette .item').count()) > 0, 'results');
+    await page.keyboard.press(mod('t'));
+    await toast(/Tagged as context/);
+    await page.keyboard.press('Escape');
+    await page.getByTestId('dock-new').click();
+    await until(async () => /1 tagged/.test(await page.getByTestId('dock').innerText()), 'the dock shows the tag');
+    const input = page.getByTestId('dock-input');
+    await input.fill('Summarize the tagged work'); await input.press('Enter');
+    const c = await until(() => promptCalls().find((x) => /Summarize the tagged work/.test(x.prompt)), 'sent');
+    assert(/Context from/.test(c.prompt) && /CSV/.test(c.prompt), 'the tagged card went along as context');
+    assert(!c.args.includes('--resume'), 'started a new session');
+    await until(async () => !/tagged/.test(await page.getByTestId('dock').innerText()), 'tags cleared after sending');
   });
 
   console.log('\nOverall agent');
@@ -382,12 +532,11 @@ async function main() {
     assert(c.args.includes('--mcp-config'), 'it can use the Switchboard tools');
   });
   await check('ask about selected cards only', async () => {
-    await center(S.crew, 0.6);
     await page.locator('.chief-panel .icon-btn').click().catch(() => {});
+    await center(S.crew, 0.6);
     await node(S.crew).locator('.card-title').click();
-    await node(S.news).locator('.card-title').click({ modifiers: ['Shift'] }).catch(async () => {
-      await page.evaluate((id) => window.__sbCenter(id, 0.4), S.crew);
-    });
+    await page.keyboard.press('Escape');
+    await node(S.news).locator('.card-title').click({ modifiers: ['Shift'], timeout: 3000 }).catch(() => {});
     await page.locator('.chief-bar input').fill('Compare these');
     await page.locator('.chief-bar input').press('Enter');
     const c = await until(() => promptCalls().find((x) => /User: Compare these/.test(x.prompt)), 'asked');
@@ -403,6 +552,27 @@ async function main() {
     assert(h.filter((m) => m.role === 'user').length >= 2 && h.some((m) => m.role === 'assistant'), 'history kept');
     await page.locator('.chief-panel .icon-btn').click().catch(() => {});
   });
+  let dismissed;
+  await check('the agent flags what needs you: click to open it, × to dismiss it', async () => {
+    await page.mouse.click(5, 300);
+    await page.evaluate(() => window.__sbChief(true));
+    const needs = page.locator('.chief-panel .cf-needs');
+    await until(async () => (await needs.count()) === 1, 'a Needs you list', 15000);
+    if (await needs.locator('.cf-more').count()) await needs.locator('.cf-more').click();
+    const item = needs.locator('.cf-item', { hasText: 'Send AEO proposal' });
+    await until(async () => (await item.count()) === 1, 'the late next step for Rosa is flagged');
+    assert((await page.locator('.sb-chief .cf-badge').innerText()).match(/\d+/), 'the tab shows a count');
+    await item.click();
+    await until(async () => (await page.locator('.inspector .title').count()) === 1 && /Rosa Grant/.test(await page.locator('.inspector .title').innerText()), 'opened the client');
+    await page.locator('.inspector .insp-head button[title="Close"]').click();
+    dismissed = (await api('proactive:list')).find((i) => /Send AEO proposal/.test(i.title));
+    assert(dismissed, 'listed by proactive:list');
+    await item.hover();
+    await item.locator('.cf-x').click();
+    await until(async () => (await item.count()) === 0, 'gone from the list');
+    assert(!(await api('proactive:list')).some((i) => i.id === dismissed.id), 'stays dismissed');
+    await page.locator('.chief-panel .icon-btn').click();
+  });
 
   console.log('\nClaude sign-in: two plans on one email');
   await check('add a fourth Claude account in its own folder', async () => {
@@ -411,6 +581,8 @@ async function main() {
     await page.locator('.modal .due-item', { hasText: 'Claude account' }).click();
     const folder = page.locator('.modal input.mono');
     assert((await folder.inputValue()) === '~/.claude-4', `suggested folder ${await folder.inputValue()}`);
+    const perms = await page.locator('.modal select option').allInnerTexts();
+    assert(perms.join('|') === 'Ask first|Edit files|Full access', `permission choices: ${perms.join(', ')}`);
     await page.locator('.modal .field input').first().fill('Claude (Team)');
     await page.locator('.modal button', { hasText: 'Save' }).click();
     await until(async () => (await api('accounts')).find((a) => a.label === 'Claude (Team)'), 'account saved');
@@ -486,7 +658,7 @@ async function main() {
     // The stand-in finishes in 400 ms, so slow it down for this one.
     fs.writeFileSync(path.join(HOME, '.claude-3', '.slow-login'), '');
     await page.getByTestId('claude-auth-a_claude3').locator('button', { hasText: 'Sign in' }).click();
-    await until(async () => /Waiting for you to finish/.test(await page.getByTestId('claude-auth-a_claude3').innerText()), 'waiting state');
+    await until(async () => /Finish in the browser/.test(await page.getByTestId('claude-auth-a_claude3').innerText()), 'waiting state');
     await until(async () => (await page.getByTestId('claude-auth-a_claude3').locator('button', { hasText: 'Open sign-in page' }).count()) === 1, 'sign-in link captured');
     await page.getByTestId('claude-auth-a_claude3').locator('button', { hasText: 'Cancel' }).click();
     await until(async () => /Not signed in/.test(await page.getByTestId('claude-auth-a_claude3').innerText()), 'back to not signed in');
@@ -563,7 +735,7 @@ async function main() {
     await view('Board');
     await until(async () => (await page.locator('.react-flow__node-thread').count()) >= 1, 'a Gmail thread card', 15000);
     const t = await page.locator('.react-flow__node-thread').first().innerText();
-    assert(/Menu page preview/.test(t) && /Waiting on you/.test(t), t);
+    assert(/Menu page preview/.test(t) && /Your turn/.test(t), t);
   });
   await check('Clients lists what is due from the CRM, Gmail and Granola', async () => {
     await view('Clients');
@@ -574,9 +746,21 @@ async function main() {
     const sbDue = sb('due');
     assert(/Maya Lin: Reply to Maya Lin/.test(sbDue), 'sb due agrees');
   });
-  await check('people you have been emailing are suggested as clients, and can be added', async () => {
+  await check('people you email back and forth are added as leads on their own', async () => {
+    await page.locator('.settings .page-h button[title="Rescan"]').click();
+    const sam = await until(async () => (await api('clients')).find((c) => c.name === 'Sam Ortiz'), 'Sam added');
+    assert(sam.status === 'lead' && sam.domains.includes('northbakery.example') && sam.emails.includes('sam@northbakery.example'), JSON.stringify(sam));
+    await until(async () => /Sam Ortiz/.test(await page.locator('table.t').innerText()), 'listed with the clients');
+  });
+  await check('a client you delete is not added back, and can still be added by hand', async () => {
+    await page.locator('table.t tr', { hasText: 'Sam Ortiz' }).click();
+    await page.locator('.modal button', { hasText: 'Delete' }).click();
+    await toast(/Client removed/);
+    await page.locator('.settings .page-h button[title="Rescan"]').click();
+    await api('clients:rescan');
+    assert(!(await api('clients')).find((c) => c.name === 'Sam Ortiz'), 'not re-added');
     const sugg = page.locator('.panel', { hasText: "People you've been emailing" });
-    await until(async () => /Sam Ortiz/.test(await sugg.innerText()), 'Sam suggested');
+    await until(async () => /Sam Ortiz/.test(await sugg.innerText()), 'still suggested');
     await sugg.locator('.due-item', { hasText: 'Sam Ortiz' }).locator('button').click();
     assert((await page.locator('.modal input').first().inputValue()) === 'Sam Ortiz', 'name filled');
     await page.locator('.modal button', { hasText: 'Save' }).click();
@@ -633,8 +817,17 @@ async function main() {
     await page.locator('.inspector .insp-head button[title="Close"]').click();
   });
   await check('Delete hides a card, and ⌘K puts it back', async () => {
+    // Earlier checks moved this card around; give it clear space first.
     await center(S.news, 0.7);
+    const spot = await emptySpot(340, 280);
+    await api('board:save', [{ id: S.news, x: spot.x, y: spot.y, parent_id: null, data: {} }]);
+    await page.evaluate(() => window.__sbRefresh()); await sleep(300); await center(S.news, 0.7);
     await node(S.news).locator('.card-title').click();
+    await until(async () => (await page.locator('.inspector').count()) === 1, 'one click opened it');
+    await page.keyboard.press('Delete');
+    assert((await node(S.news).count()) === 1, 'Delete while typing in the open card does not hide it');
+    await page.keyboard.press('Escape');
+    await until(async () => (await page.locator('.inspector').count()) === 0, 'Escape closed it, the card stays selected');
     await page.keyboard.press('Delete');
     await until(async () => (await node(S.news).count()) === 0, 'hidden');
     await page.keyboard.press(process.platform === 'darwin' ? 'Meta+k' : 'Control+k');
@@ -682,25 +875,73 @@ async function main() {
     mock.state.revoked = true; mock.state.expireNextApiCall = true;
     const t = (await api('entities', {})).find((e) => e.kind === 'thread');
     await center(t.id);
-    await node(t.id).dblclick({ position: { x: 60, y: 20 } });
+    await node(t.id).click({ position: { x: 60, y: 20 } });
     await toast(/Gmail sign-in expired\. Press Reconnect/);
     gm = (await api('accounts')).find((a) => a.kind === 'gmail');
     assert(!gm.secrets.refresh, 'the dead token was cleared');
     await view('Accounts');
     await until(async () => (await page.locator('.accounts-grid .card', { hasText: 'Gmail' }).locator('button', { hasText: 'Sign in with Google' }).count()) === 1, 'button asks to sign in again');
   });
-  await check('the brain and chief history are kept', async () => {
+  await check('the brain, chief history and dismissed nudges are kept', async () => {
     assert(/My own line\./.test(await api('brain')), 'brain kept');
     assert((await api('chief:history')).length >= 3, 'history kept');
+    assert(!dismissed || !(await api('proactive:list')).some((i) => i.id === dismissed.id), 'dismissed nudge stays dismissed');
   });
   await check('removing an account takes its card off and forgets its keys', async () => {
     await view('Accounts');
     const card = page.locator('.accounts-grid .card', { hasText: 'Gmail' });
     await card.locator('button[title="Remove account"]').click();
-    await card.locator('button', { hasText: 'Remove Gmail' }).click();
+    await card.locator('button.danger', { hasText: 'Remove' }).click();
     await until(async () => !(await api('accounts')).find((a) => a.kind === 'gmail'), 'account removed');
     const raw = execFileSync(process.execPath, ['-e', `const {DatabaseSync}=require('node:sqlite');const d=new DatabaseSync(process.argv[1]);console.log(d.prepare("SELECT COUNT(*) AS n FROM secrets WHERE key LIKE 'gmail:%'").get().n)`, path.join(HOME, '.switchboard', 'switchboard.db')], { encoding: 'utf8' });
     assert(raw.trim() === '0', `${raw.trim()} Gmail keys left`);
+  });
+
+  console.log('\nCorners: usage, outputs, settings');
+  await check('the usage pill shows weekly use and opens into token counts per account', async () => {
+    await view('Board');
+    await page.locator('.inspector .insp-head button[title="Close"]').click({ timeout: 1000 }).catch(() => {});
+    const pill = page.getByTestId('usage-pill');
+    assert(/\d+%/.test(await pill.innerText()), `pill: ${await pill.innerText()}`);
+    await pill.click();
+    const row = page.getByTestId('usage-a_claude1');
+    await until(async () => (await row.count()) === 1, 'a row per account');
+    const txt = await row.innerText();
+    assert(/5 hr/.test(txt) && /7 days/.test(txt) && /%/.test(txt), `row: ${txt}`);
+    assert((await page.locator('[data-testid^="usage-a_"]').count()) >= 4, 'every Claude and Codex account listed');
+    await page.keyboard.press('Escape');
+  });
+  await check('the outputs drawer lists outputs, and ticking one marks it done', async () => {
+    await page.locator('.pn-out-face').click();
+    const panel = page.locator('.pn-outputs.open .pn-out-panel');
+    await until(async () => /Harbor SEO plan/.test(await panel.innerText()), 'the seeded output is listed');
+    await panel.locator('.pn-out', { hasText: 'Harbor SEO plan' }).first().locator('.pn-check').click();
+    await until(async () => ((await api('settings:get', 'outputsDone', [])) || []).length > 0, 'done saved');
+    await until(async () => (await panel.locator('.pn-out-done').count()) === 1, 'folded into Done');
+    await panel.locator('.icon-btn[title="Close"]').click();
+  });
+  await check('Settings opens from the gear and Escape closes it', async () => {
+    await page.getByTestId('settings-btn').click();
+    await until(async () => (await page.locator('.settings').count()) === 1, 'opened');
+    assert((await page.locator('.settings [data-view]').count()) === 3, 'Accounts, Clients and Shared brain tabs');
+    await page.keyboard.press('Escape');
+    await until(async () => (await page.locator('.settings').count()) === 0, 'closed');
+  });
+  await check('without a Codex account, Codex appears nowhere', async () => {
+    await api('account:delete', 'a_codex');
+    await page.evaluate(() => window.__sbRefresh());
+    await until(async () => (await page.getByTestId('dock-a_codex').count()) === 0, 'no Codex bubble in the dock');
+    await until(async () => (await node(S.codex).count()) === 0, 'no Codex session card');
+    await page.locator('.bt-filter').click();
+    assert((await page.locator('.bt-panel .bt-row', { hasText: 'Codex' }).count()) === 0, 'no Codex filter');
+    await page.keyboard.press('Escape');
+    await view('Accounts');
+    await page.locator('.page-h button', { hasText: 'Add account' }).click();
+    assert((await page.locator('.modal .due-item', { hasText: 'Codex' }).count()) === 0, 'Codex is not offered up front');
+    await page.locator('.modal .disclose').click();
+    assert((await page.locator('.modal .due-item', { hasText: 'Codex' }).count()) === 1, 'only under Advanced');
+    assert((await page.locator('.modal .due-item', { hasText: 'Claude API key' }).count()) === 1, 'API-key accounts sit under Advanced');
+    await page.locator('.modal .icon-btn').click();
   });
 
   await quit();

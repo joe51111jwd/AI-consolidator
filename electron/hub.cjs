@@ -3,6 +3,7 @@
 // records flows between cards, and keeps the CRM, shared brain and usage.
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const { EventEmitter } = require('events');
 const { clipboard, shell } = require('electron');
 const db = require('./db.cjs');
@@ -115,7 +116,7 @@ async function claudeLogout(id) {
 function firstRunSetup() {
   if (db.get('SELECT COUNT(*) AS n FROM accounts').n > 0) return;
   claudeCode.detect().forEach((dir, i) => saveAccount({ kind: 'claude-code', label: i === 0 ? 'Claude' : `Claude ${i + 1}`, config: { configDir: dir } }));
-  if (codex.detect().length) saveAccount({ kind: 'codex', label: 'Codex', config: {} });
+  if (codex.hasSessions()) saveAccount({ kind: 'codex', label: 'Codex', config: {} });
   if (granola.detect().length) saveAccount({ kind: 'granola', label: 'Granola', config: {} });
   saveAccount({ kind: 'grok-bot', label: 'Grok Bot', config: {} });
 }
@@ -181,7 +182,7 @@ async function entities({ force = false } = {}) {
     for (const e of lists[i]) {
       list.push(e);
       const cwd = e.meta && e.meta.cwd;
-      if (cwd && cwd !== HOME && (e.source === 'claude-code' || e.source === 'codex')) {
+      if (cwd && cwd !== HOME && !e.meta.noise && (e.source === 'claude-code' || e.source === 'codex')) {
         const p = projects.get(cwd) || { sessions: [], updatedAt: 0 };
         p.sessions.push(e.id); p.updatedAt = Math.max(p.updatedAt, e.updatedAt);
         projects.set(cwd, p);
@@ -243,7 +244,7 @@ function recordFlow(source, target, content, via = 'app') {
   db.exec('INSERT INTO flows(id, source, target, preview, content, via, ts) VALUES(?,?,?,?,?,?,?)', f.id, f.source, f.target, f.preview, f.content, f.via, f.ts);
   // The overall agent is the bar at the bottom, not a card, so its reads are logged without a line.
   if (source === CHIEF_ID || target === CHIEF_ID) { emit({ type: 'flow', flow: f }); return f; }
-  let edge = db.get("SELECT * FROM edges WHERE source = ? AND target = ?", source, target);
+  let edge = db.get("SELECT * FROM edges WHERE source = ? AND target = ? ORDER BY kind = 'link' DESC", source, target);
   if (!edge) {
     const eid = uid('e');
     db.exec('INSERT INTO edges(id, source, target, kind, data, created_at) VALUES(?,?,?,?,?,?)', eid, source, target, 'flow', JSON.stringify({ count: 0 }), Date.now());
@@ -256,10 +257,19 @@ function recordFlow(source, target, content, via = 'app') {
 }
 
 function edges() { return db.all('SELECT * FROM edges').map((e) => ({ ...e, data: db.J(e.data, {}) })); }
+// The renderer saves a line with the data it last saw, so keep the counters and forwarding
+// bookkeeping the hub wrote since. armedAt marks when auto-send was switched on.
 function saveEdge(e) {
   const id = e.id || uid('e');
+  const prev = db.get('SELECT data FROM edges WHERE id = ?', id);
+  const old = prev ? db.J(prev.data, {}) : {};
+  const data = { ...(e.data || {}) };
+  if ((old.lastTs || 0) > (data.lastTs || 0)) Object.assign(data, { count: old.count, last: old.last, lastTs: old.lastTs });
+  if ((old.lastForwardAt || 0) > (data.lastForwardAt || 0)) Object.assign(data, { lastForwardAt: old.lastForwardAt, lastForwardHash: old.lastForwardHash });
+  if (data.autoForward) data.armedAt = (old.autoForward && old.armedAt) || Date.now();
+  else delete data.armedAt;
   db.exec(`INSERT INTO edges(id, source, target, kind, data, created_at) VALUES(?,?,?,?,?,?)
-    ON CONFLICT(id) DO UPDATE SET data = excluded.data, kind = excluded.kind`, id, e.source, e.target, e.kind || 'link', JSON.stringify(e.data || {}), Date.now());
+    ON CONFLICT(id) DO UPDATE SET data = excluded.data, kind = excluded.kind`, id, e.source, e.target, e.kind || 'link', JSON.stringify(data), Date.now());
   return id;
 }
 function deleteEdge(id) { db.exec('DELETE FROM edges WHERE id = ?', id); }
@@ -311,22 +321,100 @@ function prompt(id, text, opts = {}) {
   (async () => {
     const full = await buildText(text, opts);
     const onText = (t) => { const r = runs.get(runId); r.text = t; emit({ type: 'run', run: r }); };
-    const res = await dispatch(id, full, onText);
+    let res;
+    try { res = await dispatch(id, full, onText); } catch (err) { runEnded([id], ''); throw err; }
     const r = runs.get(runId); r.text = res.text || r.text; r.status = 'done'; r.result = res;
     emit({ type: 'run', run: r });
     invalidate(); emit({ type: 'entities-changed' });
-    // Auto-forward along connections the user marked "send outputs".
-    const depth = opts.depth || 0;
-    if (depth < 3 && r.text) {
-      const resultId = res.entityId || id;
-      for (const e of edges().filter((e) => (e.source === id || e.source === resultId) && e.kind === 'link' && e.data.autoForward)) {
-        prompt(e.target, r.text, { from: resultId, depth: depth + 1, via: 'route' });
-      }
-    }
+    const resultId = res.entityId || id;
+    runEnded([id, resultId], r.text, { depth: opts.depth || 0, chain: [...(opts.chain || []), id, resultId] });
   })().catch((err) => {
     const r = runs.get(runId); r.status = 'error'; r.error = err.message; emit({ type: 'run', run: r });
   });
   return runId;
+}
+
+// ---------- auto-send along lines ----------
+// When a card finishes, its output goes to every card it has an auto-send line to, as an
+// attachment. Chains stop after MAX_HOPS, never loop back to a card already in the chain, and
+// the same output is never sent twice down one line.
+const MAX_HOPS = 3;
+const lastRunEnd = new Map(); // entity id -> when a Switchboard run on it last ended
+const hash = (t) => crypto.createHash('sha1').update(t).digest('hex');
+const PROMPTABLE = new Set(['claude-code', 'codex', 'anthropic-api', 'openai-compatible', 'grok-bot']);
+
+function canTakePrompt(id) {
+  const [kind, accId] = id.split(':');
+  if (kind === 'ac') { const a = account(accId); return !!a && PROMPTABLE.has(a.kind); }
+  return ['cc', 'cx', 'cu', 'lc', 'pj', 'cl'].includes(kind);
+}
+function autoEdgesFrom(ids) { return edges().filter((e) => ids.includes(e.source) && e.kind === 'link' && e.data.autoForward); }
+
+function runEnded(ids, text, opts) {
+  const now = Date.now();
+  for (const id of ids) lastRunEnd.set(id, now);
+  forwardAlong(autoEdgesFrom(ids), text, opts);
+}
+
+function forwardAlong(lines, text, { depth = 0, chain = [] } = {}) {
+  const h = text ? hash(text) : null;
+  const sent = new Set();
+  for (const e of lines) {
+    const row = db.get('SELECT data FROM edges WHERE id = ?', e.id);
+    if (!row) continue;
+    const d = { ...db.J(row.data, {}), lastForwardAt: Date.now() };
+    const go = !!text && depth < MAX_HOPS && !chain.includes(e.target) && !sent.has(e.target) && d.lastForwardHash !== h;
+    if (go) d.lastForwardHash = h;
+    db.exec('UPDATE edges SET data = ? WHERE id = ?', JSON.stringify(d), e.id);
+    if (!go) continue;
+    sent.add(e.target);
+    recordFlow(e.source, e.target, text, 'route');
+    if (!canTakePrompt(e.target)) continue;
+    const from = label(e.source);
+    const ask = d.instruction || `"${from}" just finished. Its output is attached above. Use it to continue your work.`;
+    prompt(e.target, ask, { attach: [{ title: from, text: truncate(text, 16000) }], depth: depth + 1, chain: [...chain, e.source], via: 'route' });
+  }
+}
+
+// The newest assistant reply of a session (everything it said after the last user turn), or
+// null while it is still in the middle of a tool call.
+async function lastReply(id) {
+  const msgs = await transcriptFor(id).catch(() => []);
+  if (msgs.length && msgs[msgs.length - 1].kind === 'tool') return null;
+  let i = msgs.length - 1;
+  while (i >= 0 && msgs[i].role !== 'user') i--;
+  return msgs.slice(i + 1).filter((m) => m.role === 'assistant' && m.kind !== 'tool').map((m) => m.text).join('\n\n').trim();
+}
+
+// Sessions you run outside Switchboard (in a terminal or the Claude app) also send their output
+// down auto-send lines once they finish, so a line works the same however the card was driven.
+let finishing = null;
+function forwardFinished() {
+  if (!finishing) finishing = checkFinished().finally(() => { finishing = null; });
+  return finishing;
+}
+async function checkFinished() {
+  const lines = edges().filter((e) => e.kind === 'link' && e.data.autoForward && /^(cc|cx):/.test(e.source));
+  if (!lines.length) return 0;
+  const now = Date.now();
+  for (const e of lines.filter((x) => !x.data.armedAt)) {
+    e.data.armedAt = now;
+    db.exec('UPDATE edges SET data = ? WHERE id = ?', JSON.stringify(e.data), e.id);
+  }
+  const list = await entities();
+  const busy = new Set([...runs.values()].filter((r) => r.status === 'running').map((r) => r.entityId));
+  let n = 0;
+  for (const src of new Set(lines.map((e) => e.source))) {
+    const ent = list.find((x) => x.id === src);
+    if (!ent || ent.status !== 'idle' || busy.has(src) || now - ent.updatedAt > 2 * 3600000) continue;
+    const due = lines.filter((e) => e.source === src && ent.updatedAt > Math.max(e.data.armedAt || 0, e.data.lastForwardAt || 0, lastRunEnd.get(src) || 0));
+    if (!due.length) continue;
+    const text = await lastReply(src);
+    if (text == null) continue;
+    forwardAlong(due, text, { chain: [src] });
+    if (text) n++;
+  }
+  return n;
 }
 
 async function dispatch(id, text, onText) {
@@ -359,6 +447,76 @@ function grokHandoff(text) {
   const appName = db.getSetting('grokAppName', 'Grok Bot');
   if (process.platform === 'darwin') run('open', ['-a', appName]).catch(() => {});
   return { text: `Copied to your clipboard and opened ${appName}. Paste it there. Replies Grok Bot sends back through the \`sb\` command show up here.` };
+}
+
+// ---------- diagrams agents draw on the board ----------
+// Notes joined by labelled links inside a new frame, laid out left to right by how far each
+// note is from the start of the arrows.
+const DG = { COL: 280, ROW: 160, PAD: 28, HEAD: 56, CARD_W: 240, CARD_H: 130, GAP: 80, MAX: 80 };
+
+// Arrows that loop back (found by a depth-first walk from the notes nothing points to) don't push
+// notes further right, so cycles still lay out cleanly.
+function diagramLayers(n, arrows) {
+  const out = Array.from({ length: n }, () => []);
+  const indeg = new Array(n).fill(0);
+  for (const { a, b } of arrows) { out[a].push(b); indeg[b]++; }
+  const state = new Array(n).fill(0);
+  const forward = [];
+  const visit = (u) => {
+    state[u] = 1;
+    for (const v of out[u]) { if (state[v] === 1) continue; forward.push([u, v]); if (!state[v]) visit(v); }
+    state[u] = 2;
+  };
+  for (const u of [...Array(n).keys()].sort((x, y) => (indeg[x] > 0) - (indeg[y] > 0))) if (!state[u]) visit(u);
+  const d = new Array(n).fill(0);
+  for (let pass = 0; pass < n; pass++) {
+    let changed = false;
+    for (const [a, b] of forward) if (d[a] + 1 > d[b]) { d[b] = d[a] + 1; changed = true; }
+    if (!changed) break;
+  }
+  const levels = [...new Set(d)].sort((x, y) => x - y);
+  return d.map((v) => levels.indexOf(v));
+}
+
+function makeBoard({ title, nodes = [], edges: links = [], from } = {}) {
+  const spec = [];
+  const index = new Map();
+  for (const [i, n] of (Array.isArray(nodes) ? nodes : []).slice(0, DG.MAX).entries()) {
+    const node = typeof n === 'string' ? { id: `n${i + 1}`, text: n } : { id: String((n && n.id) ?? `n${i + 1}`), text: String((n && (n.text ?? n.label ?? n.title)) ?? '').trim() };
+    if (index.has(node.id)) continue;
+    index.set(node.id, spec.length); spec.push({ ...node, text: node.text || node.id });
+  }
+  if (!spec.length) throw new Error('A board needs at least one node');
+  const arrows = (Array.isArray(links) ? links : []).map((e) => e && ({ a: index.get(String(e.from ?? e.source)), b: index.get(String(e.to ?? e.target)), label: e.label ? truncate(e.label, 60) : '' }))
+    .filter((e) => e && e.a != null && e.b != null && e.a !== e.b);
+  const col = diagramLayers(spec.length, arrows);
+  const cols = Math.max(...col) + 1;
+  const stacks = Array.from({ length: cols }, () => []);
+  spec.forEach((_, i) => stacks[col[i]].push(i));
+  const tall = Math.max(...stacks.map((s) => s.length));
+
+  const tops = board().filter((r) => !r.parent_id && !r.hidden);
+  const x0 = tops.length ? Math.min(...tops.map((r) => r.x)) : 0;
+  const y0 = tops.length ? Math.max(...tops.map((r) => r.y + (r.h || 260))) + DG.GAP : 0;
+  const frameId = `grp:ai:${uid()}`;
+  const frames = tops.filter((r) => r.id.startsWith('grp:ai:')).length;
+  const ids = spec.map((n) => saveNote({ text: n.text }));
+  const rows = [{
+    id: frameId, x: x0, y: y0, w: DG.PAD * 2 + (cols - 1) * DG.COL + DG.CARD_W, h: DG.HEAD + (tall - 1) * DG.ROW + DG.CARD_H + DG.PAD,
+    parent_id: null, data: { label: truncate(title || 'Diagram', 80), color: PALETTE[(frames + 4) % PALETTE.length], smart: false, ai: true, from: from || null, count: ids.length },
+  }];
+  stacks.forEach((stack, c) => stack.forEach((i, r) => rows.push({
+    id: ids[i], x: DG.PAD + c * DG.COL, y: DG.HEAD + r * DG.ROW + ((tall - stack.length) * DG.ROW) / 2, parent_id: frameId, data: {},
+  })));
+  saveBoard(rows);
+  const edgeIds = arrows.map((e) => saveEdge({ source: ids[e.a], target: ids[e.b], kind: 'link', data: { label: e.label, diagram: frameId } }));
+  invalidate();
+  emit({ type: 'board-changed', frameId });
+  // The renderer reloads board rows on a lit line; do that before it sees the new note cards,
+  // so it doesn't place them itself.
+  emit({ type: 'flow', flow: { id: uid('f'), source: from || '', target: frameId, preview: truncate(title || '', 140), content: '', via: 'board', ts: Date.now() }, edgeId: edgeIds[0] || frameId });
+  emit({ type: 'entities-changed' });
+  return { frameId, ids, edges: edgeIds };
 }
 
 // ---------- outputs & notes ----------
@@ -505,7 +663,7 @@ async function chiefContext(selected) {
     parts.push(`Card "${label(id)}" (${id}), latest messages:\n` + truncate(t.slice(-10).map((m) => `${m.role}: ${m.text}`).join('\n\n'), 12000));
   }
   const ents = await entities();
-  parts.push('Cards on the board:\n' + ents.filter((e) => ['session', 'project', 'account', 'client'].includes(e.kind)).slice(0, 80).map((e) => `- ${e.id} · ${e.title}`).join('\n'));
+  parts.push('Cards on the board:\n' + ents.filter((e) => ['session', 'project', 'account', 'client'].includes(e.kind) && !(e.meta && e.meta.noise)).slice(0, 80).map((e) => `- ${e.id} · ${e.title}`).join('\n'));
   return parts.join('\n\n');
 }
 
@@ -543,6 +701,16 @@ function chief(question, { selected = [], accountId } = {}) {
   return runId;
 }
 
+// A quick one-off question to Claude (no tools, short timeout) for helpers like smart grouping.
+// Runs inside ~/.switchboard so it never shows up as a card.
+async function quickAsk(text, { timeoutMs = 25000, model = 'sonnet' } = {}) {
+  const a = pickAccount(['claude-code']);
+  if (!a) throw new Error('No Claude account');
+  const quiet = { ...a, config: { ...a.config, permissionMode: undefined } };
+  const res = await claudeCode.prompt(quiet, { cwd: APP_DIR, text, signal: AbortSignal.timeout(timeoutMs), extraArgs: ['--model', model, '--tools', ''] });
+  return res.text || '';
+}
+
 let mcpPathMemo = null;
 function mcpConfigPath() {
   const sb = path.join(APP_DIR, 'bin', 'sb');
@@ -558,7 +726,7 @@ module.exports = {
   events, accounts, publicAccount, account, saveAccount, deleteAccount, firstRunSetup,
   claudeStatus, claudeLogin, claudeLoginCancel, claudeLogout,
   entities, invalidate, transcriptFor, find, label,
-  prompt, runs, recordFlow, flowsFor, edges, saveEdge, deleteEdge,
+  prompt, runs, recordFlow, flowsFor, edges, saveEdge, deleteEdge, forwardFinished, makeBoard, quickAsk,
   brain, setBrain, appendBrain, saveOutput, saveNote, deleteEntity,
   board, saveBoard, deleteBoardNodes,
   clients, saveClient, due, suggestions, usageSummary, chief, chiefHistory, pickAccount,

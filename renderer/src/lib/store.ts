@@ -65,6 +65,7 @@ export function wireEvents() {
   api.onEvent((e) => {
     const s = useStore.getState();
     if (e.type === 'entities-changed') { clearTimeout(t); t = setTimeout(() => { s.refresh(); }, 250); }
+    if (e.type === 'board-changed') s.refreshBoard();
     if (e.type === 'auth') {
       useStore.setState((st) => ({ auth: { ...st.auth, [e.accountId]: { phase: e.phase, url: e.url ?? (e.phase === 'waiting' && st.auth[e.accountId]?.phase === 'waiting' ? st.auth[e.accountId]?.url : undefined), error: e.error } } }));
       if (e.phase === 'done' || e.phase === 'status') s.refresh();

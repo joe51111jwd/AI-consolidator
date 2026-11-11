@@ -45,7 +45,7 @@ process.stdin.on('end', () => {
   const cwd = process.cwd();
   log({ args, cwd, configDir: process.env.CLAUDE_CONFIG_DIR || null, sessionId: id, prompt: input });
   const first = input.trim().split('\n').pop().slice(0, 120);
-  const reply = process.env.SB_STUB_REPLY || `Done (${path.basename(dir)}): ${first}`;
+  const reply = process.env.SB_STUB_REPLY || smartGroup(input) || `Done (${path.basename(dir)}): ${first}`;
   const out = (o) => process.stdout.write(JSON.stringify(o) + '\n');
   out({ type: 'system', subtype: 'init', session_id: id, cwd, model: 'claude-sonnet-5-5' });
   const mid = 'msg_' + crypto.randomBytes(6).toString('hex');
@@ -59,3 +59,16 @@ process.stdin.on('end', () => {
     { type: 'assistant', sessionId: id, cwd, timestamp: ts, uuid: crypto.randomUUID(), message: { id: mid, role: 'assistant', model: 'claude-sonnet-5-5', content: [{ type: 'text', text: reply }], usage: { input_tokens: 1200, output_tokens: 300 } } },
   ].map((r) => JSON.stringify(r)).join('\n') + '\n');
 });
+
+// Smart group asks for JSON: group the numbered cards by the client each one mentions.
+function smartGroup(text) {
+  if (!/Group these cards from my work whiteboard/.test(text)) return null;
+  const groups = new Map();
+  for (const line of text.split('\n')) {
+    const m = line.match(/^(\d+)\. /); if (!m) continue;
+    const c = line.match(/[(,]\s*client ([^,)]+)\)/);
+    const label = c ? c[1].trim() : 'Everything else';
+    groups.set(label, [...(groups.get(label) || []), Number(m[1])]);
+  }
+  return JSON.stringify({ groups: [...groups].map(([label, items]) => ({ label, items })) });
+}

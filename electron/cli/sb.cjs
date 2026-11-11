@@ -7,6 +7,8 @@
 //   sb log <from> <to> "text"        show a message on the board without routing it
 //   sb brain [append "text"]         read or add to the shared brain
 //   sb output "title" "text"         drop an output card on the board
+//   sb board "title" --json '{"nodes":[{"id":"a","text":"..."}],"edges":[{"from":"a","to":"b","label":"..."}]}'
+//                                    draw a diagram (notes and arrows in a frame) on the board
 //   sb due                           what's due for clients
 //   sb mcp                           run as an MCP server (stdio) for Claude Code, Codex, Grok Bot
 const fs = require('fs');
@@ -44,6 +46,14 @@ async function mcp() {
   server.tool('read_brain', 'Read the shared brain: notes every agent on this Mac can see.', {}, async () => text((await call('GET', '/brain')).text || '(empty)'));
   server.tool('add_to_brain', 'Add a note to the shared brain.', { text: z.string() }, async ({ text: t }) => { await call('POST', '/brain', { text: t, from }); return text('Added.'); });
   server.tool('post_output', 'Put a finished output (report, draft, code) on the board as its own card.', { title: z.string(), text: z.string() }, async ({ title, text: t }) => text(await call('POST', '/output', { title, text: t, from })));
+  server.tool('make_board',
+    "Draw on the user's Switchboard whiteboard: short notes joined by labelled arrows, inside a titled frame, laid out left to right. Use it whenever a picture says more than text: a plan of steps, an architecture, how agents or services connect, a decision tree, a timeline, a summary of options. The user sees it on their board at once. Keep each note to a few words or two short lines, and give every note an id the edges can point to.",
+    {
+      title: z.string().describe('Frame title, a few words'),
+      nodes: z.array(z.object({ id: z.string(), text: z.string() })).describe('The notes'),
+      edges: z.array(z.object({ from: z.string(), to: z.string(), label: z.string().optional() })).optional().describe('Arrows between note ids'),
+    },
+    async ({ title, nodes, edges }) => { const r = await call('POST', '/board', { title, nodes, edges: edges || [], from }); return text(`Drew "${title}" on the board: ${r.ids.length} notes, ${r.edges.length} arrows.`); });
   server.tool('whats_due', 'List what is due for clients (CRM, email and meetings).', {}, async () => text(await call('GET', '/due')));
   await server.connect(new StdioServerTransport());
 }
@@ -64,9 +74,15 @@ async function main() {
     case 'log': await call('POST', '/log', { from: args[0], to: args[1], text: args.slice(2).join(' ') }); break;
     case 'brain': if (args[0] === 'append') await call('POST', '/brain', { text: args.slice(1).join(' '), from }); else console.log((await call('GET', '/brain')).text); break;
     case 'output': { const r = await call('POST', '/output', { title: args[0], text: args.slice(1).join(' ') || fs.readFileSync(0, 'utf8'), from }); console.log(r.id); break; }
+    case 'board': {
+      const raw = flag(args, '--json') || fs.readFileSync(0, 'utf8');
+      let spec; try { spec = JSON.parse(raw); } catch (e) { throw new Error(`--json is not valid JSON: ${e.message}`); }
+      const r = await call('POST', '/board', { title: args.join(' ') || spec.title, nodes: spec.nodes, edges: spec.edges, from });
+      console.log(`${r.frameId}\t${r.ids.length} notes\t${r.edges.length} arrows`); break;
+    }
     case 'due': for (const d of await call('GET', '/due')) console.log(`${d.overdue ? '!' : '-'} ${d.client}: ${d.title}`); break;
     case 'mcp': await mcp(); break;
-    default: console.log(fs.readFileSync(__filename, 'utf8').split('\n').slice(2, 11).map((l) => l.replace(/^\/\/ ?/, '')).join('\n'));
+    default: console.log(fs.readFileSync(__filename, 'utf8').split('\n').slice(2, 13).map((l) => l.replace(/^\/\/ ?/, '')).join('\n'));
   }
 }
 

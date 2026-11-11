@@ -1,5 +1,6 @@
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
+import type { Entity } from './api';
 
 export function ago(ts?: number | null) {
   if (!ts) return '';
@@ -36,18 +37,37 @@ export function dueLabel(ts?: number) {
 }
 
 export const SOURCE: Record<string, { label: string; color: string }> = {
-  'claude-code': { label: 'Claude Code', color: '#C0603E' },
-  codex: { label: 'Codex', color: '#3A3936' },
+  'claude-code': { label: 'Claude', color: '#D97757' },
+  codex: { label: 'Codex', color: '#10A37F' },
   granola: { label: 'Granola', color: '#5E7F3A' },
-  gmail: { label: 'Gmail', color: '#9A4B5B' },
-  cursor: { label: 'Cursor', color: '#4E6E7E' },
-  'grok-bot': { label: 'Grok Bot', color: '#7A5A8C' },
+  gmail: { label: 'Gmail', color: '#D93025' },
+  cursor: { label: 'Cursor', color: '#3F5E8C' },
+  'grok-bot': { label: 'Grok Bot', color: '#6D5BD0' },
   'anthropic-api': { label: 'Claude API', color: '#B08A2E' },
   'openai-compatible': { label: 'Model API', color: '#4E6E7E' },
   project: { label: 'Project', color: '#3F7A5E' },
   crm: { label: 'Client', color: '#2F6B55' },
-  output: { label: 'Output', color: '#5F5C55' },
-  note: { label: 'Note', color: '#B08A2E' },
+  output: { label: 'Output', color: '#52525B' },
+  note: { label: 'Note', color: '#CA8A04' },
 };
 
 export const PROMPTABLE = (id: string) => /^(cc|cx|cu|lc|pj|ac|cl):/.test(id);
+
+export const baseName = (p?: string) => (p || '').replace(/\/+$/, '').split('/').pop() || '';
+
+// Throwaway sessions (scratch workspaces, temp folders). The backend flags them (it knows the home
+// folder, which is never noise); the path check only covers sources that don't set the flag.
+const NOISE_RE = /\/scratch-workspaces\/|^(\/private)?\/tmp(\/|$)|^(\/private)?\/var\/folders\//;
+export const isNoise = (e: Entity) => (typeof e.meta?.noise === 'boolean' ? e.meta.noise : e.kind === 'session' && NOISE_RE.test(e.meta?.cwd || ''));
+
+// "coding" when a session ran in a repo or project folder, "chat" otherwise.
+export function categoryOf(e: Entity): 'coding' | 'chat' | null {
+  if (e.kind !== 'session') return null;
+  if (e.meta?.category === 'coding' || e.meta?.category === 'chat') return e.meta.category;
+  return e.source === 'cursor' || (e.meta?.cwd && e.meta?.gitBranch && e.meta.gitBranch !== 'HEAD') ? 'coding' : 'chat';
+}
+
+export function colorOf(e: Entity | undefined, accounts: { id: string; color: string }[] = []) {
+  if (!e) return '#A1A1AA';
+  return accounts.find((a) => a.id === e.accountId)?.color || e.meta?.color || SOURCE[e.source]?.color || '#71717A';
+}

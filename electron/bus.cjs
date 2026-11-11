@@ -59,7 +59,7 @@ function start(port = 47821) {
     try {
       if (req.method === 'GET' && url.pathname === '/cards') {
         const list = await hub.entities();
-        return send(200, list.filter((e) => e.kind !== 'error').map((e) => ({ id: e.id, kind: e.kind, source: e.source, title: e.title, updatedAt: e.updatedAt })));
+        return send(200, list.filter((e) => e.kind !== 'error' && !(e.meta && e.meta.noise)).map((e) => ({ id: e.id, kind: e.kind, source: e.source, title: e.title, updatedAt: e.updatedAt })));
       }
       if (req.method === 'GET' && url.pathname === '/card') {
         const id = await resolve(url.searchParams.get('id'));
@@ -91,6 +91,10 @@ function start(port = 47821) {
         const id = hub.saveOutput({ title: j.title, content: j.text || '', source: j.from });
         hub.events.emit('event', { type: 'entities-changed' });
         return send(200, { id });
+      }
+      if (req.method === 'POST' && url.pathname === '/board') {
+        const from = (await resolve(j.from)) || (j.from ? `ext:${j.from}` : null);
+        return send(200, { ok: true, ...hub.makeBoard({ title: j.title, nodes: j.nodes, edges: j.edges, from }) });
       }
       if (req.method === 'GET' && url.pathname === '/due') return send(200, await hub.due());
       return send(404, { error: 'unknown route' });

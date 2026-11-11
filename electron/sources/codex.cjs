@@ -3,6 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const { expand, exists, readJsonl, walk, truncate, run, which, HOME } = require('../util.cjs');
+const classify = require('./classify.cjs');
 
 const cache = new Map();
 const DAY = 86400000;
@@ -20,11 +21,11 @@ function parse(file) {
   const hit = cache.get(file);
   if (hit && hit.mtimeMs === st.mtimeMs && hit.size === st.size) return hit.parsed;
   const lines = readJsonl(file);
-  let id = null, cwd = null; const messages = []; let tokens = { input: 0, output: 0 };
+  let id = null, cwd = null, branch = null; const messages = []; let tokens = { input: 0, output: 0 };
   for (const l of lines) {
     const p = l.payload || l;
     const ts = l.timestamp ? Date.parse(l.timestamp) : st.mtimeMs;
-    if (l.type === 'session_meta' || (!l.type && l.id && l.timestamp && !id)) { id = p.id || id; cwd = p.cwd || cwd; }
+    if (l.type === 'session_meta' || (!l.type && l.id && l.timestamp && !id)) { id = p.id || id; cwd = p.cwd || cwd; branch = (p.git && p.git.branch) || branch; }
     if (p.type === 'turn_context' && p.cwd) cwd = p.cwd;
     if (p.type === 'message' && (p.role === 'user' || p.role === 'assistant')) {
       const text = contentText(p.content);
@@ -39,7 +40,7 @@ function parse(file) {
   if (!id) { const m = path.basename(file).match(/([0-9a-f]{8}-[0-9a-f-]{27})/i); id = m ? m[1] : path.basename(file, '.jsonl'); }
   const first = messages.find((m) => m.role === 'user');
   const last = messages[messages.length - 1];
-  const parsed = { id, cwd, messages, tokens, title: truncate(first ? first.text : 'Codex session', 80), preview: last ? truncate(last.text, 220) : '', lastRole: last && last.role, updatedAt: st.mtimeMs };
+  const parsed = { id, cwd, branch, messages, tokens, title: truncate(first ? first.text : 'Codex session', 80), preview: last ? truncate(last.text, 220) : '', lastRole: last && last.role, updatedAt: st.mtimeMs };
   cache.set(file, { mtimeMs: st.mtimeMs, size: st.size, parsed });
   return parsed;
 }
@@ -56,7 +57,7 @@ function list(account, { days = 21, max = 40 } = {}) {
       id: `cx:${account.id}:${s.id}`, kind: 'session', source: 'codex', accountId: account.id,
       title: s.title, preview: s.preview, updatedAt: s.updatedAt,
       status: Date.now() - s.updatedAt < 45000 ? 'running' : (s.lastRole === 'assistant' ? 'idle' : 'waiting'),
-      meta: { cwd: s.cwd, file: f.path, sessionId: s.id, messages: s.messages.length },
+      meta: { cwd: s.cwd, gitBranch: s.branch, file: f.path, sessionId: s.id, messages: s.messages.length, category: classify.category(s.cwd, s.branch), noise: classify.isNoise(s.cwd) },
     };
   }).filter(Boolean);
 }
@@ -94,6 +95,12 @@ async function prompt(account, { sessionId, cwd, text, onText, signal }) {
   return { text: acc || res.stdout.trim(), sessionId };
 }
 
-function detect() { return exists(path.join(HOME, '.codex', 'sessions')) ? ['~/.codex'] : []; }
+// Only counts as installed when Codex has actually been used (at least one session file).
+function hasSessions(dir = path.join(HOME, '.codex', 'sessions'), depth = 0) {
+  let entries; try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return false; }
+  if (entries.some((e) => e.isFile() && e.name.endsWith('.jsonl'))) return true;
+  return depth < 5 && entries.some((e) => e.isDirectory() && hasSessions(path.join(dir, e.name), depth + 1));
+}
+function detect() { return hasSessions() ? ['~/.codex'] : []; }
 
-module.exports = { list, transcript, usage, prompt, detect };
+module.exports = { list, transcript, usage, prompt, detect, hasSessions };

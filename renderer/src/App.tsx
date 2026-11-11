@@ -1,34 +1,25 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect } from 'react';
 import { ReactFlowProvider } from '@xyflow/react';
-import { Search, Plus, StickyNote, UserPlus, FileText } from 'lucide-react';
+import { Search, Settings2 } from 'lucide-react';
 import { useStore, wireEvents } from './lib/store';
-import { api } from './lib/api';
-import Sidebar from './components/Sidebar';
 import Board from './components/Board';
 import Inspector from './components/Inspector';
 import Chief from './components/Chief';
 import Palette from './components/Palette';
-import Clients from './views/Clients';
-import Brain from './views/Brain';
-import Accounts from './views/Accounts';
+import Outputs from './components/Outputs';
+import Dock from './components/Dock';
+import UsagePill from './components/UsagePill';
+import Settings, { SettingsTab } from './components/Settings';
+import BrandMark from './components/BrandMark';
+import './components/shell.css';
 
-function AddMenu({ onClose }: { onClose: () => void }) {
-  const { refresh, notify, set } = useStore();
-  const go = async (fn: () => Promise<void>) => { onClose(); await fn(); };
-  return (
-    <div className="menu" style={{ top: 44, left: 0 }} onClick={(e) => e.stopPropagation()}>
-      <button onClick={() => go(async () => { await api.saveNote({ text: '' }); await refresh(true); notify('Note added to the board'); })}><StickyNote size={14} />Note</button>
-      <button onClick={() => go(async () => { await api.saveOutput({ title: 'New output', content: '' }); await refresh(true); })}><FileText size={14} />Empty output</button>
-      <button onClick={() => go(async () => { set({ view: 'clients' }); })}><UserPlus size={14} />Client</button>
-      <div className="sep" />
-      <button onClick={() => go(async () => { set({ view: 'accounts' }); })}><Plus size={14} />Account</button>
-    </div>
-  );
-}
+const TABS = ['accounts', 'clients', 'brain'];
 
 export default function App() {
-  const { view, toast, set, refresh, refreshBoard, refreshDue, inspector } = useStore();
-  const [adding, setAdding] = useState(false);
+  const { view, toast, set, refresh, refreshBoard, refreshDue, inspector, settingsTab } = useStore();
+
+  // Older callers still switch "views"; every non-board view now lives in the settings panel.
+  useEffect(() => { if (view !== 'board') set({ settingsTab: view as SettingsTab, view: 'board' }); }, [view]);
 
   useEffect(() => {
     wireEvents();
@@ -38,21 +29,26 @@ export default function App() {
     const key = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); set({ paletteOpen: !useStore.getState().paletteOpen }); }
       if ((e.metaKey || e.ctrlKey) && e.key === 'j') { e.preventDefault(); set({ chiefOpen: !useStore.getState().chiefOpen }); }
+      if ((e.metaKey || e.ctrlKey) && e.key === ',') { e.preventDefault(); set({ settingsTab: useStore.getState().settingsTab ? null : 'accounts' }); }
       if (e.key === 'Escape') set({ paletteOpen: false });
     };
     window.addEventListener('keydown', key);
     // Used by the end-to-end tests after changing the board behind the window's back.
     (window as any).__sbRefresh = async () => { await useStore.getState().refresh(true); await useStore.getState().refreshBoard(); };
+    // Used by the end-to-end tests: 'board' closes the settings panel, anything else opens that tab.
+    (window as any).__sbView = (name: string) => set({ settingsTab: TABS.includes(name) ? (name as SettingsTab) : null });
     // Used by the screenshot mode in main.cjs to step through screens.
     (window as any).__sbScene = (i: number) => {
+      const clean = { inspector: null, chiefOpen: false, settingsTab: null, paletteOpen: false, outputsOpen: false };
       const scenes: (() => void)[] = [
-        () => set({ view: 'board', inspector: null, chiefOpen: false }),
-        () => { const s = useStore.getState(); const first = s.entities.find((e) => e.kind === 'session'); set({ view: 'board', inspector: first?.id || null }); },
-        () => set({ view: 'board', inspector: null, chiefOpen: true }),
-        () => set({ view: 'clients', inspector: null, chiefOpen: false }),
-        () => set({ view: 'accounts' }),
-        () => set({ view: 'brain' }),
-        () => set({ view: 'board', paletteOpen: true }),
+        () => set(clean),
+        () => { const first = useStore.getState().entities.find((e) => e.kind === 'session'); set({ ...clean, inspector: first?.id || null }); },
+        () => set({ ...clean, chiefOpen: true }),
+        () => set({ ...clean, settingsTab: 'clients' }),
+        () => set({ ...clean, settingsTab: 'accounts' }),
+        () => set({ ...clean, settingsTab: 'brain' }),
+        () => set({ ...clean, paletteOpen: true }),
+        () => set({ ...clean, outputsOpen: true }),
       ];
       scenes[i]?.();
     };
@@ -60,31 +56,28 @@ export default function App() {
   }, []);
 
   return (
-    <div className="shell" onClick={() => setAdding(false)}>
-      <Sidebar />
-      <main className="main">
-        {view === 'board' ? (
-          <ReactFlowProvider>
-            <Board />
-            <div className="topbar" style={{ right: 'auto' }}>
-              <button className="pill search" onClick={() => set({ paletteOpen: true })}><Search size={15} />Find a chat, project or client<span className="spacer" /><kbd>⌘K</kbd></button>
-              <div style={{ position: 'relative' }}>
-                <button className="pill" onClick={(e) => { e.stopPropagation(); setAdding(!adding); }}><Plus size={15} />Add</button>
-                {adding && <AddMenu onClose={() => setAdding(false)} />}
-              </div>
-            </div>
-            {inspector && <Inspector />}
-            <Chief />
-          </ReactFlowProvider>
-        ) : (
-          <div style={{ position: 'absolute', inset: 0, overflowY: 'auto' }}>
-            {view === 'clients' && <Clients />}
-            {view === 'brain' && <Brain />}
-            {view === 'accounts' && <Accounts />}
+    <div className={`shell ${window.sbBridge?.platform === 'darwin' ? 'mac' : ''}`}>
+      <ReactFlowProvider>
+        <main className="main"><Board /></main>
+        <div className="drag-strip" />
+        <div className="float tl">
+          <div className="tl-pill">
+            <BrandMark />
+            <span className="div" />
+            <button className="search-btn" data-testid="search" onClick={() => set({ paletteOpen: true })}><Search size={14} />Search<kbd>⌘K</kbd></button>
           </div>
-        )}
-      </main>
-      <Palette />
+        </div>
+        <div className="float tr">
+          <UsagePill />
+          <button className={`round-btn ${settingsTab ? 'on' : ''}`} title="Settings (⌘,)" data-testid="settings-btn" onClick={() => set({ settingsTab: settingsTab ? null : 'accounts' })}><Settings2 size={16} /></button>
+        </div>
+        <Dock />
+        <Outputs />
+        <Chief />
+        {inspector && <Inspector />}
+        <Palette />
+        <Settings />
+      </ReactFlowProvider>
       {toast && <div className="toast">{toast}</div>}
     </div>
   );

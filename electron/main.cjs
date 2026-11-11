@@ -17,7 +17,7 @@ const isDev = !!process.env.SB_DEV;
 function createWindow() {
   win = new BrowserWindow({
     width: 1480, height: 940, minWidth: 980, minHeight: 640,
-    title: 'Switchboard', backgroundColor: '#F3F1EC',
+    title: 'Switchboard', backgroundColor: '#FFFFFF',
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
     trafficLightPosition: { x: 16, y: 18 },
     webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, sandbox: false, nodeIntegration: false },

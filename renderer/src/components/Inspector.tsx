@@ -1,93 +1,245 @@
-import React, { useEffect, useRef, useState } from 'react';
-import { X, Copy, FileOutput, Brain, GripVertical, ExternalLink, Send, FolderOpen } from 'lucide-react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { X, Copy, FileOutput, Brain, GripVertical, ExternalLink, Send, FolderOpen, Terminal, Tag, Paperclip, ArrowRight, User } from 'lucide-react';
 import { useStore } from '../lib/store';
-import { api, Message, Flow } from '../lib/api';
+import { api, Message, Flow, Entity, Account } from '../lib/api';
 import { ago, md, SOURCE, PROMPTABLE } from '../lib/format';
 import { dragOutput } from '../nodes/nodes';
+import { AgentLogo } from './Logos';
 import Composer from './Composer';
+import './panels.css';
 
-// Opens a card full size: the whole conversation or document, with outputs you can drag, copy or save.
+type Who = { key: string; name: string; source?: string; color?: string; you?: boolean };
+type Item = Message & { who: Who; body: string; ctx?: { title: string; body: string }[]; to?: string; live?: boolean };
+
+const YOU: Who = { key: 'you', name: 'You', you: true };
+const CTX = /^Context from (.+?):\n"""\n([\s\S]*?)\n"""\n\n/;
+const MAIL = /^\*\*(.+?)\*\*(?: · [^\n]*)?\n\n/;
+const head = (t: string) => t.trim().slice(0, 120);
+
+function splitContext(text: string) {
+  const ctx: { title: string; body: string }[] = [];
+  let rest = text;
+  for (let m = rest.match(CTX); m; m = rest.match(CTX)) { ctx.push({ title: m[1], body: m[2] }); rest = rest.slice(m[0].length); }
+  return { ctx, rest };
+}
+
+function cardWho(id: string, byId: Record<string, Entity>, accounts: Account[]): Who {
+  const e = byId[id];
+  if (!e) return { key: id, name: 'Another card', source: 'note' };
+  const acc = e.accountId ? accounts.find((a) => a.id === e.accountId) : undefined;
+  return { key: id, name: e.title, source: e.source, color: acc?.color || SOURCE[e.source]?.color };
+}
+
+// Who said each message: you, this card's agent, or another card whose output flowed in.
+function build(e: Entity, agent: Who, raw: Message[], rawFlows: Flow[], byId: Record<string, Entity>, accounts: Account[]): Item[] {
+  const who = (id: string) => cardWho(id, byId, accounts);
+  const msgs = raw.map((m) => ({ ...m, text: m.text || '' }));
+  const flows = rawFlows.map((f) => ({ ...f, content: f.content || '' }));
+  if (e.kind === 'account' && e.source === 'grok-bot') {
+    return flows.map((f) => ({ id: f.id, role: f.source === e.id ? 'assistant' : 'user', text: f.content, body: f.content, ts: f.ts, who: f.source === e.id ? agent : who(f.source), to: f.source === e.id ? byId[f.target]?.title : undefined }));
+  }
+  const incoming = e.kind === 'output' ? [] : flows.filter((f) => f.target === e.id && f.source !== e.id && f.via !== 'drag' && f.content.trim());
+  const used = new Set<string>();
+  const items: Item[] = msgs.map((m) => {
+    if (m.kind === 'tool') return { ...m, who: agent, body: m.text };
+    if (e.source === 'gmail') {
+      const h = m.text.match(MAIL);
+      return { ...m, body: h ? m.text.slice(h[0].length) : m.text, who: m.role === 'user' ? YOU : { key: `mail:${h?.[1]}`, name: h?.[1] || 'Sender', source: 'gmail', color: SOURCE.gmail.color } };
+    }
+    if (e.kind === 'output') return { ...m, body: m.text, who: e.meta?.from && byId[e.meta.from] ? who(e.meta.from) : { key: 'output', name: 'Output', source: 'output' } };
+    if (e.kind === 'meeting') {
+      return { ...m, body: m.text, who: m.role === 'user' ? { ...YOU, name: 'Your notes' } : { key: m.role, name: m.role === 'system' ? 'Transcript' : 'Granola', source: 'granola', color: SOURCE.granola.color } };
+    }
+    if (m.role !== 'user') return { ...m, body: m.text, who: agent };
+    const { ctx, rest } = splitContext(m.text);
+    const probe = head(rest);
+    const f = incoming.find((x) => !used.has(x.id) && (head(x.content) === probe || m.text.includes(head(x.content))));
+    if (f) used.add(f.id);
+    return { ...m, body: rest, ctx, who: f ? who(f.source) : YOU };
+  });
+  for (const f of incoming) if (!used.has(f.id)) items.push({ id: f.id, role: 'user', text: f.content, body: f.content, ts: f.ts, who: who(f.source) });
+  return items.sort((a, b) => (a.ts || 0) - (b.ts || 0));
+}
+
+function Avatar({ who, working }: { who: Who; working?: boolean }) {
+  if (who.you) return <span className="pn-you"><User size={9} strokeWidth={2.6} /></span>;
+  return <AgentLogo source={who.source || 'note'} color={who.color} size={14} working={working} />;
+}
+
+const shortPath = (p: string) => p.replace(/^\/Users\/[^/]+/, '~').replace(/^\/home\/[^/]+/, '~');
+
+// The open card: its whole conversation with who said what, and a composer ready to type into.
 export default function Inspector() {
   const id = useStore((s) => s.inspector);
   const e = useStore((s) => (id ? s.byId[id] : undefined));
   const live = useStore((s) => (id ? s.liveByEntity[id] : undefined));
-  const { open, notify, entities } = useStore();
+  const { open, notify, entities, byId, accounts, pins, outputsOpen, set } = useStore();
   const [msgs, setMsgs] = useState<Message[]>([]);
   const [flows, setFlows] = useState<Flow[]>([]);
+  const [echo, setEcho] = useState<Message | null>(null);
   const [sendMenu, setSendMenu] = useState<{ text: string; x: number; y: number } | null>(null);
   const [loading, setLoading] = useState(false);
   const end = useRef<HTMLDivElement>(null);
 
+  useEffect(() => { setMsgs([]); setFlows([]); setEcho(null); setSendMenu(null); }, [id]);
   useEffect(() => {
     if (!id) return;
+    let alive = true;
     setLoading(true);
-    api.transcript(id).then(setMsgs).catch((err) => notify(err.message)).finally(() => setLoading(false));
-    api.flows(id).then(setFlows).catch(() => {});
+    api.transcript(id).then((m) => alive && setMsgs(m)).catch((err) => alive && notify(err.message)).finally(() => alive && setLoading(false));
+    api.flows(id).then((f) => alive && setFlows(f)).catch(() => {});
+    return () => { alive = false; };
   }, [id, e?.updatedAt, live?.status]);
-  useEffect(() => { end.current?.scrollIntoView({ block: 'end' }); }, [msgs.length, live?.text]);
+
+  useEffect(() => {
+    const onKey = (ev: KeyboardEvent) => {
+      if (ev.key !== 'Escape' || useStore.getState().paletteOpen) return;
+      if (sendMenu) { setSendMenu(null); return; }
+      const t = ev.target as HTMLElement;
+      if (!t.closest?.('.inspector') && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) return;
+      open(null);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [sendMenu]);
+
+  const acc = e?.accountId ? accounts.find((a) => a.id === e.accountId) : undefined;
+  const src = (e && SOURCE[e.source]) || { label: e?.source || '', color: '#999' };
+  const agent: Who = { key: 'agent', name: acc?.label || src.label, source: e?.source, color: acc?.color || src.color };
+
+  const items = useMemo(() => {
+    if (!e) return [];
+    const all = build(e, agent, msgs, flows, byId, accounts);
+    if (echo && !all.some((m) => m.role === 'user' && (head(m.body) === head(echo.text) || m.text.includes(head(echo.text))))) all.push({ ...echo, who: YOU, body: echo.text });
+    const shown = (t: string) => msgs.some((m) => m.role === 'assistant' && m.text?.trim() && (m.ts || 0) >= (live?.startedAt || 0) - 2000 && (m.text.includes(head(t)) || t.includes(head(m.text))));
+    const recent = live && live.status === 'done' && live.text && Date.now() - live.startedAt < 600000 && !shown(live.text);
+    if (live && (live.status === 'running' || recent)) {
+      all.push({ id: `live:${live.id}`, role: 'assistant', text: live.text, body: live.text || 'Working…', ts: live.startedAt, who: agent, live: live.status === 'running' });
+    }
+    return all;
+  }, [e, msgs, flows, echo, live, byId, accounts]);
+
+  useEffect(() => { end.current?.scrollIntoView({ block: 'end' }); }, [items.length, live?.text]);
+
+  const linked = useMemo(() => {
+    if (!id) return [];
+    const ids = [...new Set(flows.map((f) => (f.source === id ? f.target : f.source)))].filter((x) => x !== id && byId[x]);
+    return ids.slice(0, 6).map((x) => ({ id: x, who: cardWho(x, byId, accounts) }));
+  }, [flows, id, byId, accounts]);
 
   if (!id || !e) return null;
-  const src = SOURCE[e.source] || { label: e.source, color: '#999' };
-  const acc = useStore.getState().accounts.find((a) => a.id === e.accountId);
+  const working = live?.status === 'running' || e.status === 'running';
+  const pinned = pins.includes(id);
+  const spawned = live?.status === 'done' && live.result?.entityId && live.result.entityId !== id && byId[live.result.entityId] ? live.result.entityId as string : null;
 
   const saveOutput = async (text: string) => {
     const oid = await api.saveOutput({ title: `From ${e.title}`.slice(0, 80), content: text, source: id });
     await api.recordFlow(id, oid, text);
     await useStore.getState().refresh(true); await useStore.getState().refreshBoard();
-    notify('Saved as an output card on the board');
+    notify('Saved as an output');
   };
   const toBrain = async (text: string) => { await api.appendBrain(text, e.title); notify('Added to the shared brain'); };
-  const targets = entities.filter((x) => PROMPTABLE(x.id) && x.id !== id && (x.kind === 'session' || x.kind === 'account' || x.kind === 'project')).slice(0, 14);
+  const togglePin = () => { set({ pins: pinned ? pins.filter((p) => p !== id) : [...pins, id] }); notify(pinned ? 'Removed from context' : 'Tagged as context'); };
+  const targets = entities.filter((x) => PROMPTABLE(x.id) && x.id !== id && !x.meta?.noise && (x.kind === 'session' || x.kind === 'account')).slice(0, 14);
 
-  const all: Message[] = [...msgs];
-  if (live && live.status === 'running' && live.text) all.push({ id: 'live', role: 'assistant', text: live.text, ts: Date.now() });
+  let prev: Item | null = null;
+  const rows: React.ReactNode[] = [];
+  for (let k = 0; k < items.length; k++) {
+    const it = items[k];
+    if (it.kind === 'tool') {
+      const steps: Item[] = [];
+      while (k < items.length && items[k].kind === 'tool') steps.push(items[k++]);
+      k--;
+      rows.push(
+        <details key={`steps:${it.id}`} className="pn-steps">
+          <summary>{steps.length === 1 ? steps[0].text.replace(/^⟢\s*/, '').slice(0, 70) : `${steps.length} steps`}</summary>
+          {steps.map((s) => <div key={s.id} className="pn-step mono">{s.text}</div>)}
+        </details>,
+      );
+      continue;
+    }
+    const showWho = !prev || prev.who.key !== it.who.key || (it.ts || 0) - (prev.ts || 0) > 900000;
+    prev = it;
+    const payload = it.role === 'user' ? it.body : it.text;
+    rows.push(
+      <div key={it.id} className={`msg ${it.role} ${showWho ? 'first' : ''} ${it.live ? 'streaming' : ''}`}>
+        {showWho && (
+          <div className="who">
+            <Avatar who={it.who} working={it.live} />
+            <b>{it.who.name}</b>
+            {it.to && <span className="pn-to"><ArrowRight size={10} />{it.to}</span>}
+            <span className="ts">{it.ts ? ago(it.ts) : ''}</span>
+          </div>
+        )}
+        {it.ctx && it.ctx.length > 0 && (
+          <div className="pn-ctxs">
+            {it.ctx.map((c, i) => <details key={i} className="pn-ctx"><summary><Paperclip size={11} />{c.title}</summary><div className="pn-ctx-b">{c.body}</div></details>)}
+          </div>
+        )}
+        {it.role === 'system'
+          ? <details className="pn-tr"><summary>Show transcript</summary><div className="body">{it.body}</div></details>
+          : it.body.trim() ? <div className="body md" dangerouslySetInnerHTML={{ __html: md(it.body) }} /> : null}
+        {!it.live && payload && (
+          <div className="tools">
+            <button draggable onDragStart={(ev) => dragOutput(ev, { text: payload, title: `From ${e.title}`.slice(0, 80), sourceId: id })} title="Drag onto a card"><GripVertical size={13} /></button>
+            <button onClick={(ev) => setSendMenu({ text: payload, x: ev.clientX, y: ev.clientY })} title="Send to another card"><Send size={13} /></button>
+            <button onClick={() => { api.copy(payload); notify('Copied'); }} title="Copy"><Copy size={13} /></button>
+            <button onClick={() => saveOutput(payload)} title="Save as output card"><FileOutput size={13} /></button>
+            <button onClick={() => toBrain(payload)} title="Add to shared brain"><Brain size={13} /></button>
+          </div>
+        )}
+      </div>,
+    );
+  }
 
   return (
-    <div className="inspector" onKeyDown={(ev) => ev.stopPropagation()}>
+    <div className={`inspector pn ${outputsOpen ? 'shift' : ''}`} onKeyDown={(ev) => { if (ev.key === 'Delete' || ev.key === 'Backspace') ev.stopPropagation(); }}>
       <div className="insp-head">
-        <div className="card-top">
-          <span className="src"><i style={{ background: acc?.color || src.color }} />{acc ? `${acc.label} · ${src.label}` : src.label}</span>
-          <span className="when">{ago(e.updatedAt)}</span>
-          <button className="icon-btn" onClick={() => open(null)} title="Close"><X size={16} /></button>
+        <div className="pn-bar">
+          <span className="pn-src"><AgentLogo source={e.source} color={agent.color} working={working} size={14} />{agent.name}</span>
+          {working ? <span className="pn-state on">Working</span> : e.status === 'waiting' && e.kind === 'session' ? <span className="pn-state">Your turn</span> : null}
+          <span className="pn-when">{ago(e.updatedAt)}</span>
+          <span className="pn-acts">
+            {e.meta?.url && <button className="icon-btn" onClick={() => api.openExternal(e.meta.url)} title={`Open in ${src.label}`}><ExternalLink size={14} /></button>}
+            {e.meta?.cwd && <button className="icon-btn" onClick={() => api.openPath(e.meta.cwd)} title="Open folder"><FolderOpen size={14} /></button>}
+            {e.meta?.sessionId && e.source === 'claude-code' && <button className="icon-btn" onClick={() => { api.copy(`claude --resume ${e.meta.sessionId}`); notify('Resume command copied'); }} title="Copy resume command"><Terminal size={14} /></button>}
+            <button className={`icon-btn ${pinned ? 'on' : ''}`} onClick={togglePin} title={pinned ? 'Remove from context' : 'Tag as context'}><Tag size={14} /></button>
+            <button className="icon-btn" onClick={() => open(null)} title="Close"><X size={16} /></button>
+          </span>
         </div>
         <div className="title">{e.title}</div>
-        {e.meta?.cwd && <div className="card-sub mono">{e.meta.cwd}</div>}
-        <div className="insp-actions">
-          {e.meta?.url && <button className="btn" onClick={() => api.openExternal(e.meta.url)}><ExternalLink size={13} />Open in {src.label}</button>}
-          {e.meta?.cwd && <button className="btn" onClick={() => api.openPath(e.meta.cwd)}><FolderOpen size={13} />Folder</button>}
-          {e.meta?.sessionId && e.source === 'claude-code' && <button className="btn" onClick={() => { api.copy(`claude --resume ${e.meta.sessionId}`); notify('Resume command copied'); }}><Copy size={13} />Resume command</button>}
-          {flows.length > 0 && <span className="chip">{flows.length} messages with other cards</span>}
-        </div>
-      </div>
-      <div className="msgs">
-        {loading && !all.length && <div className="empty">Loading…</div>}
-        {!loading && !all.length && <div className="empty">Nothing here yet.{PROMPTABLE(id) ? ' Send something below to start.' : ''}</div>}
-        {all.map((m) => (
-          <div key={m.id} className={`msg ${m.kind === 'tool' ? 'tool' : m.role}`}>
-            {m.kind !== 'tool' && <div className="who">{m.role === 'user' ? 'You' : m.role === 'system' ? 'Transcript' : (acc?.label || src.label)}<span>{m.ts ? ago(m.ts) : ''}</span></div>}
-            {m.kind === 'tool' ? <div className="body">{m.text}</div> : <div className="body md" dangerouslySetInnerHTML={{ __html: md(m.text) }} />}
-            {m.kind !== 'tool' && (
-              <div className="tools">
-                <button draggable onDragStart={(ev) => dragOutput(ev, { text: m.text, title: `From ${e.title}`.slice(0, 80), sourceId: id })} title="Drag onto a card"><GripVertical size={13} /></button>
-                <button onClick={(ev) => setSendMenu({ text: m.text, x: ev.clientX, y: ev.clientY })} title="Send to another card"><Send size={13} /></button>
-                <button onClick={() => { api.copy(m.text); notify('Copied'); }} title="Copy"><Copy size={13} /></button>
-                <button onClick={() => saveOutput(m.text)} title="Save as output card"><FileOutput size={13} /></button>
-                <button onClick={() => toBrain(m.text)} title="Add to shared brain"><Brain size={13} /></button>
-              </div>
+        {(e.meta?.cwd || linked.length > 0) && (
+          <div className="pn-meta">
+            {e.meta?.cwd && <span className="mono">{shortPath(e.meta.cwd)}{e.meta.gitBranch ? ` · ${e.meta.gitBranch}` : ''}</span>}
+            {linked.length > 0 && (
+              <span className="pn-linked">
+                {linked.map((l) => <button key={l.id} onClick={() => open(l.id)} title={l.who.name}><Avatar who={l.who} /></button>)}
+              </span>
             )}
           </div>
-        ))}
+        )}
+      </div>
+      <div className="msgs" key={id}>
+        {loading && !items.length && <div className="empty">Loading…</div>}
+        {!loading && !items.length && <div className="empty">Nothing here yet.</div>}
+        {rows}
         {live?.status === 'error' && <div className="well err">{live.error}</div>}
+        {spawned && <button className="pn-follow" onClick={() => open(spawned)}>Open the new session<ArrowRight size={13} /></button>}
         <div ref={end} />
       </div>
-      {PROMPTABLE(id) && <div className="insp-foot"><Composer id={id} multiline placeholder={e.kind === 'account' ? 'Start a new session…' : 'Message…'} /><div className="hint" style={{ marginTop: 6 }}>Enter to send · Shift+Enter for a new line · drag any message onto a card</div></div>}
+      {PROMPTABLE(id) && (
+        <div className="insp-foot">
+          <Composer key={id} id={id} multiline autoFocus placeholder={e.kind === 'account' ? 'Start a new session…' : 'Message…'}
+            onSent={(t) => setEcho({ id: `echo:${Date.now()}`, role: 'user', text: t, ts: Date.now() })} />
+        </div>
+      )}
       {sendMenu && (
-        <div className="menu" style={{ position: 'fixed', left: Math.min(sendMenu.x, window.innerWidth - 280), top: Math.min(sendMenu.y, window.innerHeight - 400), maxHeight: 380, overflowY: 'auto' }} onMouseLeave={() => setSendMenu(null)}>
-          <div className="hint" style={{ padding: '6px 10px' }}>Attach to…</div>
+        <div className="menu pn-menu" style={{ position: 'fixed', left: Math.min(sendMenu.x, window.innerWidth - 280), top: Math.min(sendMenu.y, window.innerHeight - 400) }} onMouseLeave={() => setSendMenu(null)}>
+          <div className="hint">Attach to…</div>
           {targets.map((t) => (
-            <button key={t.id} onClick={() => { useStore.getState().addAttach(t.id, { text: sendMenu.text, title: `From ${e.title}`.slice(0, 80), sourceId: id }); setSendMenu(null); notify(`Attached to ${t.title}. Add a note there and press Enter.`); }}>
-              <i style={{ width: 7, height: 7, borderRadius: '50%', background: SOURCE[t.source]?.color || '#999', display: 'inline-block' }} />
-              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.title}</span>
+            <button key={t.id} onClick={() => { useStore.getState().addAttach(t.id, { text: sendMenu.text, title: `From ${e.title}`.slice(0, 80), sourceId: id }); setSendMenu(null); notify(`Attached to ${t.title}`); }}>
+              <Avatar who={cardWho(t.id, byId, accounts)} />
+              <span className="pn-ell">{t.title}</span>
             </button>
           ))}
         </div>

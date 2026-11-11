@@ -1,50 +1,105 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ReactFlow, Background, BackgroundVariant, Controls, MiniMap, Node, Edge, useNodesState, useEdgesState,
-  useReactFlow, Connection, NodeChange, OnSelectionChangeParams, Viewport,
+  useReactFlow, Connection, NodeChange, OnSelectionChangeParams, Viewport, SelectionMode,
 } from '@xyflow/react';
 import { useStore } from '../lib/store';
 import { api, BoardRow, Entity } from '../lib/api';
-import { nodeTypes } from '../nodes/nodes';
+import { nodeTypes, focusNote } from '../nodes/nodes';
 import FlowEdge from './FlowEdge';
-import { defaultVisible, smartLayout, placeNew, GroupMode } from '../lib/layout';
-import { PROMPTABLE, SOURCE } from '../lib/format';
-import { Eye, EyeOff, Maximize2, Sparkles, Trash2, Zap, Unlink, Group, Ungroup } from 'lucide-react';
+import BoardTools from './BoardTools';
+import {
+  defaultVisible, suppressed, passesFilter, heuristicGroups, cleanGroups, frameLayout, placeNew, fitFrame, estH, unoverlap, GroupSpec, GAP, PAD, HEAD,
+} from '../lib/layout';
+import { PROMPTABLE, colorOf } from '../lib/format';
+import { EyeOff, Maximize2, Sparkles, Trash2, Zap, Unlink, Group, Ungroup, StickyNote } from 'lucide-react';
+import './board.css';
 
 const edgeTypes = { flow: FlowEdge };
+// Opens at a readable zoom in the top-left corner; zoom out to see everything.
+const START_VIEW = { x: 48, y: 104, zoom: 0.78 };
+const isGroup = (id: string) => id.startsWith('grp:');
 
-function toNodes(rows: BoardRow[], byId: Record<string, Entity>): Node[] {
-  const groups = rows.filter((r) => r.id.startsWith('grp:') && !r.hidden);
+function toNodes(rows: BoardRow[], byId: Record<string, Entity>, show: (e: Entity) => boolean): Node[] {
+  const groups = rows.filter((r) => isGroup(r.id) && !r.hidden);
   const gset = new Set(groups.map((g) => g.id));
-  const out: Node[] = groups.map((g) => ({
-    id: g.id, type: 'group', position: { x: g.x, y: g.y }, data: { ...g.data, x: g.x, y: g.y, w: g.w, h: g.h },
-    style: { width: g.w || 400, height: g.h || 300 }, zIndex: -1, dragHandle: '.group-label',
-  } as Node));
+  const kids = new Map<string, number>(), shown = new Map<string, number>();
+  const cards: Node[] = [];
   for (const r of rows) {
-    if (r.id.startsWith('grp:') || r.hidden) continue;
-    const e = byId[r.id]; if (!e) continue;
-    const n: Node = { id: r.id, type: e.kind, position: { x: r.x, y: r.y }, data: {} };
-    if (r.parent_id && gset.has(r.parent_id)) n.parentId = r.parent_id;
-    out.push(n);
+    if (isGroup(r.id)) continue;
+    const parent = r.parent_id && gset.has(r.parent_id) ? r.parent_id : undefined;
+    if (parent) kids.set(parent, (kids.get(parent) || 0) + 1);
+    const e = byId[r.id];
+    if (r.hidden || !e || suppressed(e) || !show(e)) continue;
+    if (parent) shown.set(parent, (shown.get(parent) || 0) + 1);
+    cards.push({ id: r.id, type: e.kind, position: { x: r.x, y: r.y }, data: {}, ...(parent ? { parentId: parent } : {}) });
   }
+  // A frame whose cards are all hidden (old project frames, filtered out) disappears with them.
+  const frames: Node[] = groups.filter((g) => !kids.get(g.id) || shown.get(g.id)).map((g) => ({
+    id: g.id, type: 'group', position: { x: g.x, y: g.y }, data: { ...g.data },
+    style: { width: g.w || 400, height: g.h || 300 }, zIndex: -1, dragHandle: '.frame-tab',
+  }));
   // React Flow wants parents before children.
-  return out.sort((a, b) => (a.type === 'group' ? 0 : 1) - (b.type === 'group' ? 0 : 1));
+  return [...frames, ...cards];
 }
 
-// Opens at a readable zoom in the top-left corner; zoom out to see everything.
-const START_VIEW = { x: 40, y: 76, zoom: 0.78 };
-
 export default function Board() {
-  const { entities, byId, board, boardLoaded, edges: edgeRows, accounts, refreshBoard, open, set, addAttach, notify } = useStore();
-  const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
+  const { entities, byId, board, boardLoaded, edges: edgeRows, refreshBoard, open, set, addAttach, notify } = useStore();
+  const [nodes, setNodes, onNodesChangeRaw] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
-  const [mode, setMode] = useState<GroupMode>('project');
-  const [menu, setMenu] = useState<{ x: number; y: number; kind: 'node' | 'edge' | 'pane'; id?: string } | null>(null);
+  const [menu, setMenu] = useState<{ x: number; y: number; kind: 'node' | 'edge' | 'pane'; id?: string; at?: { x: number; y: number } } | null>(null);
+  const [off, setOffState] = useState<string[]>([]);
+  const [busy, setBusyState] = useState(false);
+  const busyRef = useRef(false);
+  const setBusy = (v: boolean) => { busyRef.current = v; setBusyState(v); };
   const rf = useReactFlow();
-  const wrap = useRef<HTMLDivElement>(null);
   const placing = useRef(false);
+  const touched = useRef(false);     // the user rearranged something, so background regrouping must not move cards
+  const marquee = useRef(false);
+  const down = useRef<{ x: number; y: number } | null>(null);
 
-  useEffect(() => { api.getSetting<GroupMode>('groupMode', 'project').then(setMode); }, []);
+  useEffect(() => { api.getSetting<{ off?: string[] }>('boardFilter', { off: [] }).then((v) => setOffState(Array.isArray(v?.off) ? v.off : [])).catch(() => {}); }, []);
+  const setOff = (o: string[]) => { setOffState(o); api.setSetting('boardFilter', { off: o }); };
+  const offSet = useMemo(() => new Set(off), [off]);
+
+  const reload = async () => { await refreshBoard(); await useStore.getState().refresh(true); };
+
+  // ---------- smart grouping ----------
+  const cardIds = () => {
+    const { board, byId } = useStore.getState();
+    const ai = new Set(board.filter((r) => r.id.startsWith('grp:ai:')).map((r) => r.id));
+    return board.filter((r) => !isGroup(r.id) && !r.hidden && !(r.parent_id && ai.has(r.parent_id)) && byId[r.id] && !suppressed(byId[r.id])).map((r) => r.id);
+  };
+
+  const applyGroups = async (groups: GroupSpec[]) => {
+    const { board, byId } = useStore.getState();
+    const ids = cardIds();
+    const clean = cleanGroups(groups, ids);
+    const goals = new Map(board.filter((r) => isGroup(r.id) && r.data?.goal).map((r) => [String(r.data.label).toLowerCase(), r.data.goal]));
+    const { rows, bottom } = frameLayout(clean, (id) => rf.getNode(id)?.measured?.height || estH(byId[id]));
+    for (const r of rows) { const g = isGroup(r.id) && goals.get(String(r.data.label).toLowerCase()); if (g) r.data.goal = g; }
+    // Diagrams agents drew keep their frames; they move below the new layout.
+    let x = 0;
+    for (const f of board.filter((r) => r.id.startsWith('grp:ai:') && !r.hidden)) { rows.push({ ...f, x, y: bottom + GAP }); x += (f.w || 600) + GAP; }
+    await api.deleteBoard(board.filter((r) => isGroup(r.id) && !r.id.startsWith('grp:ai:')).map((r) => r.id));
+    await api.saveBoard(rows);
+    await refreshBoard();
+    setTimeout(() => rf.setViewport(START_VIEW, { duration: 400 }), 60);
+  };
+
+  const smartGroup = async (auto = false) => {
+    const ids = cardIds();
+    if (!ids.length || busy) return;
+    if (!auto) touched.current = true;
+    setBusy(true);
+    try {
+      let groups: GroupSpec[] | null = null;
+      try { const r = await api.call<{ groups: GroupSpec[] }>('smartgroup:run', ids); if (r?.groups?.length) groups = r.groups; } catch {}
+      if (auto && (touched.current || !groups)) return;
+      if (!groups) { const { byId } = useStore.getState(); groups = heuristicGroups(ids.map((id) => byId[id]).filter(Boolean), byId); }
+      await applyGroups(groups);
+    } finally { setBusy(false); }
+  };
 
   // Make sure every visible entity has a place on the board.
   useEffect(() => {
@@ -54,36 +109,66 @@ export default function Board() {
     const fresh = entities.filter((e) => !rowIds.has(e.id) && defaultVisible(e));
     if (!fresh.length) return;
     placing.current = true;
+    const first = board.length === 0;
     (async () => {
-      let rows: BoardRow[];
-      if (board.length === 0) rows = smartLayout(mode, entities.filter((e) => defaultVisible(e)), accounts);
-      else rows = placeNew(fresh.map((e) => e.id), board);
+      const rows = first ? frameLayout(heuristicGroups(fresh, byId), (id) => estH(byId[id])).rows : placeNew(fresh.map((e) => e.id), board, byId);
       await api.saveBoard(rows);
       await refreshBoard();
       placing.current = false;
-      if (board.length === 0) setTimeout(() => rf.setViewport(START_VIEW, { duration: 300 }), 80);
+      if (first) { setTimeout(() => rf.setViewport(START_VIEW, { duration: 300 }), 80); smartGroup(true); }
     })();
   }, [entities, board, boardLoaded]);
 
+  // Rebuild nodes from the saved board, keeping selection, measurements and any drag in progress
+  // (agents refresh the entities often, and a refresh mustn't yank a card out from under the cursor).
   useEffect(() => { setNodes((prev) => {
-    const sel = new Set(prev.filter((n) => n.selected).map((n) => n.id));
-    return toNodes(board, byId).map((n) => ({ ...n, selected: sel.has(n.id) }));
-  }); }, [board, byId]);
+    const old = new Map(prev.map((n) => [n.id, n]));
+    return toNodes(board, byId, (e) => passesFilter(e, offSet)).map((n) => {
+      const o = old.get(n.id);
+      return o ? { ...n, selected: o.selected, measured: o.measured, ...(o.dragging ? { position: o.position, dragging: true } : {}) } : n;
+    });
+  }); }, [board, byId, offSet]);
 
+  const nodeKey = nodes.map((n) => n.id).join('|');
   useEffect(() => {
     const ids = new Set(nodes.map((n) => n.id));
     setEdges(edgeRows.filter((e) => ids.has(e.source) && ids.has(e.target)).map((e) => ({
       id: e.id, source: e.source, target: e.target, type: 'flow', data: { ...e.data, kind: e.kind, auto: !!e.data?.autoForward },
     })));
-  }, [edgeRows, nodes.length]);
+  }, [edgeRows, nodeKey]);
+
+  // Cards grow after they're laid out; keep them from covering each other.
+  const heights = nodes.map((n) => `${n.id}:${Math.round(n.measured?.height || 0)}`).join('|');
+  useEffect(() => {
+    if (!boardLoaded) return;
+    const t = setTimeout(() => {
+      const ns = rf.getNodes();
+      if (placing.current || busyRef.current || ns.some((n) => n.dragging)) return;
+      const rows = unoverlap(ns, useStore.getState().board);
+      if (rows.length) api.saveBoard(rows).then(refreshBoard);
+    }, 500);
+    return () => clearTimeout(t);
+  }, [heights, boardLoaded]);
+
+  // Marquee selection catches cards it only partly covers, but never the frames it starts inside.
+  const onNodesChange = useCallback((changes: NodeChange<Node>[]) => {
+    onNodesChangeRaw(marquee.current ? changes.filter((c) => !(c.type === 'select' && c.selected && isGroup(c.id))) : changes);
+  }, [onNodesChangeRaw]);
 
   const absPos = useCallback((n: Node) => {
     const internal = rf.getInternalNode(n.id);
     return internal ? internal.internals.positionAbsolute : n.position;
   }, [rf]);
+  const sizeOf = (n: Node) => ({ w: n.measured?.width || (n.style?.width as number) || 300, h: n.measured?.height || (n.style?.height as number) || 200 });
 
-  // Save positions after drags, reparent into groups, and send outputs dropped onto cards.
+  const frameAt = (x: number, y: number, except?: string) => rf.getNodes().filter((g) => g.type === 'group' && g.id !== except).find((g) => {
+    const p = absPos(g); const s = sizeOf(g);
+    return x > p.x && x < p.x + s.w && y > p.y && y < p.y + s.h;
+  });
+
+  // Save positions after drags, reparent into frames (growing them to fit), and send outputs dropped onto cards.
   const onNodeDragStop = useCallback(async (_: any, node: Node, dragged: Node[]) => {
+    touched.current = true;
     const moved = dragged.length ? dragged : [node];
     const rows: BoardRow[] = [];
     if (moved.length === 1 && (node.type === 'output' || node.type === 'note')) {
@@ -91,22 +176,25 @@ export default function Board() {
       if (hit) {
         const text = (await api.transcript(node.id))[0]?.text || '';
         addAttach(hit.id, { title: byId[node.id]?.title, text, sourceId: node.id });
-        notify(`Attached to ${byId[hit.id]?.title}. Add a note on that card and press Enter.`);
+        notify(`Attached to ${byId[hit.id]?.title}. Add a note and press Enter.`);
         await refreshBoard();
         return;
       }
     }
+    const grow = new Map<string, { x: number; y: number; w: number; h: number }[]>();
     for (const n of moved) {
       if (n.type === 'group') { const r = board.find((b) => b.id === n.id); rows.push({ id: n.id, x: n.position.x, y: n.position.y, w: r?.w, h: r?.h, parent_id: null, data: r?.data || {} }); continue; }
-      const abs = absPos(n);
-      const w = n.measured?.width || 300, h = n.measured?.height || 200;
-      const cx = abs.x + w / 2, cy = abs.y + h / 2;
-      const group = rf.getNodes().filter((g) => g.type === 'group' && g.id !== n.id).find((g) => {
-        const gp = absPos(g); const gw = (g.measured?.width || (g.style?.width as number)); const gh = (g.measured?.height || (g.style?.height as number));
-        return cx > gp.x && cx < gp.x + gw && cy > gp.y && cy < gp.y + gh;
-      });
-      if (group) { const gp = absPos(group); rows.push({ id: n.id, x: abs.x - gp.x, y: abs.y - gp.y, parent_id: group.id, data: {} }); }
-      else rows.push({ id: n.id, x: abs.x, y: abs.y, parent_id: null, data: {} });
+      const abs = absPos(n); const s = sizeOf(n);
+      const g = frameAt(abs.x + s.w / 2, abs.y + s.h / 2, n.id);
+      if (g) {
+        const gp = absPos(g); const k = { x: abs.x - gp.x, y: abs.y - gp.y };
+        rows.push({ id: n.id, ...k, parent_id: g.id, data: {} });
+        grow.set(g.id, [...(grow.get(g.id) || []), { ...k, w: s.w, h: s.h }]);
+      } else rows.push({ id: n.id, x: abs.x, y: abs.y, parent_id: null, data: {} });
+    }
+    for (const [gid, ks] of grow) {
+      const g = board.find((b) => b.id === gid); if (!g) continue;
+      const fit = fitFrame(g, ks); if (fit) rows.push(fit);
     }
     await api.saveBoard(rows);
     await refreshBoard();
@@ -114,14 +202,23 @@ export default function Board() {
 
   const onConnect = useCallback(async (c: Connection) => {
     if (!c.source || !c.target || c.source === c.target) return;
-    await api.saveEdge({ source: c.source, target: c.target, kind: 'link', data: {} });
+    await api.saveEdge({ source: c.source, target: c.target, kind: 'link', data: { autoForward: true } });
     await refreshBoard();
-    notify('Connected. Drag outputs along it, or click the line to auto-send outputs.');
+    notify('Connected. Outputs will flow along this line.');
   }, []);
 
   const onSelectionChange = useCallback(({ nodes }: OnSelectionChangeParams) => {
     set({ selected: nodes.filter((n) => n.type !== 'group').map((n) => n.id) });
   }, []);
+
+  // One click opens a card; a drag only moves it.
+  const onNodeClick = (ev: React.MouseEvent, n: Node) => {
+    if (n.type === 'group' || n.type === 'note' || ev.shiftKey || ev.metaKey || ev.ctrlKey) return;
+    if ((ev.target as HTMLElement).closest('input, textarea, button, a, select, [contenteditable], .composer, .grip, .nodrag, .react-flow__handle')) return;
+    const d = down.current;
+    if (d && Math.hypot(ev.clientX - d.x, ev.clientY - d.y) > 4) return;
+    open(n.id);
+  };
 
   // Drops from card grips and the inspector (HTML drag and drop).
   const onDragOver = (e: React.DragEvent) => {
@@ -140,41 +237,66 @@ export default function Board() {
     const target = el?.dataset.id;
     if (target && target !== payload.sourceId && PROMPTABLE(target)) {
       addAttach(target, payload);
-      notify(`Attached to ${byId[target]?.title}. Add a note and press Enter to send.`);
+      notify(`Attached to ${byId[target]?.title}. Add a note and press Enter.`);
       return;
     }
     const pos = rf.screenToFlowPosition({ x: e.clientX, y: e.clientY });
+    // An existing output (from the drawer or its own grip) moves there instead of being copied.
+    if (payload.sourceId?.startsWith('out:') && byId[payload.sourceId]) {
+      await api.saveBoard([{ ...placeAt(payload.sourceId, pos.x - 150, pos.y - 40), hidden: 0 }]);
+      await reload();
+      return;
+    }
     const id = await api.saveOutput({ title: payload.title, content: payload.text, source: payload.sourceId });
-    await api.saveBoard([{ id, x: pos.x - 150, y: pos.y - 40, parent_id: null, data: {} }]);
+    await api.saveBoard([placeAt(id, pos.x - 150, pos.y - 40)]);
     if (payload.sourceId) await api.recordFlow(payload.sourceId, id, payload.text);
-    await useStore.getState().refresh(true); await refreshBoard();
+    await reload();
+  };
+
+  const placeAt = (id: string, x: number, y: number): BoardRow => {
+    const g = frameAt(x + 20, y + 20);
+    if (!g) return { id, x, y, parent_id: null, data: {} };
+    const gp = absPos(g);
+    return { id, x: x - gp.x, y: Math.max(HEAD - 8, y - gp.y), parent_id: g.id, data: {} };
+  };
+
+  const addNote = async (at: { x: number; y: number }) => {
+    const id = await api.saveNote({ text: '' });
+    focusNote(id);
+    await api.saveBoard([placeAt(id, at.x - 130, at.y - 30)]);
+    await reload();
   };
 
   const hide = async (ids: string[]) => {
+    touched.current = true;
     const rows: BoardRow[] = [];
     for (const id of ids) {
-      if (id.startsWith('grp:')) { await ungroup(id); await api.deleteBoard([id]); continue; }
+      if (isGroup(id)) { await ungroup(id); continue; }
       if (id.startsWith('nt:') || id.startsWith('out:')) { await api.deleteEntity(id); continue; }
       const r = board.find((b) => b.id === id);
-      rows.push({ id, x: r?.x || 0, y: r?.y || 0, parent_id: null, data: {}, hidden: 1 });
+      rows.push({ id, x: r?.x || 0, y: r?.y || 0, parent_id: r?.parent_id || null, data: {}, hidden: 1 });
     }
     await api.saveBoard(rows);
-    await useStore.getState().refresh(true); await refreshBoard();
+    await reload();
   };
 
   const groupSelected = async () => {
     const sel = rf.getNodes().filter((n) => n.selected && n.type !== 'group');
     if (sel.length < 2) { notify('Select two or more cards to group them'); return; }
-    const pts = sel.map((n) => ({ n, p: absPos(n), w: n.measured?.width || 300, h: n.measured?.height || 220 }));
-    const x0 = Math.min(...pts.map((q) => q.p.x)) - 24, y0 = Math.min(...pts.map((q) => q.p.y)) - 56;
-    const x1 = Math.max(...pts.map((q) => q.p.x + q.w)) + 24, y1 = Math.max(...pts.map((q) => q.p.y + q.h)) + 24;
+    touched.current = true;
+    const pts = sel.map((n) => ({ n, p: absPos(n), ...sizeOf(n) }));
+    const x0 = Math.min(...pts.map((q) => q.p.x)) - PAD, y0 = Math.min(...pts.map((q) => q.p.y)) - HEAD;
+    const x1 = Math.max(...pts.map((q) => q.p.x + q.w)) + PAD, y1 = Math.max(...pts.map((q) => q.p.y + q.h)) + PAD;
     const gid = `grp:manual:${Date.now().toString(36)}`;
-    await api.saveBoard([{ id: gid, x: x0, y: y0, w: x1 - x0, h: y1 - y0, parent_id: null, data: { label: 'New group', color: '#2F6B55', smart: false, count: sel.length } },
+    const color = colorOf(byId[sel[0].id], useStore.getState().accounts);
+    await api.saveBoard([{ id: gid, x: x0, y: y0, w: x1 - x0, h: y1 - y0, parent_id: null, data: { label: 'New group', color, smart: false } },
       ...pts.map((q) => ({ id: q.n.id, x: q.p.x - x0, y: q.p.y - y0, parent_id: gid, data: {} }))]);
     await refreshBoard();
   };
 
   const ungroup = async (gid: string) => {
+    touched.current = true;
+    const { board } = useStore.getState();
     const g = board.find((b) => b.id === gid); if (!g) return;
     const kids = board.filter((b) => b.parent_id === gid);
     await api.saveBoard(kids.map((k) => ({ ...k, x: g.x + k.x, y: g.y + k.y, parent_id: null })));
@@ -182,27 +304,18 @@ export default function Board() {
     await refreshBoard();
   };
 
-  const regroup = async (m: GroupMode) => {
-    setMode(m); api.setSetting('groupMode', m);
-    const manual = board.filter((r) => r.id.startsWith('grp:manual'));
-    const visible = entities.filter((e) => { const r = board.find((b) => b.id === e.id); return r ? !r.hidden : defaultVisible(e); });
-    const rows = smartLayout(m, visible, accounts);
-    const smartIds = board.filter((r) => r.id.startsWith('grp:') && !r.id.startsWith('grp:manual')).map((r) => r.id);
-    await api.deleteBoard([...smartIds, ...manual.map((r) => r.id)]);
-    await api.saveBoard(rows);
-    await refreshBoard();
-    setTimeout(() => rf.setViewport(START_VIEW, { duration: 400 }), 60);
-  };
-
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      const tag = (e.target as HTMLElement).tagName;
-      if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+      const t = e.target as HTMLElement;
+      const typing = t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable;
+      // ⌘G also works while the open card's composer has the cursor (one click opens a card).
+      if (typing && !t.closest?.('.inspector')) return;
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'g') {
         e.preventDefault();
         const g = rf.getNodes().find((n) => n.selected && n.type === 'group');
         if (e.shiftKey && g) ungroup(g.id); else groupSelected();
       }
+      if (typing) return;
       if (e.key === 'Backspace' || e.key === 'Delete') {
         const ids = rf.getNodes().filter((n) => n.selected).map((n) => n.id);
         if (ids.length) hide(ids);
@@ -215,7 +328,7 @@ export default function Board() {
   });
 
   useEffect(() => {
-    (window as any).__sbRegroup = regroup;
+    (window as any).__sbRegroup = () => smartGroup();
     // Used by the palette and the end-to-end tests to bring a card into view.
     (window as any).__sbCenter = (id: string, zoom = 0.9) => {
       const n = rf.getInternalNode(id); if (!n) return false;
@@ -226,57 +339,60 @@ export default function Board() {
 
   const viewport = useMemo<Viewport | undefined>(() => { try { return JSON.parse(localStorage.getItem('sb.viewport') || ''); } catch { return undefined; } }, []);
   const edgeRow = menu?.kind === 'edge' ? edgeRows.find((e) => e.id === menu.id) : null;
+  const close = () => setMenu(null);
+  const mini = (n: Node) => (n.type === 'group' ? 'rgba(24,24,27,.04)' : colorOf(byId[n.id], useStore.getState().accounts));
 
   return (
-    <div ref={wrap} style={{ position: 'absolute', inset: 0 }} onDragOver={onDragOver} onDrop={onDrop} onClick={() => setMenu(null)}>
+    <div className="board" onDragOver={onDragOver} onDrop={onDrop} onClick={close}
+      onPointerDownCapture={(e) => { down.current = { x: e.clientX, y: e.clientY }; }}
+      onDoubleClick={(e) => { if ((e.target as HTMLElement).classList.contains('react-flow__pane')) addNote(rf.screenToFlowPosition({ x: e.clientX, y: e.clientY })); }}>
       <ReactFlow
         nodes={nodes} edges={edges} nodeTypes={nodeTypes as any} edgeTypes={edgeTypes}
         onNodesChange={onNodesChange} onEdgesChange={onEdgesChange} onNodeDragStop={onNodeDragStop}
         onConnect={onConnect} onSelectionChange={onSelectionChange}
-        onNodeDoubleClick={(_, n) => n.type !== 'group' && open(n.id)}
+        onSelectionStart={() => { marquee.current = true; }} onSelectionEnd={() => { marquee.current = false; }}
+        onNodeClick={onNodeClick}
+        onNodeDoubleClick={(_, n) => n.type !== 'group' && n.type !== 'note' && open(n.id)}
         onNodeContextMenu={(e, n) => { e.preventDefault(); setMenu({ x: e.clientX, y: e.clientY, kind: 'node', id: n.id }); }}
+        onPaneContextMenu={(e) => { e.preventDefault(); setMenu({ x: e.clientX, y: e.clientY, kind: 'pane', at: rf.screenToFlowPosition({ x: e.clientX, y: e.clientY }) }); }}
         onEdgeClick={(e, ed) => { e.stopPropagation(); setMenu({ x: e.clientX, y: e.clientY, kind: 'edge', id: ed.id }); }}
         onMoveEnd={(_, vp) => localStorage.setItem('sb.viewport', JSON.stringify(vp))}
         defaultViewport={viewport || START_VIEW} minZoom={0.15} maxZoom={1.6}
-        selectionOnDrag panOnDrag={[1, 2]} panOnScroll selectionKeyCode={null} multiSelectionKeyCode="Shift"
+        selectionOnDrag selectionMode={SelectionMode.Partial} panOnDrag={[1, 2]} panOnScroll zoomOnDoubleClick={false}
+        selectionKeyCode={null} multiSelectionKeyCode="Shift" nodeClickDistance={4}
         deleteKeyCode={null} proOptions={{ hideAttribution: true }} elevateNodesOnSelect={false}
       >
-        <Background variant={BackgroundVariant.Dots} gap={22} size={1.4} color="#D3CEC4" />
-        <Controls showInteractive={false} position="bottom-left" />
-        <MiniMap pannable zoomable position="bottom-right" nodeColor={(n) => n.type === 'group' ? 'rgba(28,27,25,.05)' : (SOURCE[byId[n.id]?.source]?.color || '#ccc')} nodeBorderRadius={8} maskColor="rgba(243,241,236,.7)" style={{ width: 170, height: 110 }} />
+        <Background variant={BackgroundVariant.Dots} gap={20} size={1.2} color="#D4D4D8" bgColor="#FFFFFF" />
+        <Controls showInteractive={false} position="bottom-left" orientation="horizontal" className="board-controls" />
+        <MiniMap pannable zoomable position="bottom-left" className="board-minimap" nodeColor={mini} nodeStrokeWidth={0} nodeBorderRadius={6}
+          bgColor="#FFFFFF" maskColor="rgba(24,24,27,.07)" maskStrokeColor="rgba(24,24,27,.35)" maskStrokeWidth={1} style={{ width: 200, height: 130 }} />
       </ReactFlow>
 
-      <div className="seg" style={{ position: 'absolute', top: 12, right: 16, zIndex: 5 }}>
-        <span className="lbl">Group by</span>
-        {(['project', 'source', 'client'] as GroupMode[]).map((m) => (
-          <button key={m} className={mode === m ? 'on' : ''} onClick={() => regroup(m)}>{m === 'project' ? 'Project' : m === 'source' ? 'Account' : 'Client'}</button>
-        ))}
-      </div>
+      <BoardTools busy={busy} onSmart={() => smartGroup()} off={off} setOff={setOff} />
 
       {menu && (
-        <div className="menu" style={{ left: menu.x, top: menu.y, position: 'fixed' }} onClick={(e) => e.stopPropagation()}>
+        <div className="menu board-menu" style={{ left: menu.x, top: menu.y, position: 'fixed' }} onClick={(e) => e.stopPropagation()}>
           {menu.kind === 'node' && menu.id && (<>
-            {!menu.id.startsWith('grp:') && <button onClick={() => { open(menu.id!); setMenu(null); }}><Maximize2 size={14} />Open</button>}
-            {!menu.id.startsWith('grp:') && <button onClick={() => { set({ chiefOpen: true, selected: [menu.id!] }); setMenu(null); }}><Sparkles size={14} />Ask the overall agent</button>}
-            <button onClick={() => { groupSelected(); setMenu(null); }}><Group size={14} />Group selected <span className="hint" style={{ marginLeft: 'auto' }}>⌘G</span></button>
-            {menu.id.startsWith('grp:') && <button onClick={() => { ungroup(menu.id!); setMenu(null); }}><Ungroup size={14} />Ungroup</button>}
+            {!isGroup(menu.id) && <button onClick={() => { open(menu.id!); close(); }}><Maximize2 size={14} />Open</button>}
+            {!isGroup(menu.id) && <button onClick={() => { set({ chiefOpen: true, selected: [menu.id!] }); close(); }}><Sparkles size={14} />Ask the overall agent</button>}
+            {!isGroup(menu.id) && <button onClick={() => { groupSelected(); close(); }}><Group size={14} />Group selected <span className="hint" style={{ marginLeft: 'auto' }}>⌘G</span></button>}
+            {isGroup(menu.id) && <button onClick={() => { ungroup(menu.id!); close(); }}><Ungroup size={14} />Ungroup</button>}
             <div className="sep" />
-            <button onClick={() => { hide([menu.id!]); setMenu(null); }}>{menu.id.startsWith('out:') || menu.id.startsWith('nt:') ? <><Trash2 size={14} />Delete</> : <><EyeOff size={14} />Hide from board</>}</button>
+            <button onClick={() => { hide([menu.id!]); close(); }}>{menu.id.startsWith('out:') || menu.id.startsWith('nt:') ? <><Trash2 size={14} />Delete</> : <><EyeOff size={14} />Hide from board</>}</button>
+          </>)}
+          {menu.kind === 'pane' && menu.at && (<>
+            <button onClick={() => { addNote(menu.at!); close(); }}><StickyNote size={14} />Note here</button>
+            <button onClick={() => { smartGroup(); close(); }}><Sparkles size={14} />Smart group</button>
           </>)}
           {menu.kind === 'edge' && edgeRow && (<>
-            <div className="hint" style={{ padding: '6px 10px' }}>{byId[edgeRow.source]?.title || edgeRow.source} → {byId[edgeRow.target]?.title || edgeRow.target}{edgeRow.data?.count ? ` · ${edgeRow.data.count} messages` : ''}</div>
-            {edgeRow.data?.last && <div className="well" style={{ margin: '0 6px 6px', maxWidth: 320 }}>{edgeRow.data.last}</div>}
-            <button onClick={async () => { await api.saveEdge({ ...edgeRow, kind: 'link', data: { ...edgeRow.data, autoForward: !edgeRow.data?.autoForward } }); await refreshBoard(); setMenu(null); }}>
-              <Zap size={14} />{edgeRow.data?.autoForward ? 'Stop auto-sending outputs' : 'Auto-send outputs along this line'}
+            {edgeRow.data?.last && <div className="board-edge-last">{edgeRow.data.last}</div>}
+            <button className="board-switch-row" onClick={async () => { await api.saveEdge({ ...edgeRow, kind: 'link', data: { ...edgeRow.data, autoForward: !edgeRow.data?.autoForward } }); await refreshBoard(); }}>
+              <Zap size={14} />Sends outputs automatically<span className={`board-switch ${edgeRow.data?.autoForward ? 'on' : ''}`}><i /></span>
             </button>
-            <button onClick={async () => { await api.deleteEdge(edgeRow.id); await refreshBoard(); setMenu(null); }}><Unlink size={14} />Remove connection</button>
+            <button onClick={async () => { await api.deleteEdge(edgeRow.id); await refreshBoard(); close(); }}><Unlink size={14} />Remove</button>
           </>)}
         </div>
       )}
     </div>
   );
-}
-
-export function useShowHidden() {
-  return { Eye };
 }

@@ -2,13 +2,18 @@
 
 One whiteboard on your Mac for every AI agent, chat, code project and client you work with.
 
-- **Board.** Every Claude Code session (across all your Claude accounts), Codex session, Grok Bot, Granola meeting, Gmail thread, Cursor cloud agent and API chat is a card. Move cards around, group them by hand (select and press ⌘G) or let the board group them by project, account or client.
-- **Connections.** When one agent sends work to another (for example Grok Bot asking a Claude session to fix a bug), a line appears between the two cards and lights up with the message as it travels. You can draw your own lines too and turn on "Auto-send outputs" so one card's results flow to the next.
-- **Drag and drop.** Drag any message out of a chat onto another card to hand it over, or onto empty space to keep it as an output card. Open any card to read the whole conversation and prompt it from there.
-- **Overall agent.** The bar at the bottom asks across everything: select a few cards and ask "compare these two outputs", or ask "what needs me today?"
-- **Clients.** A small CRM that ties each client to their email domain, meetings and code folders, and lists what's due: replies you owe, follow-ups after meetings, and your own next steps.
-- **Shared brain.** One notes file every agent can read and add to.
-- **Usage.** Token use per account for the last 5 hours, today and this week, and an option to start new work on whichever Claude account has used the least.
+- **Board.** A clean white whiteboard where every Claude Code session (across all your Claude accounts), Codex session, Grok Bot, Granola meeting, Gmail thread, Cursor cloud agent and API chat is a card. One click opens a card with the cursor ready to type; dragging only moves it. Drag a box to select (cards only partly inside count). Code-project folders and throwaway sessions (scratch workspaces, temp folders) stay off the board, and the filter (top right) shows or hides coding sessions, chats, mail, meetings, notes or one agent.
+- **Smart group.** Press **Smart group** and Claude sorts the cards into named frames by client, project or purpose. Frames are soft tinted areas with a name tab (double-click to rename) and an optional goal; **Work toward goal** prompts every agent in the frame. ⌘G still groups selected cards by hand.
+- **Connections.** When one agent sends work to another (for example Grok Bot asking a Claude session to fix a bug), a line appears between the two cards and lights up with the message as it travels. Lines you draw send each finished output to the next card automatically; switch that off from the line's menu.
+- **Quick start.** The dock at the bottom: pick a Claude account (or Grok Bot), type, press Enter. **+** starts on whichever Claude account has used the least this week.
+- **Overall agent.** Lives in the bottom-right corner as a small tab that shows when it's working and flags what needs you: whose turn it is, failed runs, replies you owe, late next steps. Open it (⌘J) to ask across everything, or select a few cards and ask "compare these".
+- **Search.** ⌘K searches every card, including transcripts stored on this Mac. Open the result, put it on the board (⌘Enter), or tag it as context for your next prompt (⌘T).
+- **Outputs.** A drawer on the right edge lists outputs and recent replies as a calm checklist.
+- **Agents can draw.** `sb board` (or the `make_board` tool) puts notes and arrows inside a frame on the board.
+- **Settings** (gear, top right, or ⌘,) holds Accounts, Clients and the shared brain:
+  - **Clients.** A small CRM that ties each client to their email domain, meetings and code folders and lists what's due. People you email back and forth are added as leads on their own; a client you delete is never added back.
+  - **Shared brain.** One notes file every agent can read and add to. It saves as you type.
+- **Usage.** The pill in the top-right corner shows this week's use as a percentage per account; click it for token counts and to set each account's weekly budget.
 
 Everything runs on your computer. Nothing is sent anywhere except to the AI services you already use, the same way their own apps do.
 
@@ -35,7 +40,7 @@ Want to look around before connecting anything? `npm run demo` opens the app wit
 
 ## Connect your accounts
 
-On first launch the app finds what's already on your Mac: Claude Code logins, Codex and Granola. Everything else is added under **Accounts**.
+On first launch the app finds what's already on your Mac: Claude Code logins, Codex and Granola. Everything else is added under Settings (gear, top right) → **Accounts**.
 
 ### Claude (all your accounts)
 
@@ -54,22 +59,22 @@ Both plans use one email, so the email alone doesn't say which plan a folder is 
 1. Add two Claude cards with different folders, for example **Claude (personal)** on `~/.claude` and **Claude (Team)** on `~/.claude-4`.
 2. Press **Sign in** on the first card. On claude.ai's page, pick your personal organization when it asks which one.
 3. Press **Sign in** on the second card and pick the Team organization this time.
-4. Check that the two cards show different organizations and plans. If both show the same one, the Accounts page also warns **Same login as …**. Press **Sign out** on the wrong card and sign in again, picking the other organization.
+4. Check that the two cards show different organizations and plans. If both show the same one, Settings → Accounts also warns **Same login as …**. Press **Sign out** on the wrong card and sign in again, picking the other organization.
 
 Every prompt you send from a card, and every new session the board starts on it, runs with that card's folder only. The app clears any Claude key or token set in your shell, so it can't quietly use a different account.
 
-If you'd rather use an Anthropic API key, add **Claude API key** instead.
+If you'd rather use an Anthropic API key, add **Claude API key** (under **Advanced**) instead.
 
 ### Codex
 
-Found automatically if you use the Codex CLI (`~/.codex`).
+Found automatically if you use the Codex CLI (`~/.codex` has sessions). Without a Codex account, Codex doesn't appear anywhere in the app.
 
 ### Grok Bot
 
 Grok Bot has no public API, webhooks or plug-in system, so it talks to your other agents through the `sb` command this app installs:
 
 1. In Grok Bot, turn on **Settings → Computer → Execution on this computer**.
-2. In this app, open **Accounts** and press **Copy note for Grok Bot**, then paste that note into Grok Bot once.
+2. In this app, open Settings → **Accounts** and press **Copy note for Grok Bot**, then paste that note into Grok Bot once.
 
 From then on Grok Bot can list your agents and hand them work, for example:
 
@@ -98,11 +103,11 @@ The app only asks for read-only access and never sends mail.
 
 ### Cursor cloud agents
 
-**Add account → Cursor cloud agents** with an API key from the Cursor dashboard.
+**Add account → Advanced → Cursor cloud agents** with an API key from the Cursor dashboard.
 
 ## Let your agents use the board
 
-On **Accounts**, press **Add Switchboard tools to my agents**. This adds a small MCP server to every Claude Code and Codex account, so any session can:
+Under Settings → **Accounts**, press **Add Switchboard tools to my agents**. This adds a small MCP server to every Claude Code and Codex account, so any session can:
 
 - list your cards and read them,
 - send work to another agent (and wait for its reply),
@@ -129,6 +134,9 @@ Only programs running as you can use it: it listens on 127.0.0.1 and needs the t
 | --- | --- |
 | ⌘K | Find any chat, project, client or command |
 | ⌘J | Open the overall agent |
+| ⌘, | Settings (Accounts, Clients, Shared brain) |
+| ⌘T | In search: tag the result as context for your next prompt |
+| Esc | Close the open card, search or Settings |
 | ⌘G / ⇧⌘G | Group or ungroup selected cards |
 | Delete | Take selected cards off the board |
 | Enter | Send a prompt (Shift+Enter for a new line) |
@@ -145,16 +153,17 @@ Only programs running as you can use it: it listens on 127.0.0.1 and needs the t
 npm test
 ```
 
-This builds the app and runs `tests/e2e.cjs`, which starts the real app in a throwaway home folder with stand-in `claude`, `codex` and Grok Bot commands and a stand-in Google server, then clicks through it. On Linux run it under `xvfb-run -a npm test`. It checks 62 things, including:
+This builds the app and runs `tests/e2e.cjs`, which starts the real app in a throwaway home folder with stand-in `claude`, `codex` and Grok Bot commands and a stand-in Google server, then clicks through it. On Linux run it under `xvfb-run -a npm test`. It checks 73 things, including:
 
-- **Board:** cards from every source show up; dragging, grouping by hand (⌘G, rename, ungroup), grouping by account, client and project; positions, groups and lines survive a restart.
-- **Lines and messages:** drawing a line, turning on auto-send, a reply flowing down it, `sb send --from grok-bot --wait` drawing and lighting a line.
+- **Board:** cards from every source show up while project folders and scratch sessions don't; Smart group (asking Claude, keeping agents' diagrams); one click opens a card; dragging, grouping by hand (⌘G, rename, ungroup), frame goals, the filter, `sb board` diagrams; positions, groups and lines survive a restart.
+- **Lines and messages:** drawing a line (auto-send on by default, switchable), a reply flowing down it, `sb send --from grok-bot --wait` drawing and lighting a line.
 - **Drag and drop:** a message dragged onto a card goes with the next prompt; dropped on empty space it becomes an output card that can be saved to the brain, copied, opened, and dragged onto another agent.
-- **Prompting every kind of card:** a project starts a session in its folder; split usage picks the least-used Claude account; an account card uses that account; Codex resumes the right session; Grok Bot gets the text on the clipboard; Granola notes open.
-- **Overall agent:** answers, works on the selected cards, keeps history, and doesn't show its own runs as cards.
+- **Prompting every kind of card:** a project folder found with ⌘K starts a session in it; the dock; ⌘K tagging; split usage picks the least-used Claude account; an account card uses that account; Codex resumes the right session; Grok Bot gets the text on the clipboard; Granola notes open.
+- **Overall agent:** answers, works on the selected cards, keeps history, flags what needs you (open or dismiss), and doesn't show its own runs as cards.
 - **Claude sign-in:** two plans on one email signed in to separate folders and shown with their own organization and plan; the same-login warning; signing out one card leaves the other signed in; cancelling a slow sign-in; agent tools added to every Claude folder.
 - **Gmail:** the Google consent link (read-only scope, PKCE, state check), a wrong state refused, the token stored encrypted, the token refreshed after it expires and after a restart, a revoked token asking you to reconnect, and removing the account deleting its keys.
-- **Clients:** replies owed, follow-ups, a suggested client from mail, adding and editing a client.
+- **Clients:** replies owed, follow-ups, people you email added as leads, deleted clients not re-added, adding and editing a client.
+- **Corners:** the usage pill, the outputs drawer, Settings, and no Codex anywhere without a Codex account.
 - **Shared brain:** edits saved, and an agent's addition merged in while you're typing.
 
 ### Check these yourself on your Mac
@@ -164,7 +173,7 @@ The test can't sign in to real accounts, so check these once after installing:
 1. **Claude, both plans:** sign in on two cards as described above and confirm each shows its own organization and plan. Prompt each card once and check the answer comes back on that card.
 2. **Gmail:** set up the Google client, press **Sign in with Google**, and confirm your threads show on the board and under **Clients**.
 3. **Granola:** open a meeting card and check the notes are there.
-4. **Grok Bot:** turn on "Execution on this computer" in Grok Bot, press **Copy note for Grok Bot** on **Accounts** and paste it into Grok Bot, then ask Grok Bot to send something to a Claude card and watch the line light up.
+4. **Grok Bot:** turn on "Execution on this computer" in Grok Bot, press **Copy note for Grok Bot** under Settings → **Accounts** and paste it into Grok Bot, then ask Grok Bot to send something to a Claude card and watch the line light up.
 5. **Agent tools:** press **Add Switchboard tools to my agents**, then in any Claude session ask it to list your Switchboard cards.
 6. **App build:** `npm run dist`, open the app from `release`, and check it starts with your board.
 

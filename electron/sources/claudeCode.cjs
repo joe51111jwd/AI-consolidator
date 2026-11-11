@@ -5,6 +5,7 @@
 const fs = require('fs');
 const path = require('path');
 const { HOME, APP_DIR, expand, exists, readJsonl, walk, truncate, run, which } = require('../util.cjs');
+const classify = require('./classify.cjs');
 
 const realDir = (p) => { try { return fs.realpathSync(p); } catch { return path.resolve(p); } };
 const cache = new Map(); // file -> { mtimeMs, size, parsed }
@@ -90,7 +91,7 @@ function list(account, { days = 21, max = 60 } = {}) {
       kind: 'session', source: 'claude-code', accountId: account.id,
       title: s.title, preview: s.preview, updatedAt: s.updatedAt,
       status: Date.now() - s.updatedAt < 45000 ? 'running' : (s.lastRole === 'assistant' ? 'idle' : 'waiting'),
-      meta: { cwd: s.cwd, gitBranch: s.gitBranch, file: f.path, sessionId: s.sessionId, messages: s.messages.length },
+      meta: { cwd: s.cwd, gitBranch: s.gitBranch, file: f.path, sessionId: s.sessionId, messages: s.messages.length, category: classify.category(s.cwd, s.gitBranch), noise: classify.isNoise(s.cwd) },
     });
   }
   return out;

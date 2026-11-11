@@ -1,19 +1,25 @@
 import React, { useEffect, useState } from 'react';
-import { Plus, LogIn, LogOut, Trash2, Plug, Copy, X, KeyRound, Check, RefreshCw, Terminal, ExternalLink, TriangleAlert } from 'lucide-react';
+import { Plus, LogIn, LogOut, Trash2, Copy, X, KeyRound, Check, RefreshCw, Terminal, ExternalLink, TriangleAlert, ChevronRight } from 'lucide-react';
 import { useStore } from '../lib/store';
 import { api, Account, ClaudeAuth } from '../lib/api';
 import { SOURCE, tokens } from '../lib/format';
+import { AgentLogo } from '../components/Logos';
 
-const KINDS: { kind: string; label: string; blurb: string }[] = [
-  { kind: 'claude-code', label: 'Claude account (Claude Code)', blurb: 'Each Claude login gets its own folder. Sessions, usage and prompting come from Claude Code on this Mac.' },
-  { kind: 'codex', label: 'Codex', blurb: 'Reads Codex CLI sessions and prompts them.' },
-  { kind: 'gmail', label: 'Gmail', blurb: 'Read-only. Uses a Google OAuth client you create once (see README).' },
-  { kind: 'granola', label: 'Granola', blurb: 'Reads the meeting notes the Granola app keeps on this Mac.' },
-  { kind: 'grok-bot', label: 'Grok Bot', blurb: 'No public API. Grok Bot talks to your other agents through the sb command.' },
-  { kind: 'cursor', label: 'Cursor cloud agents', blurb: 'Lists and prompts Cursor cloud agents with a Cursor API key.' },
-  { kind: 'anthropic-api', label: 'Claude API key', blurb: 'Chats billed to an Anthropic API key.' },
-  { kind: 'openai-compatible', label: 'Grok API or other model API', blurb: 'Any OpenAI-compatible API. Defaults to xAI (Grok).' },
+type Kind = { kind: string; label: string; blurb: string };
+const KINDS: Kind[] = [
+  { kind: 'claude-code', label: 'Claude account', blurb: 'Your Claude login, through Claude Code.' },
+  { kind: 'gmail', label: 'Gmail', blurb: 'Read-only, with Google sign-in.' },
+  { kind: 'granola', label: 'Granola', blurb: 'Meeting notes on this Mac.' },
+  { kind: 'grok-bot', label: 'Grok Bot', blurb: 'Reaches your agents through sb.' },
 ];
+// Key-based and rarely used sources stay out of the way.
+const ADVANCED: Kind[] = [
+  { kind: 'codex', label: 'Codex', blurb: 'Codex CLI sessions.' },
+  { kind: 'cursor', label: 'Cursor cloud agents', blurb: 'Uses a Cursor API key.' },
+  { kind: 'anthropic-api', label: 'Claude API key', blurb: 'Chats billed to an Anthropic key.' },
+  { kind: 'openai-compatible', label: 'Grok API or other model API', blurb: 'Any OpenAI-compatible key. Defaults to xAI.' },
+];
+const PERMISSIONS: [string, string][] = [['default', 'Ask first'], ['acceptEdits', 'Edit files'], ['bypassPermissions', 'Full access']];
 
 function grokText(sb: string) {
   return [
@@ -31,9 +37,8 @@ function freeClaudeDir(accounts: Account[]) {
 
 function planLabel(p?: string | null) {
   if (!p) return null;
-  const k = p.toLowerCase();
   const m: Record<string, string> = { max: 'Max', pro: 'Pro', team: 'Team', enterprise: 'Enterprise', free: 'Free' };
-  return m[k] || p.replace(/_/g, ' ').replace(/^\w/, (c) => c.toUpperCase());
+  return m[p.toLowerCase()] || p.replace(/_/g, ' ').replace(/^\w/, (c) => c.toUpperCase());
 }
 
 // Sign-in state for one Claude account card. Each card has its own Claude Code folder, so two
@@ -51,32 +56,33 @@ function ClaudeSignIn({ a, all }: { a: Account; all: Account[] }) {
     try { const r = await api.claudeLogin(a.id); notify(r.loggedIn ? `${a.label} is signed in` : 'Sign-in did not finish'); }
     catch (e: any) { if (!/cancel/i.test(e.message)) notify(e.message); }
   };
+  const check = async () => { setBusy(true); await api.claudeStatus(a.id).catch(() => {}); setBusy(false); };
   return (
     <div className="signin" data-testid={`claude-auth-${a.id}`}>
       {waiting ? (
-        <div className="signin-row"><span className="status running"><i /></span><span>Waiting for you to finish in the browser. Choose the organization this card should use.</span></div>
+        <div className="signin-row"><span className="status running"><i /></span><span>Finish in the browser and pick the organization for this card.</span></div>
       ) : st?.loggedIn ? (
         <div className="signin-row">
           <span className="chip green"><Check size={11} />Signed in</span>
           <span className="who">{st.email || 'claude.ai account'}{st.org ? ` · ${st.org}` : ''}{st.plan ? ` · ${planLabel(st.plan)}` : ''}</span>
         </div>
       ) : st && !st.cli ? (
-        <div className="signin-row"><span className="chip amber"><TriangleAlert size={11} />Claude Code not found</span><span className="who">Install it, then press Check.</span></div>
+        <div className="signin-row"><span className="chip amber"><TriangleAlert size={11} />Claude Code not found</span><span className="who">Install it, then Check.</span></div>
       ) : st ? (
         <div className="signin-row"><span className="chip amber"><KeyRound size={11} />Not signed in</span></div>
       ) : <div className="signin-row hint">Checking…</div>}
-      {twin && <div className="hint" style={{ color: 'var(--amber)' }}>Same login as {twin.label}. Sign this card out and sign in again, choosing the other organization.</div>}
+      {twin && <div className="hint" style={{ color: 'var(--amber)' }}>Same login as {twin.label}. Sign out here and sign in again with the other organization.</div>}
       {live?.phase === 'error' && live.error && !/cancel/i.test(live.error) && <div className="hint" style={{ color: 'var(--red)' }}>{live.error}</div>}
       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
         {waiting ? (<>
           {live?.url && <button className="btn" onClick={() => api.openExternal(live.url!)}><ExternalLink size={13} />Open sign-in page</button>}
           <button className="btn" onClick={() => api.claudeLoginCancel(a.id)}>Cancel</button>
         </>) : st?.loggedIn ? (<>
-          <button className="btn" disabled={busy} onClick={async () => { setBusy(true); await api.claudeStatus(a.id).catch(() => {}); setBusy(false); }}><RefreshCw size={13} />Check</button>
+          <button className="btn" disabled={busy} onClick={check}><RefreshCw size={13} />Check</button>
           <button className="btn" onClick={async () => { await api.claudeLogout(a.id).catch((e) => notify(e.message)); }}><LogOut size={13} />Sign out</button>
         </>) : (<>
           <button className="btn accent" onClick={signIn}><LogIn size={13} />Sign in</button>
-          <button className="btn" disabled={busy} onClick={async () => { setBusy(true); await api.claudeStatus(a.id).catch(() => {}); setBusy(false); }}><RefreshCw size={13} />Check</button>
+          <button className="btn" disabled={busy} onClick={check}><RefreshCw size={13} />Check</button>
           <button className="btn ghost" title="Open Terminal in this account's folder and type /login" onClick={async () => { const cmd = await api.loginAccount(a.id); notify(window.sbBridge.platform === 'darwin' ? 'Opened Terminal. Type /login there.' : `Run: ${cmd}`); }}><Terminal size={13} />Terminal</button>
         </>)}
       </div>
@@ -84,9 +90,23 @@ function ClaudeSignIn({ a, all }: { a: Account; all: Account[] }) {
   );
 }
 
+function KindButton({ k, onPick }: { k: Kind; onPick: (k: Kind) => void }) {
+  return (
+    <button className="due-item" onClick={() => onPick(k)}>
+      <span style={{ display: 'grid', placeItems: 'center' }}><AgentLogo source={k.kind} size={16} /></span>
+      <div><div className="t">{k.label}</div><div className="s">{k.blurb}</div></div>
+    </button>
+  );
+}
+
+function Toggle({ on, onChange, label }: { on: boolean; onChange: (v: boolean) => void; label: string }) {
+  return <button role="switch" aria-checked={on} aria-label={label} className={`switch ${on ? 'on' : ''}`} onClick={() => onChange(!on)} />;
+}
+
 export default function Accounts() {
   const { accounts, entities, notify } = useStore();
   const [edit, setEdit] = useState<any | null>(null);
+  const [advanced, setAdvanced] = useState(false);
   const [split, setSplit] = useState(true);
   const [mcp, setMcp] = useState<{ sb: string; results: string[] } | null>(null);
   const [detected, setDetected] = useState<string[]>([]);
@@ -102,105 +122,109 @@ export default function Accounts() {
     try { await api.saveAccount({ ...a, secrets: secretsIn }); } catch (e: any) { notify(e.message); return; }
     setEdit(null); await refresh(); notify('Saved');
   };
+  const pick = (k: Kind) => setEdit({
+    ...edit, kind: k.kind,
+    label: k.kind === 'openai-compatible' ? 'Grok API' : k.kind === 'claude-code' ? 'Claude' : k.label,
+    config: k.kind === 'openai-compatible' ? { baseUrl: 'https://api.x.ai/v1', model: 'grok-4' } : k.kind === 'claude-code' ? { configDir: freeClaudeDir(accounts) } : {},
+  });
   const usageOf = (id: string) => entities.find((e) => e.id === `ac:${id}`)?.meta?.usage;
+  const field = (k: string) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => setEdit({ ...edit, config: { ...edit.config, [k]: e.target.value } });
+  const secret = (k: string) => (e: React.ChangeEvent<HTMLInputElement>) => setEdit({ ...edit, secretsIn: { ...edit.secretsIn, [k]: e.target.value } });
 
   return (
     <div className="page">
       <div className="page-h">
-        <div><h1>Accounts</h1><p>Everything Switchboard reads from. Keys are encrypted with your Mac's Keychain and never leave this computer.</p></div>
-        <div className="spacer" />
-        <button className="btn primary" onClick={() => setEdit({ kind: '', config: {}, secretsIn: {} })}><Plus size={14} />Add account</button>
+        <span className="hint">Keys stay encrypted in your Keychain.</span>
+        <span className="spacer" />
+        <button className="btn primary" onClick={() => { setAdvanced(false); setEdit({ kind: '', config: {}, secretsIn: {} }); }}><Plus size={14} />Add account</button>
       </div>
 
       <div className="accounts-grid">
         {accounts.map((a) => {
           const u = usageOf(a.id); const src = SOURCE[a.kind] || { label: a.kind, color: '#888' };
+          const sub = [src.label !== a.label && src.label, a.config.configDir, a.config.email].filter(Boolean).join(' · ');
           return (
-            <div key={a.id} className="card" style={{ cursor: 'default' }}>
+            <div key={a.id} className="card acc-card" style={{ cursor: 'default', '--ring': a.color } as React.CSSProperties}>
               <div className="acc-head">
-                <div className="avatar" style={{ background: a.color }}>{a.label.slice(0, 1)}</div>
-                <div style={{ minWidth: 0 }}><div className="t">{a.label}</div><div className="s">{src.label}{a.config.configDir ? ` · ${a.config.configDir}` : ''}{a.config.email ? ` · ${a.config.email}` : ''}</div></div>
+                <div className="avatar"><AgentLogo source={a.kind} size={17} /></div>
+                <div className="grow"><div className="t">{a.label}</div><div className="s" title={sub}>{sub}</div></div>
+                <div className="acc-actions">
+                  <button className="btn ghost" onClick={() => setEdit({ ...a, secretsIn: {} })}>Edit</button>
+                  {confirmDel === a.id
+                    ? <button className="btn danger" onClick={async () => { await api.deleteAccount(a.id); setConfirmDel(null); refresh(); useStore.getState().refreshBoard(); }}>Remove</button>
+                    : <button className="icon-btn" title="Remove account" onClick={() => setConfirmDel(a.id)}><Trash2 size={14} /></button>}
+                </div>
               </div>
-              {u && <div className="stats"><span><b>{tokens(u.h5)}</b> last 5 hr</span><span><b>{tokens(u.d1)}</b> today</span><span><b>{tokens(u.d7)}</b> 7 days</span></div>}
+              {u && <div className="stats"><span><b>{tokens(u.h5)}</b> 5 hr</span><span><b>{tokens(u.d1)}</b> today</span><span><b>{tokens(u.d7)}</b> 7 days</span></div>}
               {a.kind === 'claude-code' && <ClaudeSignIn a={a} all={accounts} />}
               {a.secrets && Object.keys(a.secrets).length > 0 && (
                 <div className="chips">{Object.entries(a.secrets).map(([k, v]) => <span key={k} className={`chip ${v ? 'green' : 'amber'}`}>{v ? <Check size={11} /> : <KeyRound size={11} />}{k === 'refresh' ? (v ? 'Signed in' : 'Not signed in') : k.replace('_', ' ')}</span>)}</div>
               )}
-              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                <button className="btn" onClick={() => setEdit({ ...a, secretsIn: {} })}>Edit</button>
-                {a.kind === 'gmail' && <button className="btn accent" disabled={gmailBusy === a.id} onClick={async () => { setGmailBusy(a.id); try { const email = await api.gmailConnect(a.id); notify(`Connected ${email}`); refresh(); } catch (e: any) { notify(e.message); } setGmailBusy(null); }}><LogIn size={13} />{gmailBusy === a.id ? 'Waiting for Google…' : a.secrets?.refresh ? 'Reconnect' : 'Sign in with Google'}</button>}
-                {confirmDel === a.id
-                  ? <button className="btn danger" style={{ marginLeft: 'auto' }} onClick={async () => { await api.deleteAccount(a.id); setConfirmDel(null); refresh(); useStore.getState().refreshBoard(); }}>Remove {a.label}</button>
-                  : <button className="btn ghost danger" title="Remove account" style={{ marginLeft: 'auto' }} onClick={() => setConfirmDel(a.id)}><Trash2 size={13} /></button>}
-              </div>
+              {a.kind === 'gmail' && (
+                <div><button className="btn accent" disabled={gmailBusy === a.id} onClick={async () => { setGmailBusy(a.id); try { const email = await api.gmailConnect(a.id); notify(`Connected ${email}`); refresh(); } catch (e: any) { notify(e.message); } setGmailBusy(null); }}><LogIn size={13} />{gmailBusy === a.id ? 'Waiting for Google…' : a.secrets?.refresh ? 'Reconnect' : 'Sign in with Google'}</button></div>
+              )}
             </div>
           );
         })}
+        {!accounts.length && <div className="empty">No accounts yet.</div>}
       </div>
 
-      <div className="grid2" style={{ marginTop: 22 }}>
-        <div className="panel">
-          <div className="panel-h"><Plug size={15} />Let your agents use Switchboard</div>
-          <p style={{ color: 'var(--ink-2)', lineHeight: 1.55, marginTop: 0 }}>
-            This adds Switchboard's tools to every Claude Code and Codex account above, so any session can list your cards, send work to another agent, read the shared brain and post outputs. Each message shows up on the board as it travels.
-          </p>
-          <button className="btn primary" onClick={async () => { try { setMcp(await api.installMcp()); } catch (e: any) { notify(e.message); } }}>Add Switchboard tools to my agents</button>
-          {mcp && <div className="well" style={{ marginTop: 10 }}>{mcp.results.map((r) => <div key={r}>{r}</div>)}{!mcp.results.length && 'No Claude Code or Codex accounts yet.'}</div>}
-          <div className="panel-h" style={{ marginTop: 18 }}>Grok Bot</div>
-          <p style={{ color: 'var(--ink-2)', lineHeight: 1.55, marginTop: 0 }}>
-            Turn on <b>Settings → Computer → Execution on this computer</b> in Grok Bot, then give it this note once. Grok Bot will still ask you before each command.
-          </p>
-          <div className="well mono" style={{ whiteSpace: 'pre-wrap' }}>{grokText(sbPath)}</div>
-          <button className="btn" style={{ marginTop: 8 }} onClick={() => { api.copy(grokText(sbPath)); notify('Copied'); }}><Copy size={13} />Copy note for Grok Bot</button>
+      <div className="panel">
+        <div className="panel-h">Connections</div>
+        <div className="set-row" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 8 }}>
+          <div className="txt"><b>Agent tools</b><span className="hint">Lets every session see and message your other cards.</span></div>
+          <div><button className="btn" onClick={async () => { try { setMcp(await api.installMcp()); } catch (e: any) { notify(e.message); } }}>Add Switchboard tools to my agents</button></div>
+          {mcp && <div className="well">{mcp.results.map((r) => <div key={r}>{r}</div>)}{!mcp.results.length && 'No agent accounts yet.'}</div>}
         </div>
-        <div className="panel">
-          <div className="panel-h">Split usage</div>
-          <label style={{ display: 'flex', gap: 10, alignItems: 'flex-start', lineHeight: 1.5, color: 'var(--ink-2)' }}>
-            <input type="checkbox" checked={split} onChange={(e) => { setSplit(e.target.checked); api.setSetting('splitUsage', e.target.checked); }} style={{ marginTop: 4 }} />
-            <span>Start new sessions, project tasks and overall-agent questions on whichever Claude account has used the least in the last 5 hours.</span>
-          </label>
-          <div className="panel-h" style={{ marginTop: 18 }}>The <span className="mono">sb</span> command</div>
-          <div className="well mono" style={{ whiteSpace: 'pre-wrap', lineHeight: 1.6 }}>{`${sbPath} cards\n${sbPath} send "client-site" "Fix the footer" --wait\n${sbPath} brain append "Client wants Friday delivery"\n${sbPath} due`}</div>
+        <div className="set-row">
+          <div className="txt"><b>Grok Bot</b><span className="hint">Turn on Execution on this computer in Grok Bot, then paste the note once. It asks first.</span></div>
+          <button className="btn" onClick={() => { api.copy(grokText(sbPath)); notify('Copied'); }}><Copy size={13} />Copy note for Grok Bot</button>
+        </div>
+        <div className="set-row">
+          <div className="txt"><b>Balance usage</b><span className="hint">Start new work on the least-used Claude account.</span></div>
+          <Toggle label="Balance usage" on={split} onChange={(v) => { setSplit(v); api.setSetting('splitUsage', v); }} />
+        </div>
+        <details className="more">
+          <summary>The sb command</summary>
+          <div className="well mono" style={{ whiteSpace: 'pre-wrap', lineHeight: 1.6 }}>{`${sbPath} cards\n${sbPath} send "client-site" "Fix the footer" --wait\n${sbPath} board "Plan" --json '{"nodes":[...],"edges":[...]}'\n${sbPath} brain append "Client wants Friday delivery"`}</div>
           {bus && <p className="hint">Listening on 127.0.0.1:{bus.port}. Only programs that can read <span className="mono">{bus.tokenFile}</span> can use it.</p>}
-        </div>
+        </details>
       </div>
 
       {edit && (
         <div className="overlay" onClick={() => setEdit(null)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <div style={{ display: 'flex' }}><h3>{edit.id ? `Edit ${edit.label}` : 'Add account'}</h3><button className="icon-btn" style={{ marginLeft: 'auto' }} onClick={() => setEdit(null)}><X size={16} /></button></div>
+            <div style={{ display: 'flex' }}><h3>{edit.id ? edit.label : edit.kind ? (SOURCE[edit.kind]?.label || 'Add account') : 'Add account'}</h3><button className="icon-btn" style={{ marginLeft: 'auto' }} onClick={() => setEdit(null)}><X size={16} /></button></div>
             {!edit.kind ? (
-              <div className="due-list">{KINDS.map((k) => (
-                <button key={k.kind} className="due-item" style={{ gridTemplateColumns: '10px 1fr' }} onClick={() => setEdit({ ...edit, kind: k.kind, label: k.kind === 'openai-compatible' ? 'Grok API' : k.label.replace(/ \(.*\)/, ''), config: k.kind === 'openai-compatible' ? { baseUrl: 'https://api.x.ai/v1', model: 'grok-4' } : k.kind === 'claude-code' ? { configDir: freeClaudeDir(accounts) } : {} })}>
-                  <i style={{ width: 8, height: 8, borderRadius: '50%', background: SOURCE[k.kind]?.color, marginTop: 5 }} />
-                  <div><div className="t">{k.label}</div><div className="s">{k.blurb}</div></div>
-                </button>))}</div>
+              <div className="kind-list">
+                {KINDS.map((k) => <KindButton key={k.kind} k={k} onPick={pick} />)}
+                <button className={`disclose ${advanced ? 'open' : ''}`} onClick={() => setAdvanced(!advanced)}><ChevronRight size={13} />Advanced</button>
+                {advanced && ADVANCED.map((k) => <KindButton key={k.kind} k={k} onPick={pick} />)}
+              </div>
             ) : (
               <div className="form">
-                <div className="field"><label>Name on the board</label><input value={edit.label || ''} onChange={(e) => setEdit({ ...edit, label: e.target.value })} /></div>
+                <div className="field"><label>Name</label><input value={edit.label || ''} onChange={(e) => setEdit({ ...edit, label: e.target.value })} /></div>
                 {edit.kind === 'claude-code' && (<>
-                  <div className="field"><label>Claude Code folder for this login</label><input className="mono" value={edit.config.configDir || ''} onChange={(e) => setEdit({ ...edit, config: { ...edit.config, configDir: e.target.value } })} />
-                    <span className="hint">Each Claude account needs its own folder: that's what keeps two plans on the same email apart. Use ~/.claude for your main login and a new folder like ~/.claude-2 for each other one. After saving, press Sign in and pick the organization in the browser. Found on this Mac: {detected.join(', ') || 'none'}</span></div>
-                  <div className="field"><label>When you prompt from Switchboard, Claude may</label>
-                    <select value={edit.config.permissionMode || 'default'} onChange={(e) => setEdit({ ...edit, config: { ...edit.config, permissionMode: e.target.value } })}>
-                      <option value="default">Read and plan only (safest)</option>
-                      <option value="acceptEdits">Edit files in the project</option>
-                      <option value="bypassPermissions">Do anything without asking</option>
+                  <div className="field"><label>Folder</label><input className="mono" value={edit.config.configDir || ''} onChange={field('configDir')} />
+                    <span className="hint">One folder per Claude login, like ~/.claude-2. After saving, press Sign in and pick the organization.{detected.length ? ` Found: ${detected.join(', ')}` : ''}</span></div>
+                  <div className="field"><label>Permissions</label>
+                    <select value={edit.config.permissionMode || 'default'} onChange={field('permissionMode')}>
+                      {PERMISSIONS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
                     </select></div>
                 </>)}
-                {edit.kind === 'codex' && <div className="field"><label>Codex folder</label><input className="mono" placeholder="~/.codex" value={edit.config.home || ''} onChange={(e) => setEdit({ ...edit, config: { ...edit.config, home: e.target.value } })} /></div>}
-                {edit.kind === 'granola' && <div className="field"><label>Cache file (leave empty to find it)</label><input className="mono" value={edit.config.path || ''} onChange={(e) => setEdit({ ...edit, config: { ...edit.config, path: e.target.value } })} /></div>}
+                {edit.kind === 'codex' && <div className="field"><label>Codex folder</label><input className="mono" placeholder="~/.codex" value={edit.config.home || ''} onChange={field('home')} /></div>}
+                {edit.kind === 'granola' && <div className="field"><label>Cache file (optional)</label><input className="mono" value={edit.config.path || ''} onChange={field('path')} /></div>}
                 {(edit.kind === 'anthropic-api' || edit.kind === 'openai-compatible') && (<>
-                  {edit.kind === 'openai-compatible' && <div className="field"><label>API base URL</label><input className="mono" value={edit.config.baseUrl || ''} onChange={(e) => setEdit({ ...edit, config: { ...edit.config, baseUrl: e.target.value } })} /></div>}
-                  <div className="field"><label>Model</label><input className="mono" placeholder={edit.kind === 'anthropic-api' ? 'claude-sonnet-5-5' : 'grok-4'} value={edit.config.model || ''} onChange={(e) => setEdit({ ...edit, config: { ...edit.config, model: e.target.value } })} /></div>
-                  <div className="field"><label>API key {edit.secrets?.key ? '(saved; type to replace)' : ''}</label><input type="password" value={edit.secretsIn.key || ''} onChange={(e) => setEdit({ ...edit, secretsIn: { ...edit.secretsIn, key: e.target.value } })} /></div>
+                  {edit.kind === 'openai-compatible' && <div className="field"><label>API base URL</label><input className="mono" value={edit.config.baseUrl || ''} onChange={field('baseUrl')} /></div>}
+                  <div className="field"><label>Model</label><input className="mono" placeholder={edit.kind === 'anthropic-api' ? 'claude-sonnet-5-5' : 'grok-4'} value={edit.config.model || ''} onChange={field('model')} /></div>
+                  <div className="field"><label>API key {edit.secrets?.key ? '(saved)' : ''}</label><input type="password" value={edit.secretsIn.key || ''} onChange={secret('key')} /></div>
                 </>)}
-                {edit.kind === 'cursor' && <div className="field"><label>Cursor API key {edit.secrets?.key ? '(saved; type to replace)' : ''}</label><input type="password" value={edit.secretsIn.key || ''} onChange={(e) => setEdit({ ...edit, secretsIn: { ...edit.secretsIn, key: e.target.value } })} /><span className="hint">Cursor dashboard → API Keys. Grok Bot itself isn't reachable this way.</span></div>}
+                {edit.kind === 'cursor' && <div className="field"><label>Cursor API key {edit.secrets?.key ? '(saved)' : ''}</label><input type="password" value={edit.secretsIn.key || ''} onChange={secret('key')} /><span className="hint">Cursor dashboard → API Keys.</span></div>}
                 {edit.kind === 'gmail' && (<>
-                  <div className="field"><label>Google OAuth client ID {edit.secrets?.client_id ? '(saved; leave empty to keep it)' : ''}</label><input value={edit.secretsIn.client_id || ''} onChange={(e) => setEdit({ ...edit, secretsIn: { ...edit.secretsIn, client_id: e.target.value } })} /></div>
-                  <div className="field"><label>Client secret</label><input type="password" value={edit.secretsIn.client_secret || ''} onChange={(e) => setEdit({ ...edit, secretsIn: { ...edit.secretsIn, client_secret: e.target.value } })} /><span className="hint">Create a "Desktop app" OAuth client in Google Cloud with the Gmail API turned on. Steps are in the README. After saving, press Sign in with Google.</span></div>
+                  <div className="field"><label>Google OAuth client ID {edit.secrets?.client_id ? '(saved)' : ''}</label><input value={edit.secretsIn.client_id || ''} onChange={secret('client_id')} /></div>
+                  <div className="field"><label>Client secret</label><input type="password" value={edit.secretsIn.client_secret || ''} onChange={secret('client_secret')} /><span className="hint">A Desktop-app client with the Gmail API on (steps in the README). Then Sign in with Google.</span></div>
                 </>)}
-                {edit.kind === 'grok-bot' && <p className="hint" style={{ lineHeight: 1.5 }}>Grok Bot has no public API. Prompts you send to this card are copied and Grok Bot opens so you can paste them. Its messages to your other agents arrive through the sb command and appear on the board.</p>}
+                {edit.kind === 'grok-bot' && <p className="hint">No public API. Prompts are copied and Grok Bot opens so you can paste them.</p>}
                 <div style={{ display: 'flex', gap: 8 }}><button className="btn primary" onClick={save}>Save</button>{!edit.id && <button className="btn" onClick={() => setEdit({ ...edit, kind: '' })}>Back</button>}</div>
               </div>
             )}

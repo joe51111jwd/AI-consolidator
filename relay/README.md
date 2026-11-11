@@ -61,7 +61,7 @@ Each app gets its own connector address, `https://<relay>/mcp?app=<app>`, so its
 | App | Setup |
 | --- | --- |
 | Grok Bot | Plugins → Add custom MCP server. URL `https://<relay>/mcp?app=grok-bot`, header `Authorization: Bearer <BOT_TOKEN>`. |
-| Claude (app and claude.ai) | Settings → Connectors → Add custom connector. URL `https://<relay>/mcp?app=claude&key=<BOT_TOKEN>`. Turn it on for the chats that should report. |
+| Claude (app and claude.ai) | Settings → Connectors → Add custom connector. URL `https://<relay>/mcp?app=claude&key=<BOT_TOKEN>`. Turn it on for the chats that should report. In each Claude Project, add a line to the Project's instructions such as `When you report to Switchboard, use project "Harbor Coffee Launch".` so its chats land under that Project. |
 | Claude Code (cloud or other computers) | `claude mcp add --transport http --scope user switchboard-relay "https://<relay>/mcp?app=claude-code" --header "Authorization: Bearer <BOT_TOKEN>"`. Claude Code on the Mac that runs Switchboard already shows up without it. |
 | Cursor | In `~/.cursor/mcp.json`: `{"mcpServers":{"switchboard-relay":{"url":"https://<relay>/mcp?app=cursor","headers":{"Authorization":"Bearer <BOT_TOKEN>"}}}}` |
 | Codex | In `~/.codex/config.toml`: `[mcp_servers.switchboard-relay]` with `url = "https://<relay>/mcp?app=codex&key=<BOT_TOKEN>"` |
@@ -76,7 +76,7 @@ Every tool takes `agent`: the agent's display name, the same in every call (a Gr
 
 | Tool | Does |
 | --- | --- |
-| `report_status({ agent, status, doing?, client? })` | `status` is `working`, `waiting`, `idle` or `error`; `doing` is one line; `client` the client or project it is for. |
+| `report_status({ agent, status, doing?, client?, project? })` | `status` is `working`, `waiting`, `idle` or `error`; `doing` is one line; `client` the client it is for; `project` the project the agent works in. For a Claude chat that is its **Claude Project**: Switchboard files the chat under that Project, next to the Project's threads imported from your claude.ai export. |
 | `log_action({ agent, kind, text })` | One step in the agent's feed. `kind`: `message`, `tool`, `browser`, `email`, `connector`, `note`. |
 | `log_subagent({ agent, id, title, status, kind?, lastText?, prUrl? })` | A helper agent it started, for example a Claude Code CLI run. `status`: `running`, `done`, `error`; `kind`: `claude-cli`, `cursor-agent`, `other`. Same `id` in every call about one run. |
 | `post_output({ agent, title, content, url? })` | Finished work, shown as an output card. |

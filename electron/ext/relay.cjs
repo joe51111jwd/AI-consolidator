@@ -46,7 +46,7 @@ const agentKey = (name) => String(name || '').trim().toLowerCase().replace(/[^\p
 const appOf = (a) => (APPS[a] ? a : 'other');
 
 // ---------- what the relay has told us, per agent ----------
-let agents = null; // "<app>:<key>" -> { id, app, key, name, agentId, status, doing, client, statusAt, at, last, actions, subagents }
+let agents = null; // "<app>:<key>" -> { id, app, key, name, agentId, status, doing, client, project, statusAt, at, last, actions, subagents }
 function state() {
   if (!agents) agents = new Map(Object.entries(db.getSetting('relayAgents', {}) || {}));
   return agents;
@@ -85,6 +85,8 @@ async function apply(events) {
     switch (ev.type) {
       case 'status':
         Object.assign(a, { status: ev.status, doing: ev.doing || '', client: ev.client || '', statusAt: ts });
+        // The project (for a Claude chat, its Claude Project) sticks: a chat stays in its Project.
+        if (typeof ev.project === 'string' && ev.project.trim()) a.project = truncate(ev.project.trim(), 120);
         if (ev.doing) a.last = { text: truncate(ev.doing, 220), ts };
         break;
       case 'action': act(a, ACTION_KIND[ev.kind] || 'notice', ev.text, ts); break;
@@ -136,6 +138,7 @@ const color = (key) => AVATARS[crypto.createHash('sha1').update(key).digest()[0]
 function merge(e, a, now) {
   const m = e.meta || (e.meta = {});
   m.relay = true;
+  if (a.project && !(typeof m.project === 'string' && m.project && !m.project.startsWith('pj:'))) m.project = a.project;
   m.actions = [...a.actions, ...(m.actions || [])].sort(byTime).slice(0, 15);
   const ids = new Set(a.subagents.map((s) => s.id));
   m.subagents = [...subsOf(a, now), ...(m.subagents || []).filter((s) => !ids.has(s.id))].sort(byTime);
@@ -156,6 +159,7 @@ function card(a, accs, now) {
     title: a.name, preview: (a.last && a.last.text) || a.doing || '', updatedAt: a.at, status: statusOf(a, now),
     meta: {
       relay: true, app: a.app, agentName: a.name, agentId: a.agentId, category: app.category, account: acc ? acc.label : app.label, unread: 0,
+      ...(a.project ? { project: a.project } : {}),
       ...(a.app === 'grok-bot' ? { avatarColor: color(a.key) } : {}),
       activity: activityOf(a, now), actions: a.actions.slice(0, 15), subagents: subsOf(a, now),
     },
@@ -309,7 +313,7 @@ function normalize(u) {
 
 function status() {
   const u = url();
-  const list = [...state().values()].sort((a, b) => b.at - a.at).map((a) => ({ name: a.name, app: a.app, at: a.at }));
+  const list = [...state().values()].sort((a, b) => b.at - a.at).map((a) => ({ name: a.name, app: a.app, at: a.at, ...(a.project ? { project: a.project } : {}) }));
   return {
     url: u, mcpUrl: u ? `${u}/mcp` : '', enabled: on(), active: enabled(),
     hasToken: secrets.has(APP_TOKEN), hasBotToken: secrets.has(BOT_TOKEN),

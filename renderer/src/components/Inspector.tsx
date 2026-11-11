@@ -3,6 +3,7 @@ import { X, Maximize2, Copy, FileOutput, Brain, GripVertical, ExternalLink, Send
 import { useStore } from '../lib/store';
 import { api, Message, Flow, Entity, Account } from '../lib/api';
 import { ago, md, SOURCE, PROMPTABLE } from '../lib/format';
+import { ClaudeAiProject } from './ClaudeAiImport';
 import { dragOutput } from '../nodes/nodes';
 import { AgentLogo } from './Logos';
 import Composer from './Composer';
@@ -309,6 +310,7 @@ export default function Inspector() {
           </span>
         </div>
         <div className="title">{e.title}</div>
+        {e.source === 'claude-ai' && <ClaudeAiProject e={e} />}
         {(e.meta?.cwd || linked.length > 0) && (
           <div className="pn-meta">
             {e.meta?.cwd && <span className="mono">{shortPath(e.meta.cwd)}{e.meta.gitBranch ? ` · ${e.meta.gitBranch}` : ''}</span>}

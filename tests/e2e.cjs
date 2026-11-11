@@ -504,6 +504,35 @@ async function notificationChecks() {
   });
 }
 
+// claude.ai's data export (tests/fixtures/claude-export) with its dates moved so the newest chat is two
+// hours old when the first export is made (later ones keep the same dates, as a newer real export
+// would). 'one' is the single zip claude.ai sent until about August 2026; 'split' is the newer
+// manifest plus one zip per kind of data. `change(files)` edits the JSON before it is zipped.
+let exportDelta = null;
+function claudeExport(dir, layout = 'one', change = null) {
+  const { zip } = require('./zip-writer.cjs');
+  const read = (n) => fs.readFileSync(path.join(__dirname, 'fixtures', 'claude-export', n), 'utf8');
+  const ISO = /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|\+00:00)/g;
+  const newest = Math.max(...[...read('conversations.json').matchAll(ISO)].map((m) => Date.parse(m[0])));
+  if (exportDelta == null) exportDelta = Date.now() - 2 * 3600000 - newest;
+  const delta = exportDelta;
+  const shift = (t) => t.replace(ISO, (m) => new Date(Date.parse(m) + delta).toISOString());
+  const files = Object.fromEntries(['conversations.json', 'projects.json', 'users.json', 'memories.json'].map((n) => [n, JSON.parse(shift(read(n)))]));
+  if (change) change(files);
+  fs.mkdirSync(dir, { recursive: true });
+  const j = (v) => JSON.stringify(v);
+  if (layout === 'one') {
+    const f = path.join(dir, 'data-2026-11-11-batch-0000.zip');
+    fs.writeFileSync(f, zip(Object.entries(files).map(([name, v]) => ({ name, data: j(v) }))));
+    return f;
+  }
+  fs.writeFileSync(path.join(dir, 'conversations-000.zip'), zip([{ name: 'conversations.json', data: j(files['conversations.json']) }]));
+  fs.writeFileSync(path.join(dir, 'projects-000.zip'), zip(files['projects.json'].map((x) => ({ name: `projects/${x.uuid}.json`, data: j(x) }))));
+  fs.writeFileSync(path.join(dir, 'light_metadata-000.zip'), zip([{ name: 'users.json', data: j(files['users.json']) }]));
+  fs.writeFileSync(path.join(dir, 'manifest-e2e.json'), j({ version: '1.0', total_files: 3, data_files: ['conversations', 'projects', 'light_metadata'].map((c, i) => ({ batch_index: i, category: c, part: 0, filename: `${c}-000.zip`, export_url: `https://claude.ai/export/${c}` })) }));
+  return dir;
+}
+
 async function main() {
   require('../scripts/seed.cjs').seed(HOME);
   grokSeed();
@@ -1367,6 +1396,150 @@ async function main() {
     await until(async () => /1 \/ 6 done/.test(await box.innerText()), 'ticking an app counts it as done');
     await page.keyboard.press('Escape');
     await until(async () => (await box.count()) === 0, 'Escape closes it');
+  });
+  await section('claude.ai history (data export) and Claude Projects');
+  const CA = {
+    menu: 'ca:c1000000-0000-4000-8000-000000000001', posts: 'ca:c2000000-0000-4000-8000-000000000002', survey: 'ca:c3000000-0000-4000-8000-000000000003',
+    hike: 'ca:c4000000-0000-4000-8000-000000000004', stub: 'ca:c5000000-0000-4000-8000-000000000005', press: 'ca:c6000000-0000-4000-8000-000000000006',
+  };
+  const HARBOR = 'a1c3e5f7-1111-4b2d-8e9f-0000000000a1', FIELDLINE = 'b2d4f6a8-2222-4c3e-9fa0-0000000000b2';
+  const caCards = async () => (await api('entities', { force: true })).filter((e) => e.source === 'claude-ai');
+  // The file picker is the system's own; the test answers it with the files to import.
+  const pickFiles = (paths) => app.evaluate(({ dialog }, p) => { dialog.showOpenDialog = async () => ({ canceled: false, filePaths: p }); }, paths);
+  const topicOf = async (id) => (await api('topics:get')).topics.find((t) => t.ids.includes(id));
+  const caBox = async () => { await view('Accounts'); const box = page.getByTestId('claudeai'); await box.scrollIntoViewIfNeeded(); return box; };
+  await check('Settings → Import claude.ai history reads the export zip into read-only chat cards', async () => {
+    const box = await caBox();
+    assert(/Nothing imported yet/.test(await box.getByTestId('claudeai-summary').innerText()), 'empty at first');
+    await pickFiles([claudeExport(path.join(HOME, 'Downloads', 'claude-export'))]);
+    await box.getByTestId('claudeai-import').click();
+    await toast(/Imported claude\.ai chats: 6 new/);
+    await until(async () => /6 chats · 2 Projects .*owner@example\.com/.test(await box.getByTestId('claudeai-summary').innerText()), 'the summary counts chats and Projects');
+    const cards = await caCards();
+    assert(cards.length === 6 && !cards.some((e) => e.id === CA.stub), `six cards and none for a deleted chat (${cards.map((e) => e.title).join(', ')})`);
+    const posts = cards.find((e) => e.id === CA.posts);
+    assert(posts.kind === 'session' && posts.meta.readOnly && posts.meta.url === `https://claude.ai/chat/${CA.posts.slice(3)}`, 'a read-only chat card linking to claude.ai');
+    assert(posts.meta.project === 'Harbor Coffee Launch' && posts.meta.projectVia === 'knowledge', `a chat that searched a Project's files is in that Project (${posts.meta.project})`);
+    assert(cards.find((e) => e.id === CA.press).title.startsWith("Writing the café's opening day press release"), 'a chat with no name is named from its summary');
+    await shot('claudeai-import');
+  });
+  await check('the export does not say which Project a chat is in, so Claude suggests it', async () => {
+    const st = await until(async () => { const x = await api('claudeai:status'); return !x.matching && x.lastMatch && x.lastMatch.asked ? x : false; }, 'Claude was asked', 15000);
+    const c = promptCalls().find((x) => /Which of my Claude Projects does each chat belong to/.test(x.prompt));
+    assert(c && /P\d\. Harbor Coffee Launch \| about: Launch plan/.test(c.prompt) && /files: brand-guide\.md, opening-menu\.md/.test(c.prompt), 'it saw the Projects and their files');
+    assert(!/Opening week social posts/.test(c.prompt), 'a chat already placed by its files is not asked about');
+    const by = Object.fromEntries((await caCards()).map((e) => [e.id, e.meta.project || null]));
+    assert(by[CA.menu] === 'Harbor Coffee Launch' && by[CA.press] === 'Harbor Coffee Launch' && by[CA.survey] === 'Fieldline Research' && by[CA.hike] === null, JSON.stringify(by));
+    assert(st.lastMatch.matched === 3, `matched ${st.lastMatch.matched}`);
+    await until(async () => /suggested it for 3 chats/.test(await page.getByTestId('claudeai-match').innerText()), 'Settings says Claude suggested them');
+  });
+  await check('an imported chat opens in the chat panel: its thread, its Project, a link to claude.ai, no message box', async () => {
+    await view('Board');
+    await page.getByTestId('mode-live').click();
+    const row = page.locator(`[data-testid="live-row"][data-id="${CA.menu}"]`);
+    await until(async () => (await row.count()) === 1, 'listed on the Chats home');
+    await row.click();
+    const insp = page.locator('.inspector');
+    await until(async () => /lavender honey latte at \$5\.50/.test(await insp.innerText()), 'the thread is shown');
+    const text = await insp.innerText();
+    assert(!/retried away/.test(text) && !/Secret pondering/.test(text), 'only the branch claude.ai shows, without thinking');
+    assert(/Rhubarb spritz/.test(text), 'the artifact is shown');
+    const pick = insp.getByTestId('claudeai-project-pick');
+    await until(async () => (await pick.count()) === 1 && (await pick.locator('select').inputValue()) === HARBOR, 'its Project is picked');
+    assert(/suggested by Claude/.test(await pick.innerText()), 'and says how it was found');
+    assert((await insp.locator('button[title="Open in claude.ai"]').count()) === 1, 'a link to the chat on claude.ai');
+    assert((await insp.locator('.insp-foot').count()) === 0, 'read-only: no message box (a prompt sent anyway is refused: tests/claudeai-store.test.cjs)');
+    await page.locator('.inspector .insp-head button[title="Close"]').click();
+  });
+  await check('⌘K finds imported chats by what was said in them and by their Project', async () => {
+    await page.keyboard.press(mod('k'));
+    await page.locator('.palette input').fill('rhubarb spritz');
+    await until(async () => (await page.locator('.palette .item', { hasText: 'Spring menu ideas' }).count()) > 0, 'found by a message');
+    await page.keyboard.press('Escape');
+    assert((await api('search:query', 'fieldline research')).some((h) => h.id === CA.survey), 'found by its Project name');
+    assert((await api('search:query', 'claude: cardamom bun')).some((h) => h.id === CA.posts), 'claude: searches them too');
+  });
+  await check('topics keep a Claude Project whole, and a chat moved into one by hand comes along', async () => {
+    await until(async () => { const t = await topicOf(CA.menu); return t && t.label === 'Harbor Coffee Launch' && [CA.posts, CA.press].every((id) => t.ids.includes(id)); }, 'the Harbor Project holds its threads');
+    assert((await topicOf(CA.survey)).label === 'Fieldline Research', 'Fieldline is its own project');
+    assert(!(await topicOf(CA.hike)), 'an older chat in no Project is not this week’s work');
+    await page.keyboard.press(mod('k'));
+    await page.locator('.palette input').fill('packing list');
+    await until(async () => (await page.locator('.palette .item', { hasText: 'Weekend trip packing list' }).count()) > 0, 'found');
+    await sleep(200); await page.keyboard.press('Enter');
+    const pick = page.locator('.inspector').getByTestId('claudeai-project-pick');
+    await until(async () => (await pick.count()) === 1 && (await pick.locator('option').count()) === 3, 'the Project picker lists the Projects');
+    await pick.locator('select').selectOption(FIELDLINE);
+    await toast(/Moved to Fieldline Research/);
+    const t = await until(async () => { const x = await topicOf(CA.hike); return x && x.label === 'Fieldline Research' ? x : false; }, 'the older chat joins its Project');
+    assert(t.ids.includes(CA.survey), 'next to the Project’s other thread');
+    assert((await caCards()).find((e) => e.id === CA.hike).meta.projectVia === 'you', 'remembered as your choice');
+    await page.locator('.inspector .insp-head button[title="Close"]').click();
+  });
+  await check('importing the newer split export (manifest and one zip per kind) updates chats without doubling them', async () => {
+    const dir = claudeExport(path.join(HOME, 'Downloads', 'claude-export-2'), 'split', (f) => {
+      const c = f['conversations.json'].find((x) => x.name === 'Spring menu ideas');
+      const at = new Date(Date.now() - 60000).toISOString();
+      c.chat_messages.push({ uuid: 'm1-5', text: '', content: [{ type: 'text', text: 'Add oat milk for 50 cents.' }], sender: 'human', created_at: at, updated_at: at, attachments: [], files: [], parent_message_uuid: 'm1-4' });
+      c.updated_at = at;
+    });
+    const box = await caBox();
+    await pickFiles([path.join(dir, 'manifest-e2e.json'), path.join(dir, 'conversations-000.zip')]);
+    await box.getByTestId('claudeai-import').click();
+    await toast(/Imported claude\.ai chats: 1 updated, 5 unchanged/);
+    await until(async () => /projects-000\.zip, light_metadata-000\.zip/.test(await box.getByTestId('claudeai-missing').innerText()), 'it names the downloads still missing');
+    await pickFiles([dir]);
+    await box.getByTestId('claudeai-import').click();
+    await toast(/Already up to date/);
+    await until(async () => (await box.getByTestId('claudeai-missing').count()) === 0, 'nothing missing now');
+    const cards = await caCards();
+    assert(cards.length === 6 && (await api('claudeai:status')).chats === 6, `still six chats (${cards.length})`);
+    const menu = cards.find((e) => e.id === CA.menu);
+    assert(menu.meta.project === 'Harbor Coffee Launch' && menu.meta.projectVia === 'ai', 'its Project is kept');
+    assert(cards.find((e) => e.id === CA.hike).meta.projectVia === 'you', 'and so is yours');
+    assert((await api('transcript', CA.menu)).some((m) => /oat milk/.test(m.text)), 'the new message is there');
+  });
+  await check('a Claude chat that reports its Project through the relay sits with the Project’s imported threads', async () => {
+    const claude = relay.agent(`${relay.url}/mcp?app=claude&key=e2e-bot-token`);
+    await claude('report_status', { agent: 'Menu pricing', status: 'working', doing: 'Pricing the spring menu', project: 'Harbor Coffee Launch' });
+    await api('relay:sync');
+    const id = 'rl:claude:menu-pricing';
+    const e = await until(() => ent(id), 'a card for the chat');
+    assert(e.meta.project === 'Harbor Coffee Launch', `its Project (${e.meta.project})`);
+    await claude('report_status', { agent: 'Menu pricing', status: 'idle', doing: 'Priced the spring menu' });
+    await api('relay:sync');
+    assert((await ent(id)).meta.project === 'Harbor Coffee Launch', 'the Project sticks when a later report leaves it out');
+    const t = await until(async () => { const x = await topicOf(id); return x && x.label === 'Harbor Coffee Launch' ? x : false; }, 'it joins the Harbor Project');
+    assert([CA.menu, CA.posts, CA.press].every((x) => t.ids.includes(x)), 'with the imported threads');
+    await view('Board');
+    await page.getByTestId('mode-live').click();
+    const sec = page.locator('[data-testid="home-topic"]', { has: page.locator('h3', { hasText: 'Harbor Coffee Launch' }) });
+    await until(async () => (await sec.locator(`[data-testid="live-row"][data-id="${id}"]`).count()) === 1 && (await sec.locator(`[data-testid="live-row"][data-id="${CA.posts}"]`).count()) === 1, 'the home shows the Project with both');
+    await shot('claudeai-project-home');
+    await page.getByTestId('mode-board').click();
+  });
+  await check('Show on board puts a Project’s chats on the board, together under the Project', async () => {
+    const box = await caBox();
+    const row = box.locator(`[data-testid="claudeai-project"][data-id="${FIELDLINE}"]`);
+    await row.getByTestId('claudeai-board').click();
+    await toast(/Put 2 chats from Fieldline Research on the board/);
+    await until(async () => /On board/.test(await row.innerText()), 'marked as on the board');
+    await view('Board');
+    const a = await until(async () => { const x = await boardRow(CA.survey), y = await boardRow(CA.hike); return x && y && !x.hidden && !y.hidden && x.parent_id && x.parent_id === y.parent_id ? x : false; }, 'both chats in one frame');
+    const frame = await boardRow(a.parent_id);
+    assert(frame.data.tree.projects.some((p) => p.label === 'Fieldline Research' && p.ids.includes(CA.hike) && p.ids.includes(CA.survey)), JSON.stringify(frame.data.tree.projects.map((p) => p.label)));
+    await until(async () => (await node(CA.hike).count()) === 1, 'the older chat is drawn on the board');
+    await shot('claudeai-board');
+  });
+  await check('Remove imported history takes the claude.ai chats away again', async () => {
+    const box = await caBox();
+    await box.getByTestId('claudeai-clear').click();
+    await box.getByTestId('claudeai-clear-yes').click();
+    await toast(/Removed the imported claude\.ai history/);
+    await until(async () => !(await caCards()).length, 'no claude.ai cards');
+    assert(!(await api('board')).some((r) => r.id.startsWith('ca:')), 'none on the board');
+    assert((await api('search:query', 'rhubarb spritz')).every((h) => !h.id.startsWith('ca:')), '⌘K no longer finds them');
+    await view('Board');
   });
   await check('turning the relay off takes its cards away and sends go back to Grok Bot', async () => {
     await api('relay:configure', { enabled: false });

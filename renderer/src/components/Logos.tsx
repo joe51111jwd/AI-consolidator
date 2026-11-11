@@ -39,7 +39,7 @@ export function DotLogo({ size = 14, color = '#888', working }: P) {
 
 export function AgentLogo({ source, ...p }: P & { source: string }) {
   switch (source) {
-    case 'claude-code': case 'anthropic-api': return <ClaudeLogo {...p} />;
+    case 'claude-code': case 'anthropic-api': case 'claude-ai': return <ClaudeLogo {...p} />;
     case 'grok-bot': return <GrokLogo {...p} />;
     case 'codex': case 'openai-compatible': case 'chatgpt': return <CodexLogo {...p} />;
     case 'cursor': return <CursorLogo {...p} />;

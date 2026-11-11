@@ -315,6 +315,54 @@ function capGroups(topics, rules = rulesOf()) {
   return out;
 }
 
+// Claude Projects stay whole: a Project's threads (claude.ai chats imported from its export, and Claude
+// chats that report the Project's name through Switchboard Relay) sit in one project named after it,
+// under the group most of them landed in (or where the rules put the newest). Feature modules add a
+// Project's older threads: addProjectThreads(fn), fn(names of Projects with work this week) ->
+// [{ project, items }] (ext/claudeai.cjs).
+const projectSources = [];
+function addProjectThreads(fn) { projectSources.push(fn); }
+function claudeProject(e) {
+  const m = e.meta || {};
+  if (!(e.source === 'claude-ai' || (m.relay && m.app === 'claude')) || typeof m.project !== 'string') return null;
+  return m.project.trim() || null;
+}
+
+function pinProjects(topics, list, clients = hub.clients(), rules = rulesOf()) {
+  const want = new Map(); // lowercased name -> { label, items: Map(id -> entity) }
+  const add = (name, e) => {
+    const k = name.toLowerCase();
+    const p = want.get(k) || { label: name, items: new Map() };
+    if (!p.items.has(e.id)) p.items.set(e.id, e);
+    want.set(k, p);
+  };
+  for (const e of list) { const p = claudeProject(e); if (p) add(p, e); }
+  for (const fn of projectSources) {
+    try { for (const t of fn([...want.values()].map((p) => p.label)) || []) for (const e of (t && t.project && t.items) || []) if (e && e.id) add(String(t.project).trim(), e); } catch (err) { console.error('topics: project threads:', err.message); }
+  }
+  if (!want.size) return topics;
+  const of = new Map();
+  for (const t of topics) for (const id of t.ids) if (!of.has(id)) of.set(id, t);
+  const taken = new Set([...want.values()].flatMap((p) => [...p.items.keys()]));
+  const out = topics.map((t) => ({ ...t, ids: t.ids.filter((id) => !taken.has(id)) }));
+  for (const p of want.values()) {
+    const items = [...p.items.values()].sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+    const votes = new Map();
+    for (const e of items) { const t = of.get(e.id); if (t) votes.set(t.group, { t, n: ((votes.get(t.group) || {}).n || 0) + 1 }); }
+    const best = [...votes.values()].sort((a, b) => b.n - a.n)[0];
+    const g = best ? { group: best.t.group, client: !!best.t.client } : groupOf(items[0], clients, new Set(), rules);
+    const group = g ? g.group : NO_AREA;
+    const id = topicId(group, p.label);
+    const ids = items.map((e) => e.id);
+    const current = items.filter((e) => of.has(e.id)).length;
+    const summary = current ? '' : `Claude Project · ${ids.length} chat${ids.length === 1 ? '' : 's'}`;
+    const same = out.find((t) => t.id === id);
+    if (same) same.ids.push(...ids.filter((x) => !same.ids.includes(x)));
+    else out.push({ id, label: p.label, group, client: !!(g && g.client), summary, ids });
+  }
+  return out.filter((t) => t.ids.length);
+}
+
 // The flat projects as the client / area tree, biggest first.
 function tree(topics) {
   const groups = new Map();
@@ -377,7 +425,7 @@ function contentOf(e) {
 
 // At most this many items go into one prompt (the most recent first); the rest are placed by rule.
 const MAX_ITEMS = 80;
-const SOURCE_KIND = { 'claude-code': 'Claude chat', 'claude-app': 'Claude chat', codex: 'Codex chat', cursor: 'Cursor agent', 'grok-bot': 'Grok bot', granola: 'meeting', gmail: 'email' };
+const SOURCE_KIND = { 'claude-code': 'Claude chat', 'claude-app': 'Claude chat', 'claude-ai': 'Claude chat', codex: 'Codex chat', cursor: 'Cursor agent', 'grok-bot': 'Grok bot', granola: 'meeting', gmail: 'email' };
 const ENTITY_KIND = { meeting: 'meeting', thread: 'email', output: 'note', note: 'note', account: 'agent', client: 'client card', project: 'project' };
 const kindLabel = (e) => SOURCE_KIND[e.source] || ENTITY_KIND[e.kind] || 'chat';
 
@@ -578,7 +626,7 @@ function project(c, list, clients) {
 
 const strip = (topics) => topics.map(({ id, label, group, client, summary, ids }) => ({ id, label, group, client, summary, ids }));
 const answer = (topics, list, extra) => {
-  const flat = decorate(capGroups(topics), list);
+  const flat = decorate(capGroups(pinProjects(topics, list)), list);
   return { topics: flat, clients: tree(flat), ...extra };
 };
 
@@ -649,6 +697,7 @@ module.exports = {
     },
   },
   start,
+  addProjectThreads,
   prompt: { MAX_ITEMS, MAX_GROUPS, CRITERIA, MARKETING, MAIN_BOT, MINE, kindLabel, itemLine, contentOf, examples, topicsPrompt, readTopics, readJson, repair, forPrompt },
-  _test: { heuristic, capGroups, peopleOf, ruleOf, cleanRules, projectOf, projectOther, project, keyOf, gather, decorate, describe, clientOf, tree },
+  _test: { pinProjects, heuristic, capGroups, peopleOf, ruleOf, cleanRules, projectOf, projectOther, project, keyOf, gather, decorate, describe, clientOf, tree },
 };

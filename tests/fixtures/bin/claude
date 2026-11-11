@@ -95,7 +95,7 @@ async function answer() {
     flush();
     await new Promise((r) => setTimeout(r, Number(process.env.SB_STUB_SLOW_MS) || 30000));
   }
-  const reply = process.env.SB_STUB_REPLY || chatContext(input) || smartGroup(input) || topics(input) || (slow ? `Slow reply finished: ${first}` : `Done (${path.basename(dir)}): ${first}`) + `${outcomes.length ? ` · ${outcomes.join(' · ')}` : ''}`;
+  const reply = process.env.SB_STUB_REPLY || chatContext(input) || smartGroup(input) || topics(input) || projectMatch(input) || (slow ? `Slow reply finished: ${first}` : `Done (${path.basename(dir)}): ${first}`) + `${outcomes.length ? ` · ${outcomes.join(' · ')}` : ''}`;
   const mid = 'msg_' + crypto.randomBytes(6).toString('hex');
   out({ type: 'assistant', session_id: id, message: { id: mid, role: 'assistant', model: 'claude-sonnet-5-5', content: [{ type: 'text', text: reply }], usage: { input_tokens: 1200, output_tokens: 300 } } });
   out({ type: 'result', subtype: 'success', session_id: id, result: reply, usage: { input_tokens: 1200, output_tokens: 300 }, total_cost_usd: 0.01 });
@@ -192,4 +192,18 @@ function ownGroups(text) {
     groups.get(hit).push(r.n);
   }
   return JSON.stringify({ clients: [...groups].filter(([, items]) => items.length).map(([label, items]) => ({ label, client: label !== 'Other', projects: [{ label, summary: `${items.length} items`, items }] })) });
+}
+
+// Imported claude.ai chats are matched to their Claude Projects: a chat goes to the Project whose name
+// starts with a word the chat's line mentions ("Harbor Coffee Launch" for a chat about Harbor Coffee).
+function projectMatch(text) {
+  if (!/Which of my Claude Projects does each chat belong to/.test(text)) return null;
+  const projects = [...text.matchAll(/^P(\d+)\. ([^|\n]+)/gm)].map((m) => ({ id: `P${m[1]}`, word: m[2].trim().split(/\s+/)[0].toLowerCase() }));
+  const chats = [];
+  for (const line of (text.split('\nChats:\n')[1] || '').split('\n')) {
+    const m = line.match(/^(\d+)\. (.*)$/); if (!m) continue;
+    const p = projects.find((x) => x.word.length >= 4 && m[2].toLowerCase().includes(x.word));
+    chats.push({ chat: Number(m[1]), project: p ? p.id : null });
+  }
+  return JSON.stringify({ chats });
 }

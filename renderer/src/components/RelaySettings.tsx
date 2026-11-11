@@ -20,6 +20,7 @@ const APPS: { id: string; label: string; steps: Step[] }[] = [
   { id: 'claude', label: 'Claude (app and claude.ai)', steps: [
     { text: "Settings → Connectors → Add custom connector. Use this URL (the token is in it, since Claude's connectors can't send headers):", value: '{MCP}?app=claude&key={TOKEN}' },
     { text: 'Turn it on for the chats that should report.' },
+    { text: "So a Project's chats show under that Project, add this line to the Project's instructions (with its name):", value: 'When you report to Switchboard, use project "<Project name>".' },
   ] },
   { id: 'claude-code', label: 'Claude Code (cloud or other computers)', steps: [
     { text: 'Run once. Claude Code on this Mac already shows up without it.', value: 'claude mcp add --transport http --scope user switchboard-relay "{MCP}?app=claude-code" --header "Authorization: Bearer {TOKEN}"' },

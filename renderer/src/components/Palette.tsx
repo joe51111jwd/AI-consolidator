@@ -138,7 +138,6 @@ export default function Palette() {
         notify('Example board added');
       } catch (err: any) { notify(err?.message || 'Could not add the examples'); }
     } },
-    { id: 'note', label: 'New note', icon: StickyNote, run: async () => { const id = await api.saveNote({ text: '' }); await placeOnBoard(id); await useStore.getState().refresh(true); centre(id); } },
     { id: 'settings', label: 'Open settings', icon: Settings, keys: '⌘,', run: () => set({ settingsTab: 'accounts' }) },
     { id: 'chief', label: 'Ask across all agents', icon: Sparkles, keys: '⌘J', run: () => set({ chiefOpen: true, chiefMin: false }) },
     { id: 'outputs', label: 'Outputs', icon: Inbox, run: () => set({ outputsOpen: true }) },

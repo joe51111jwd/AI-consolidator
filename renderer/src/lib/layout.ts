@@ -304,7 +304,8 @@ export function unoverlap(nodes: SettleNode[], board: BoardRow[]): BoardRow[] {
 export function onWeekBoard(e: Entity, now = Date.now()) {
   if (e.kind === 'account' || e.kind === 'client' || e.kind === 'project' || e.kind === 'error') return false;
   if (e.status === 'running' || e.status === 'waiting') return true;
-  if (e.kind === 'note' || e.kind === 'output') return now - (e.meta?.createdAt || e.updatedAt) < 7 * DAY;
+  if (e.kind === 'note') return false;
+  if (e.kind === 'output') return now - (e.meta?.createdAt || e.updatedAt) < 7 * DAY;
   return true;
 }
 export const OLD_FRAMES = new Set(['agents', 'notes', 'other']);

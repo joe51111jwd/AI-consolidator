@@ -619,7 +619,6 @@ export const ProjectPillNode = memo(({ data }: NodeProps) => {
   const d: any = data;
   return (
     <div className={`project-pill ${d.level === 'client' ? 'client' : ''}`} title={d.label}>
-      <Handles />
       <span>{d.label}</span>
       {d.count > 1 && <i>{d.count}</i>}
     </div>

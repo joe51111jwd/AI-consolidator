@@ -408,3 +408,9 @@
 .board .project-pill.client { background: #18181B; border-color: #18181B; color: #FFFFFF; font-weight: 600; }
 .board .edge-tree { stroke: #D4D4D8 !important; stroke-width: 1.2px !important; pointer-events: none; }
 .board .react-flow__edge:has(.edge-tree) { pointer-events: none; }
+
+/* Client and project names are plain headings, not flowchart pills; cards don't connect. */
+.board .project-pill { background: transparent; border: 0; padding: 0 2px; height: 28px; color: #71717A; font-size: 11.5px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; border-radius: 0; }
+.board .project-pill.client { background: transparent; border: 0; color: #18181B; font-size: 15px; font-weight: 650; letter-spacing: -.01em; text-transform: none; }
+.board .project-pill i { font-weight: 500; }
+.board .react-flow__handle { display: none !important; }

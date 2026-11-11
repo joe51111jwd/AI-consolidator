@@ -357,7 +357,8 @@ export default function Board() {
     })));
   }, [edgeRows, nodeKey]);
 
-  const allEdges = useMemo(() => [...tree, ...edges, ...demoEdges], [tree, edges, demoEdges]);
+  // A board for seeing what's going on, not building workflows: no lines on it at all.
+  const allEdges = useMemo(() => [] as Edge[], []);
 
   // Cards grow after they're laid out; keep them from covering each other.
   const heights = nodes.map((n) => `${n.id}:${Math.round(n.measured?.height || 0)}`).join('|');
@@ -623,11 +624,11 @@ export default function Board() {
   return (
     <div className={`board ${overview ? 'overview' : ''}`} onDragOver={onDragOver} onDrop={onDrop} onClick={close}
       onPointerDownCapture={(e) => { down.current = { x: e.clientX, y: e.clientY }; }}
-      onDoubleClick={(e) => { if ((e.target as HTMLElement).classList.contains('react-flow__pane')) addNote(rf.screenToFlowPosition({ x: e.clientX, y: e.clientY })); }}>
+      >
       <ReactFlow
         nodes={allNodes} edges={allEdges} nodeTypes={allNodeTypes as any} edgeTypes={edgeTypes}
         onNodesChange={onNodesChange} onEdgesChange={onEdgesChange} onNodeDragStop={onNodeDragStop}
-        onConnect={onConnect} onSelectionChange={onSelectionChange}
+        nodesConnectable={false} onSelectionChange={onSelectionChange}
         onSelectionStart={() => { marquee.current = true; }} onSelectionEnd={() => { marquee.current = false; }}
         onNodeClick={onNodeClick}
         onNodeDoubleClick={(_, n) => n.type !== 'group' && n.type !== 'note' && !isDemo(n.id) && !isPill(n.id) && open(n.id)}
@@ -678,7 +679,6 @@ export default function Board() {
             </>);
           })()}
           {menu.kind === 'pane' && menu.at && (<>
-            <button onClick={() => { addNote(menu.at!); close(); }}><StickyNote size={14} />Note here</button>
             <button onClick={() => { smartGroup(); close(); }}><Sparkles size={14} />Smart group</button>
             <button onClick={() => { weekBoard(false); close(); }}><CalendarDays size={14} />Lay out this week</button>
           </>)}

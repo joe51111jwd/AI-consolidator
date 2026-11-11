@@ -1,0 +1,17 @@
+{
+  "name": "switchboard-relay",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Always-on MCP connector that Grok Bot's bots report to, so Switchboard shows their work with the Mac or Grok Bot app closed.",
+  "type": "module",
+  "license": "MIT",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "dev": "node dev.js",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "zod": "^4.6.7"
+  }
+}

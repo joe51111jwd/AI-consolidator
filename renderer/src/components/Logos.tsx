@@ -41,7 +41,7 @@ export function AgentLogo({ source, ...p }: P & { source: string }) {
   switch (source) {
     case 'claude-code': case 'anthropic-api': return <ClaudeLogo {...p} />;
     case 'grok-bot': return <GrokLogo {...p} />;
-    case 'codex': case 'openai-compatible': return <CodexLogo {...p} />;
+    case 'codex': case 'openai-compatible': case 'chatgpt': return <CodexLogo {...p} />;
     case 'cursor': return <CursorLogo {...p} />;
     case 'gmail': return <MailLogo {...p} />;
     case 'granola': return <GranolaLogo {...p} />;

@@ -85,6 +85,10 @@ The message and the reply show up as a live line on the board. Prompts you send 
 
 To use Grok models directly (as a chat inside the app), add **Grok API or other model API** with an xAI API key.
 
+### Switchboard Relay (all your agents, from anywhere)
+
+Switchboard reads most agents from files on this Mac, so it can't see an agent running somewhere else, or a Grok bot while the Grok Bot app is closed. [Switchboard Relay](relay/README.md) is one small always-on MCP connector you deploy to your own Vercel account. Grok bots, Claude chats (the Claude app and claude.ai), Claude Code in the cloud or on other computers, Cursor, Codex and ChatGPT all connect to it as a custom MCP server and report what they do. Switchboard pulls from it every 20 seconds: what each agent is doing, its steps, the helper agents it started, its outputs. With the relay on, messages you send those agents wait on the relay until they collect them. Set it up under Settings → Accounts → **Switchboard Relay**, which shows each app's setup with copy buttons. Gmail and Granola stay on their own sign-ins and APIs.
+
 ### Granola
 
 Found automatically. The app reads the meeting notes the Granola app keeps on your Mac.

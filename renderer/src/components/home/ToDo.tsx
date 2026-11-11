@@ -35,7 +35,7 @@ export default function ToDo({ items, className = '' }: { items: Item[]; classNa
       <h3 className="lv-h">To do<span>{total}</span></h3>
       <div className="lv-todo-add">
         <input value={text} placeholder="Add a to-do…" data-testid="todo-input" onChange={(e) => setText(e.target.value)}
-          onKeyDown={(e) => { e.stopPropagation(); if (e.key === 'Enter') add(); }} />
+          onKeyDown={(e) => { if (!e.metaKey && !e.ctrlKey) e.stopPropagation(); if (e.key === 'Enter') add(); }} />
       </div>
       {asks.map((a) => {
         const to = approvalTarget(a, byId);
@@ -85,8 +85,10 @@ export function BoardToDo() {
   const flip = () => { const v = !collapsed; setCollapsed(v); localStorage.setItem(COLLAPSED_KEY, v ? '1' : '0'); };
   const needs = asks.length + items.filter((i) => i.attn && !hasApproval(asks, i.e.id)).length;
   const working = items.filter((i) => i.running && !i.attn).length;
+  // Plain keys stay in the list (Delete on a to-do must not hide board cards); ⌘K, ⌘N and the other shortcuts still work.
+  const keepKeys = (e: React.KeyboardEvent) => { if (!e.metaKey && !e.ctrlKey) e.stopPropagation(); };
   return (
-    <aside className={`board-todo ${collapsed ? 'collapsed' : ''}`} data-testid="board-todo" data-tour="board-todo" onKeyDown={(e) => e.stopPropagation()}>
+    <aside className={`board-todo ${collapsed ? 'collapsed' : ''}`} data-testid="board-todo" data-tour="board-todo" onKeyDown={keepKeys}>
       <button className="bdt-head" onClick={flip} data-testid="board-todo-toggle" aria-expanded={!collapsed} title={collapsed ? 'Show to-dos' : 'Hide to-dos'}>
         <span className="bdt-title">To do</span>
         {needs > 0 && <span className="bdt-n attn">{needs}</span>}

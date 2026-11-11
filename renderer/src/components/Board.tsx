@@ -215,6 +215,11 @@ export default function Board() {
     setTimeout(() => home(400), 60);
   };
 
+  // A week layout asked for (window.__sbWeek: Show on board) while another layout was running; it runs
+  // once that one is done, so it isn't lost and doesn't work from what the board was before the change.
+  const weekAgain = useRef(false);
+  const runQueued = () => { if (weekAgain.current) { weekAgain.current = false; weekRef.current(false); } };
+
   // This week's work, laid out like the Showcase: one frame per topic, what needs you first.
   // Cards older than the week leave the board the way a blank board hides them (they come back on new work).
   const weekBoard = async (auto: boolean) => {
@@ -245,7 +250,7 @@ export default function Board() {
       if (!auto) notify('Laid out this week');
     } catch (err: any) {
       notify(`Couldn't lay out the week: ${err?.message || err}`);
-    } finally { setBusy(false); }
+    } finally { setBusy(false); runQueued(); }
   };
 
   const smartGroup = async (rule?: string) => {
@@ -271,7 +276,7 @@ export default function Board() {
       await applyGroups(groups);
     } catch (err: any) {
       notify(`Couldn't group the board: ${err?.message || err}`);
-    } finally { setBusy(false); }
+    } finally { setBusy(false); runQueued(); }
   };
 
   // The main agent (group_board tool) asks the window to regroup by the user's rule.
@@ -586,8 +591,9 @@ export default function Board() {
   useEffect(() => {
     (window as any).__sbRegroup = (rule?: unknown) => smartGroup(typeof rule === 'string' && rule.length > 12 ? rule : undefined);
     (window as any).__sbRegroupRule = (rule: string) => smartGroup(rule);
-    // Used by the end-to-end tests: the "This week" layout.
-    (window as any).__sbWeek = () => weekBoard(false);
+    // The "This week" layout, for Show on board (Settings → claude.ai) and the end-to-end tests: right
+    // away, or right after a layout already running.
+    (window as any).__sbWeek = () => { if (busyRef.current) weekAgain.current = true; else weekBoard(false); };
     (window as any).__sbHide = (ids: string[]) => hide(ids);
     (window as any).__sbAttention = attentionIds(board.filter((r) => !r.hidden && !isGroup(r.id)).map((r) => r.id));
     // Used by the palette and the end-to-end tests to bring a card into view.

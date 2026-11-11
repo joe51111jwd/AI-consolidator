@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { ReactFlowProvider } from '@xyflow/react';
 import { Search, Settings2 } from 'lucide-react';
 import { useStore, wireEvents } from './lib/store';
+import { wireNotify } from './lib/notify';
 import Board from './components/Board';
 import Inspector from './components/Inspector';
 import Chief from './components/Chief';
@@ -35,6 +36,7 @@ export default function App() {
 
   useEffect(() => {
     wireEvents();
+    wireNotify();
     refresh().then(refreshBoard);
     refreshDue();
     const t = setInterval(refreshDue, 120000);

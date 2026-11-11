@@ -11,6 +11,7 @@ One place on your Mac to manage the AI chats you already have: every Claude Code
 - **Board (⌘1), for automation.** Lay chats out as cards and draw lines between them so one chat's finished output is sent to the next. Notes act as standing instructions; frames group cards around a goal, and **Work toward goal** prompts every agent in the frame. **Smart group** sorts the board for you. Save layouts as named boards and switch between them. **Showcase** plays a short demo.
 - **Usage.** The pill in the top-right corner shows each account's weekly use as a percentage; click it for details and budgets.
 - **Settings (⌘,).** Accounts, Clients (a small CRM tied to email, meetings and folders), the shared brain (one notes file every agent can read and add to), and connecting Grok Bot.
+- **Notifications.** A Mac notification when a chat finishes a reply (unless it's the chat you have open), a chat is waiting on you, a Grok bot posts something new, or something new lands in your to-do. Bursts are grouped ("3 chats finished"), at most one per chat per minute, and clicking one opens that chat. The Dock badge counts what needs you (the blue dots). Pick what notifies you, and whether only while Switchboard is in the back, in Settings → Accounts → **Notifications**.
 - **Grok Bot.** Read from the Grok Bot app's local cache on your Mac; sending goes through the app itself. A cloud connector is coming.
 - **Guided tour.** Shows on first launch and walks through each part. Re-open it from ⌘K ("Take the tour"), the **Tour** button in the main agent, or Settings → Accounts.
 
@@ -169,6 +170,7 @@ This builds the app and runs `tests/e2e.cjs`, which starts the real app in a thr
 - **Clients:** replies owed, follow-ups, people you email added as leads, deleted clients not re-added, adding and editing a client.
 - **Corners:** the usage pill, the outputs drawer, Settings, and no Codex anywhere without a Codex account.
 - **Shared brain:** edits saved, and an agent's addition merged in while you're typing.
+- **Notifications** (logged instead of shown, with `SB_TEST_NOTIFY_LOG`): a finished chat while the app is in the back, and clicking it opens the chat; none for the open chat; one per chat per minute and "3 chats finished" for a burst; the per-kind switches and "Only when Switchboard isn't in front"; a Grok bot's new post and waiting on you; a new to-do; a relay output; the Dock badge matching the blue dots.
 
 ### Check these yourself on your Mac
 
@@ -180,6 +182,7 @@ The test can't sign in to real accounts, so check these once after installing:
 4. **Grok Bot:** turn on "Execution on this computer" in Grok Bot, press **Copy note for Grok Bot** under Settings → **Accounts** and paste it into Grok Bot, then ask Grok Bot to send something to a Claude card and watch the line light up.
 5. **Agent tools:** press **Add Switchboard tools to my agents**, then in any Claude session ask it to list your Switchboard cards.
 6. **App build:** `npm run dist`, open the app from `release`, and check it starts with your board.
+7. **Notifications:** press **Send a test notification** under Settings → Accounts → Notifications and allow notifications when macOS asks. Then send a chat some work, switch to another app, and check a notification arrives when it finishes, that clicking it opens the chat, and that the Dock icon shows a badge.
 
 ## Development
 

@@ -38,6 +38,12 @@ interface State {
   notify: (t: string) => void;
 }
 
+const index = (entities: Entity[]) => {
+  const byId: Record<string, Entity> = {};
+  for (const e of entities) byId[e.id] = e;
+  return byId;
+};
+
 export const useStore = create<State>((set, get) => ({
   view: 'board', entities: [], byId: {}, board: [], edges: [], runs: {}, liveByEntity: {}, accounts: [], due: [],
   boardLoaded: false, inspector: null, selected: [], attach: {}, activeEdges: {}, toast: null, auth: {}, paletteOpen: false, chiefOpen: false, settingsTab: null, outputsOpen: false, chiefMin: false, pins: [],
@@ -45,9 +51,7 @@ export const useStore = create<State>((set, get) => ({
   set: (p) => set(p as any),
   refresh: async (force = false) => {
     const [entities, accounts] = await Promise.all([api.entities(force), api.accounts()]);
-    const byId: Record<string, Entity> = {};
-    for (const e of entities) byId[e.id] = e;
-    set({ entities, byId, accounts });
+    set({ entities, byId: index(entities), accounts });
   },
   refreshBoard: async () => {
     const [board, edges] = await Promise.all([api.board(), api.edges()]);
@@ -65,17 +69,27 @@ export const useStore = create<State>((set, get) => ({
 let wired = false;
 export function wireEvents() {
   if (wired) return; wired = true;
-  let t: any;
+  let t: any = null;
   api.approvals().then((r) => useStore.setState({ approvals: r.approvals, approvalRules: r.rules })).catch(() => {});
   api.onEvent((e) => {
     const s = useStore.getState();
-    if (e.type === 'entities-changed') { clearTimeout(t); t = setTimeout(() => { s.refresh(); }, 250); }
+    if (e.type === 'entities-changed') { clearTimeout(t); t = setTimeout(() => { t = null; s.refresh(); }, 250); }
     if (e.type === 'approvals') {
       useStore.setState({ approvals: e.approvals || [], approvalRules: e.rules || {} });
       // A brand-new chat can ask before its card has been loaded; load it so the request has a home.
       if (e.added?.chat && !s.byId[e.added.chat]) s.refresh(true);
     }
-    if (e.type === 'board-changed') s.refreshBoard();
+    if (e.type === 'board-changed') {
+      if (!t) s.refreshBoard();
+      else {
+        // Cards and their rows changed together (claude.ai history removed): load both and swap them in
+        // at once, or the placement pass sees cards without rows for a moment and puts them back.
+        clearTimeout(t); t = null;
+        Promise.all([api.entities(), api.accounts(), api.board(), api.edges()])
+          .then(([entities, accounts, board, edges]) => useStore.setState({ entities, byId: index(entities), accounts, board, edges, boardLoaded: true }))
+          .catch(() => s.refreshBoard());
+      }
+    }
     if (e.type === 'auth') {
       useStore.setState((st) => ({ auth: { ...st.auth, [e.accountId]: { phase: e.phase, url: e.url ?? (e.phase === 'waiting' && st.auth[e.accountId]?.phase === 'waiting' ? st.auth[e.accountId]?.url : undefined), error: e.error } } }));
       if (e.phase === 'done' || e.phase === 'status') s.refresh();

@@ -29,6 +29,9 @@ function textOf(content) {
 function isNoise(text) {
   return !text || /^<(command-|local-command|system-reminder|user-memory)/.test(text.trim()) || text.startsWith('Caveat:');
 }
+// System, hook and harness wrappers (<task-notification>, <system-reminder>, Caveat: ...) are not
+// something the user typed, so they never become a title.
+const isWrapper = (text) => { const t = String(text || '').trim(); return !t || t.startsWith('<') || t.startsWith('Caveat:'); };
 
 const base = (f) => String(f || '').split(/[\\/]/).pop();
 function toolLabel(b) {
@@ -64,7 +67,7 @@ function parseSession(file) {
       if (l.type === 'user' && Array.isArray(m.content) && m.content.every((b) => b.type === 'tool_result')) { act.last = 'result'; continue; }
       const text = textOf(m.content);
       if (l.isMeta || isNoise(text)) continue;
-      if (l.type === 'user') { if (!/^\s*</.test(text)) act.prompt = truncate(text, 160); act.tool = ''; act.last = 'prompt'; }
+      if (l.type === 'user') { if (!isWrapper(text)) act.prompt = truncate(text, 160); act.tool = ''; act.last = 'prompt'; }
       else if (Array.isArray(m.content)) {
         for (const b of m.content) {
           if (b.type === 'tool_use') { act.tool = toolLabel(b); act.last = 'tool'; }
@@ -75,7 +78,7 @@ function parseSession(file) {
       messages.push({ id: l.uuid || `${messages.length}`, role: m.role || l.type, text, ts, kind: isTool ? 'tool' : undefined });
     }
   }
-  const firstUser = messages.find((m) => m.role === 'user');
+  const firstUser = messages.find((m) => m.role === 'user' && !isWrapper(m.text));
   const lastText = [...messages].reverse().find((m) => m.kind !== 'tool');
   // The card shows the newest reply, not the user's own prompt or an old summary.
   const lastReply = [...messages].reverse().find((m) => m.kind !== 'tool' && m.role === 'assistant');
@@ -141,20 +144,30 @@ function subagentInfo(file, st) {
   return info;
 }
 
-// Subagents of one session: <project>/<sessionId>/subagents/*.jsonl, plus the older layout of
-// agent-*.jsonl sidechain files next to the session that name it as their sessionId.
+// Subagents of one session: <project>/<sessionId>/subagents/*.jsonl, workflow workers in
+// <sessionId>/subagents/workflows/<run>/agent-*.jsonl, plus the older layout of agent-*.jsonl
+// sidechain files next to the session that name it as their sessionId. Files are stat'ed first and
+// only the newest 20 are read.
+const SUB_RUNNING_MS = 60000;
 function subagentsFor(file, sessionId) {
-  const out = [];
-  const add = (f, filter) => {
-    let st; try { st = fs.statSync(f); } catch { return; }
-    const info = subagentInfo(f, st);
-    if (filter && info.parent !== sessionId) return;
-    out.push({ id: info.id, title: info.title, lastText: info.lastText, updatedAt: st.mtimeMs, status: Date.now() - st.mtimeMs < 60000 ? 'running' : 'done' });
-  };
+  const cands = [];
+  const stat = (f, extra) => { try { cands.push({ f, st: fs.statSync(f), ...extra }); } catch {} };
+  const jsonl = (dir) => { try { return fs.readdirSync(dir).filter((n) => n.endsWith('.jsonl')).map((n) => path.join(dir, n)); } catch { return []; } };
   const subDir = path.join(path.dirname(file), sessionId, 'subagents');
-  try { for (const n of fs.readdirSync(subDir)) if (n.endsWith('.jsonl')) add(path.join(subDir, n)); } catch {}
-  try { for (const n of fs.readdirSync(path.dirname(file))) if (/^agent-.*\.jsonl$/.test(n)) add(path.join(path.dirname(file), n), true); } catch {}
-  return out.sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 20);
+  for (const f of jsonl(subDir)) stat(f, { kind: 'subagent' });
+  let runs = []; try { runs = fs.readdirSync(path.join(subDir, 'workflows')); } catch {}
+  for (const r of runs) for (const f of jsonl(path.join(subDir, 'workflows', r))) stat(f, { kind: 'workflow', workflow: r });
+  for (const f of jsonl(path.dirname(file))) if (/^agent-.*\.jsonl$/.test(path.basename(f))) stat(f, { kind: 'subagent', filter: true });
+  const out = [];
+  for (const c of cands.sort((x, y) => y.st.mtimeMs - x.st.mtimeMs)) {
+    if (out.length >= 20) break;
+    const info = subagentInfo(c.f, c.st);
+    if (c.filter && info.parent !== sessionId) continue;
+    const s = { id: info.id, kind: c.kind, title: info.title, lastText: info.lastText, updatedAt: c.st.mtimeMs, status: Date.now() - c.st.mtimeMs < SUB_RUNNING_MS ? 'running' : 'done' };
+    if (c.workflow) s.workflow = c.workflow;
+    out.push(s);
+  }
+  return out;
 }
 
 // Subagent and workflow side-threads are never cards, so skip them before parsing.
@@ -175,16 +188,23 @@ function entityFor(account, file) {
   const activity = activityOf(s);
   const subagents = subagentsFor(file, s.sessionId);
   const running = activity.running || subagents.some((a) => a.status === 'running');
+  const category = classify.category(s.cwd, s.gitBranch);
   return {
     id: `cc:${account.id}:${s.sessionId}`,
     kind: 'session', source: 'claude-code', accountId: account.id,
     title: (app && app.title) || s.title, preview: s.preview, updatedAt: s.updatedAt,
     status: running ? 'running' : (s.lastRole === 'assistant' ? 'idle' : 'waiting'),
-    meta: { cwd: s.cwd, gitBranch: s.gitBranch, file, sessionId: s.sessionId, messages: s.messages.length, category: classify.category(s.cwd, s.gitBranch), noise: classify.isNoise(s.cwd), archived: !!(app && app.archived), previewAt: s.previewAt, activity, subagents },
+    meta: {
+      cwd: s.cwd, gitBranch: s.gitBranch, file, sessionId: s.sessionId, messages: s.messages.length,
+      category, categoryLabel: classify.CATEGORY_LABEL[category], noise: classify.isNoise(s.cwd),
+      account: account.label || null, fromDesktopApp: !!app || category === 'desktop',
+      archived: !!(app && app.archived), previewAt: s.previewAt, activity, subagents,
+    },
   };
 }
 
-function list(account, { days = 21, max = 60 } = {}) {
+// The board shows the last week; History reads every session through sessionFiles(account, null).
+function list(account, { days = 7, max = 80 } = {}) {
   const files = sessionFiles(account, days).sort((a, b) => b.mtimeMs - a.mtimeMs).slice(0, max);
   return files.map((f) => entityFor(account, f.path)).filter(Boolean);
 }
@@ -195,14 +215,19 @@ function desktopEntity(d) {
   let s; try { s = parseSession(d.file); } catch { return null; }
   if (!s.messages.length) return null;
   const activity = activityOf(s);
+  const category = classify.category(d.cwd || s.cwd, null);
   return {
     id: d.id, kind: 'session', source: 'claude-app', accountId: null,
     title: d.title || s.title || truncate(d.initialMessage, 80) || 'Claude app session', preview: s.preview, updatedAt: d.updatedAt || s.updatedAt,
     status: activity.running ? 'running' : 'idle',
-    meta: { activity, cwd: d.cwd || s.cwd, file: d.file, sessionId: s.sessionId, messages: s.messages.length, category: classify.category(d.cwd || s.cwd, null), noise: false, archived: d.archived, readOnly: true, appAccount: `${d.acct.slice(0, 8)}/${d.org.slice(0, 8)}` },
+    meta: {
+      activity, cwd: d.cwd || s.cwd, file: d.file, sessionId: s.sessionId, messages: s.messages.length,
+      category, categoryLabel: classify.CATEGORY_LABEL[category], noise: false, archived: d.archived, readOnly: true,
+      appAccount: `${d.acct.slice(0, 8)}/${d.org.slice(0, 8)}`, account: d.accountName ? `Claude app · ${d.accountName}` : 'Claude app',
+    },
   };
 }
-function desktopList({ days = 21 } = {}) {
+function desktopList({ days = 7 } = {}) {
   const since = days == null ? 0 : Date.now() - days * DAY;
   return claudeDesktop.agentSessions().filter((d) => d.updatedAt >= since).map(desktopEntity).filter(Boolean);
 }

@@ -15,6 +15,7 @@ const gmail = require('./sources/gmail.cjs');
 const cursor = require('./sources/cursor.cjs');
 const apiChat = require('./sources/apiChat.cjs');
 const grokbot = require('./sources/grokbot.cjs');
+const claudeDesktop = require('./sources/claudeDesktop.cjs');
 
 const events = new EventEmitter();
 const emit = (e) => events.emit('event', e);
@@ -124,6 +125,40 @@ function firstRunSetup() {
 // ---------- entities ----------
 function invalidate() { entityCache.at = 0; }
 
+// Liveness. main.cjs watches the Claude Code / Codex / Granola folders; the hub also watches Grok
+// Bot's cache and the Claude desktop app's session index, and while anything is running it re-checks
+// shortly after, so a card flips from running to idle without waiting for the 30 s refresh.
+const FRESH_MS = 120000;
+const SETTLE_MS = 15000;
+let extraWatchers = null;
+let liveTimer = null;
+let changeTimer = null;
+function changed() {
+  clearTimeout(changeTimer);
+  changeTimer = setTimeout(() => { invalidate(); emit({ type: 'entities-changed' }); }, 700);
+  if (changeTimer.unref) changeTimer.unref();
+}
+function watchExtra() {
+  if (extraWatchers) return;
+  extraWatchers = [];
+  const dirs = [grokbot.PERSIST, path.join(claudeDesktop.ROOT, 'claude-code-sessions'), path.join(claudeDesktop.ROOT, 'local-agent-mode-sessions')];
+  for (const d of dirs) {
+    if (!exists(d)) continue;
+    try {
+      const w = fs.watch(d, { recursive: true }, changed);
+      w.on('error', () => {});
+      if (w.unref) w.unref();
+      extraWatchers.push(w);
+    } catch {}
+  }
+}
+function scheduleSettle(list) {
+  if (liveTimer || !list.some((e) => e.kind === 'session' && e.status === 'running')) return;
+  liveTimer = setTimeout(() => { liveTimer = null; invalidate(); emit({ type: 'entities-changed' }); }, SETTLE_MS);
+  if (liveTimer.unref) liveTimer.unref();
+}
+const cacheTtl = (list) => (list.some((e) => e.kind === 'session' && Date.now() - (e.updatedAt || 0) < FRESH_MS) ? 1500 : 4000);
+
 async function sourceList(a) {
   try {
     switch (a.kind) {
@@ -173,7 +208,8 @@ function gitBranches(cwd) {
 }
 
 async function entities({ force = false } = {}) {
-  if (!force && Date.now() - entityCache.at < 4000) return entityCache.list;
+  if (!force && Date.now() - entityCache.at < cacheTtl(entityCache.list)) return entityCache.list;
+  watchExtra();
   const accs = accounts();
   const lists = await Promise.all(accs.map(sourceList));
   const list = [];
@@ -182,8 +218,10 @@ async function entities({ force = false } = {}) {
     list.push({ id: `ac:${a.id}`, kind: 'account', source: a.kind, accountId: a.id, title: a.label, updatedAt: a.created_at, status: 'idle', meta: { usage: usageFor(a), color: a.color, config: a.config } });
     for (const e of lists[i]) {
       list.push(e);
+      if (e.kind === 'session' && e.meta && !e.meta.account) e.meta.account = a.label;
       const cwd = e.meta && e.meta.cwd;
-      if (cwd && cwd !== HOME && !e.meta.noise && (e.source === 'claude-code' || e.source === 'codex')) {
+      // Claude app chats without a folder run in a per-chat scratch folder: not a project.
+      if (cwd && cwd !== HOME && !e.meta.noise && e.meta.category !== 'desktop' && (e.source === 'claude-code' || e.source === 'codex')) {
         const p = projects.get(cwd) || { sessions: [], updatedAt: 0 };
         p.sessions.push(e.id); p.updatedAt = Math.max(p.updatedAt, e.updatedAt);
         projects.set(cwd, p);
@@ -206,6 +244,7 @@ async function entities({ force = false } = {}) {
     list.push({ id: `nt:${n.id}`, kind: 'note', source: 'note', title: truncate(n.text.split('\n')[0], 60) || 'Note', preview: n.text, updatedAt: n.ts, status: 'idle', meta: {} });
   }
   entityCache = { at: Date.now(), list };
+  scheduleSettle(list);
   return list;
 }
 

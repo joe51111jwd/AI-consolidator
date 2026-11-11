@@ -6,6 +6,7 @@ import { useStore } from '../lib/store';
 // New builds lose macOS Accessibility permission, which Grok Bot sending needs. Nudge once per version.
 export default function Onboarding() {
   const hasGrok = useStore((s) => s.accounts.some((a) => a.kind === 'grok-bot'));
+  const settingsOpen = useStore((s) => !!s.settingsTab);
   const [need, setNeed] = useState(false);
   const [version, setVersion] = useState('');
   useEffect(() => {
@@ -24,7 +25,7 @@ export default function Onboarding() {
     check();
     return () => clearTimeout(t);
   }, [hasGrok]);
-  if (!need) return null;
+  if (!need || settingsOpen) return null; // it would sit over the Settings tabs
   return (
     <div className="sb-onboard" role="dialog">
       <ShieldCheck size={16} />

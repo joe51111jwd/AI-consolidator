@@ -11,6 +11,7 @@ import { AgentLogo } from '../components/Logos';
 import ComputerPreview from '../components/demo/DemoNodes';
 import { GrokAvatar, GroupAvatar } from '../components/GrokAvatar';
 import { useAttention, needsAttention, useSeen } from '../lib/attention';
+import { COMPACT_H } from '../lib/layout';
 
 const Handles = () => (
   <>
@@ -111,31 +112,86 @@ function LiveOrPreview({ id, preview, title }: { id: string; preview?: string; t
 }
 
 type Activity = { prompt?: string; tool?: string; text?: string; running?: boolean };
-type Sub = { id: string; title: string; status: 'running' | 'done'; updatedAt?: number; lastText?: string };
+type Sub = { id: string; title: string; status: 'running' | 'done'; updatedAt?: number; lastText?: string; prUrl?: string };
+type Pill = 'running' | 'waiting' | 'done' | 'error' | null;
+const PILL_LABEL: Record<string, string> = { running: 'Working', waiting: 'Your turn', done: 'Done', error: 'Failed' };
+const RECENT = 120000;
 
-function ActivityLine({ e }: { e: Entity }) {
-  const running = useRunning(e);
-  const a: Activity | undefined = e.meta?.activity;
-  if (!a || !(running || a.running)) return null;
-  const now = a.tool || a.text?.split('\n').filter(Boolean).pop() || 'Thinking';
+const oneLine = (t?: unknown) => (typeof t === 'string' ? t : '').replace(/[#*_`>]+/g, '').replace(/\s+/g, ' ').trim().slice(0, 240);
+
+function usePill(e: Entity, extraRunning = false): Pill {
+  const live = useStore((s) => s.liveByEntity[e.id]);
+  if (extraRunning || live?.status === 'running' || e.status === 'running') return 'running';
+  if (e.status === 'waiting') return 'waiting';
+  if (live?.status === 'error' || e.status === 'error') return 'error';
+  if (live?.status === 'done' && Date.now() - live.startedAt < 10 * 60000) return 'done';
+  return null;
+}
+
+// The latest thing a card said: a run that just streamed in wins over the stored preview.
+function useLatest(id: string, preview?: string): { text: string; live: boolean; error?: string } {
+  const live = useStore((s) => s.liveByEntity[id]);
+  if (live && (live.status === 'running' || Date.now() - live.startedAt < RECENT)) {
+    if (live.status === 'error') return { text: '', live: false, error: live.error || 'Failed' };
+    return { text: live.text || '', live: live.status === 'running' };
+  }
+  return { text: preview || '', live: false };
+}
+
+const sortSubs = <T extends Sub>(subs: T[]) =>
+  [...subs].sort((a, b) => (a.status === b.status ? (b.updatedAt || 0) - (a.updatedAt || 0) : a.status === 'running' ? -1 : 1));
+
+function subsLabel(subs: Sub[]) {
+  if (!subs.length) return '';
+  const run = subs.filter((s) => s.status === 'running').length;
+  return `${subs.length} agent${subs.length === 1 ? '' : 's'}${run ? `, ${run} running` : ''}`;
+}
+
+function StatusPill({ pill }: { pill: Pill }) {
+  if (!pill) return null;
+  return <span className={`status-pill ${pill}`}>{pill === 'running' && <i />}{PILL_LABEL[pill]}</span>;
+}
+
+// Row 2: what it's doing right now (shimmering while it works), else the latest reply.
+function NowLine({ running, now, fallback, error }: { running: boolean; now?: string; fallback?: string; error?: string }) {
+  if (error) return <div className="card-now err" title={error}>{error}</div>;
+  if (running) return <div className="card-now act-now" title={now}>▸ <span className="shimmer">{now || 'Thinking'}</span></div>;
+  const t = oneLine(fallback);
+  return <div className={`card-now ${t ? '' : 'empty'}`} title={t}>{t || 'Nothing yet'}</div>;
+}
+
+function Meta({ parts, chip }: { parts: (React.ReactNode | false | null | undefined | '')[]; chip?: string }) {
+  const shown = parts.filter((x) => x !== false && x != null && x !== '');
   return (
-    <div className="activity">
-      {a.prompt && <div className="act-prompt" title={a.prompt}>{a.prompt}</div>}
-      <div className="act-now" title={now}>▸ <span className="shimmer">{now}</span></div>
+    <div className="card-meta">
+      {shown.map((p, i) => <React.Fragment key={i}>{i > 0 && <span className="sep">·</span>}<span className="m">{p}</span></React.Fragment>)}
+      {chip && <span className="meta-chip">{chip}</span>}
     </div>
   );
 }
 
-function Subagents({ e }: { e: Entity }) {
-  const subs: Sub[] = Array.isArray(e.meta?.subagents) ? e.meta.subagents : [];
+function Reply({ id, text, title, live }: { id: string; text: string; title: string; live?: boolean }) {
+  if (!text.trim()) return null;
+  const shown = live ? text.slice(-700) : text.slice(0, 1600);
+  return (
+    <div className={`card-reply ${live ? 'live' : ''}`}>
+      <div className="md" dangerouslySetInnerHTML={{ __html: md(shown) }} />
+      <span className="grip nodrag" draggable onDragStart={(ev) => dragOutput(ev, { text, title: `Reply from ${title}`, sourceId: id })} title="Drag onto another card"><GripVertical size={13} /></span>
+    </div>
+  );
+}
+
+function SubRows({ id, subs }: { id: string; subs: Sub[] }) {
   if (!subs.length) return null;
-  const sorted = [...subs].sort((a, b) => (a.status === b.status ? (b.updatedAt || 0) - (a.updatedAt || 0) : a.status === 'running' ? -1 : 1));
-  const open = (ev: React.MouseEvent) => { ev.stopPropagation(); useStore.getState().open(e.id); };
+  const sorted = sortSubs(subs);
+  const open = (ev: React.MouseEvent) => { ev.stopPropagation(); useStore.getState().open(id); };
   return (
     <div className="subagents">
       {sorted.slice(0, 4).map((s) => (
         <button key={s.id} className="sub-row nodrag" onClick={open} title={s.lastText || s.title}>
-          <i className={`sub-dot ${s.status}`} /><span className="sub-t">{s.title}</span><span className="sub-age">{ago(s.updatedAt)}</span>
+          <i className={`sub-dot ${s.status}`} /><span className="sub-t">{s.title}</span>
+          {s.prUrl && <a className="sub-pr" href={s.prUrl} target="_blank" rel="noreferrer" onClick={(ev) => ev.stopPropagation()} title="Pull request"><GitPullRequest size={11} /></a>}
+          <span className="sub-age">{ago(s.updatedAt)}</span>
         </button>
       ))}
       {sorted.length > 4 && <button className="sub-more nodrag" onClick={open}>{sorted.length - 4} more</button>}
@@ -143,8 +199,39 @@ function Subagents({ e }: { e: Entity }) {
   );
 }
 
+// The compact card: one line of who/what + status, one line of "now", one line of meta.
+// Hover, select or focus opens the drawer (reply, agents, composer) over whatever sits below,
+// so the card's footprint on the board never changes. Resized cards show the drawer in place.
+function Compact({ id, selected, stripe, className = '', avatar, title, pill, extra, now, meta, children }: {
+  id: string; selected?: boolean; stripe?: string; className?: string; avatar: React.ReactNode; title: string;
+  pill?: Pill; extra?: React.ReactNode; now: React.ReactNode; meta: React.ReactNode; children?: React.ReactNode;
+}) {
+  const sized = useStore((s) => !!s.board.find((b) => b.id === id)?.h);
+  const attn = useAttention(id);
+  const drawer = React.Children.toArray(children).length > 0;
+  return (
+    <div className={`card v2 ${sized ? 'sized' : ''} ${pill === 'running' ? 'is-running' : ''} ${attn ? 'needs-you' : ''} ${className}`} style={{ ['--stripe' as any]: stripe }}>
+      <NodeResizer isVisible={!!selected} minWidth={220} minHeight={COMPACT_H} lineClassName="card-resize-line" handleClassName="card-resize-handle"
+        onResizeEnd={(_, p) => saveSize(id, p)} />
+      <Handles />
+      <div className="card-face">
+        {stripe && <span className="card-stripe" />}
+        {attn && <span className="attn-dot" title="Needs you" />}
+        <div className="card-row">
+          <span className="card-av">{avatar}</span>
+          <div className="card-title" title={title}>{title}</div>
+          <StatusPill pill={pill || null} />
+          {extra}
+        </div>
+        {now}
+        {meta}
+        {drawer && <div className="card-more"><div className="card-more-in">{children}</div></div>}
+      </div>
+    </div>
+  );
+}
+
 type GrokAction = { kind: 'message' | 'event' | 'tool' | 'connector' | 'agent' | 'notice'; text: string; ts?: number };
-type GrokSub = Sub & { prUrl?: string };
 const ACTION_ICON: Record<string, React.ReactNode> = {
   message: <MessageSquare size={11} />, event: <Zap size={11} />, tool: <Wrench size={11} />,
   connector: <Plug size={11} />, agent: <Bot size={11} />, notice: <Info size={11} />,
@@ -156,27 +243,22 @@ function GrokNode({ id, e, selected }: { id: string; e: Entity; selected?: boole
   const [screen, setScreen] = useState(false);
   const color: string = e.meta?.avatarColor || colorOf(e, useStore.getState().accounts);
   const shape: string = e.meta?.avatarShape || 'circle';
-  const a: { text?: string; tool?: string; running?: boolean } | undefined = e.meta?.activity;
+  const a: Activity | undefined = e.meta?.activity;
   const actions: GrokAction[] = Array.isArray(e.meta?.actions) ? e.meta.actions : [];
-  const subs: GrokSub[] = Array.isArray(e.meta?.subagents) ? e.meta.subagents : [];
+  const subs: Sub[] = Array.isArray(e.meta?.subagents) ? e.meta.subagents : [];
   const live = running || !!a?.running;
-  const now = a?.tool || a?.text;
-  const open = (ev: React.MouseEvent) => { ev.stopPropagation(); useStore.getState().open(id); };
+  const pill = usePill(e, live);
+  const latest = useLatest(id, a?.text || actions[0]?.text || e.preview);
   const attn = useAttention(id);
   const group = !!e.meta?.isGroup || (e.title || '').includes(',');
   const members: { color?: string; shape?: string }[] = Array.isArray(e.meta?.members) && e.meta.members.length
     ? e.meta.members : (e.title || '').split(',').slice(0, 4).map((_, i) => ({ color: i ? undefined : color, shape }));
   return (
-    <Card id={id} selected={selected} stripe={color} className="grok-card" minH={160}>
-      <div className="grok-head">
-        {group
-          ? <GroupAvatar members={members} size={30} attention={attn} />
-          : <GrokAvatar color={color} shape={shape} size={30} working={live} attention={attn} title={e.title} />}
-        <div className="card-title">{e.title}</div>
-        <span className="when">{live ? <span className="status running"><i />Working</span> : ago(e.updatedAt)}</span>
-        <button className="grok-hide nodrag" title="Hide bot" onClick={(ev) => { ev.stopPropagation(); (window as any).__sbHide?.([id]); }}><EyeOff size={11} /></button>
-      </div>
-      {now && <div className="act-now" title={now}>▸ <span className={live ? 'shimmer' : ''}>{now}</span></div>}
+    <Compact id={id} selected={selected} stripe={color} className="grok-card" title={e.title} pill={pill}
+      avatar={group ? <GroupAvatar members={members} size={20} attention={attn} /> : <GrokAvatar color={color} shape={shape} size={20} working={live} attention={attn} title={e.title} />}
+      extra={<button className="grok-hide nodrag" title="Hide bot" onClick={(ev) => { ev.stopPropagation(); (window as any).__sbHide?.([id]); }}><EyeOff size={11} /></button>}
+      now={<NowLine running={live} now={a?.tool || a?.text} fallback={latest.text} error={latest.error} />}
+      meta={<Meta parts={['Grok', e.meta?.unreadCount > 0 && `${e.meta.unreadCount} unread`, ago(e.meta?.lastActivityAt || e.updatedAt)]} chip={subsLabel(subs)} />}>
       {actions.length > 0 && (
         <div className="grok-feed nowheel">
           {actions.slice(0, 15).map((x, i) => (
@@ -186,49 +268,46 @@ function GrokNode({ id, e, selected }: { id: string; e: Entity; selected?: boole
           ))}
         </div>
       )}
-      {subs.length > 0 && (
-        <div className="subagents">
-          {[...subs].sort((p, q) => (p.status === q.status ? (q.updatedAt || 0) - (p.updatedAt || 0) : p.status === 'running' ? -1 : 1)).slice(0, 4).map((s) => (
-            <button key={s.id} className="sub-row nodrag" onClick={open} title={s.lastText || s.title}>
-              <i className={`sub-dot ${s.status}`} /><span className="sub-t">{s.title}</span>
-              {s.prUrl && <a className="sub-pr" href={s.prUrl} target="_blank" rel="noreferrer" onClick={(ev) => ev.stopPropagation()} title="Pull request"><GitPullRequest size={11} /></a>}
-              <span className="sub-age">{ago(s.updatedAt)}</span>
-            </button>
-          ))}
-        </div>
-      )}
+      <SubRows id={id} subs={subs} />
       <button className={`grok-screen-toggle nodrag ${screen ? 'on' : ''}`} onClick={(ev) => { ev.stopPropagation(); setScreen(!screen); }} title="Show its computer">
         <Monitor size={11} />Computer
       </button>
       {screen && <div className="grok-screen nodrag"><ComputerPreview name={e.title} color={color} live={live} /></div>}
       <Composer id={id} placeholder="Message…" />
-    </Card>
+    </Compact>
   );
 }
 
 export const SessionNode = memo(({ id, selected }: NodeProps) => {
   const e = useEntity(id); if (!e) return <Gone />;
   if (e.source === 'grok-bot') return <GrokNode id={id} e={e} selected={selected} />;
+  return <AgentCard id={id} e={e} selected={selected} />;
+});
+
+function AgentCard({ id, e, selected }: { id: string; e: Entity; selected?: boolean }) {
+  const pill = usePill(e);
+  const latest = useLatest(id, e.preview);
+  const acc = accountOf(e);
+  const src = SOURCE[e.source] || { label: e.source, color: '#71717A' };
   const cat = categoryOf(e);
   const folder = cat === 'coding' ? baseName(e.meta?.cwd) : '';
   const branch = e.meta?.gitBranch && !['main', 'master', 'HEAD'].includes(e.meta.gitBranch) ? e.meta.gitBranch : '';
+  const a: Activity | undefined = e.meta?.activity;
+  const subs: Sub[] = Array.isArray(e.meta?.subagents) ? e.meta.subagents : [];
+  const running = pill === 'running';
+  const now = a?.tool || a?.text?.split('\n').filter(Boolean).pop() || latest.text.split('\n').filter(Boolean).pop();
   return (
-    <Card id={id} selected={selected} stripe={colorOf(e, useStore.getState().accounts)}>
-      <Top e={e} />
-      <div className="card-title">{e.title}</div>
-      {cat && (
-        <div className="card-meta">
-          <span className={`kind-chip ${cat}`}>{cat === 'coding' ? 'Code' : 'Chat'}</span>
-          {folder && <span className="mono" title={e.meta?.cwd}>{folder}{branch && <em> · {branch}</em>}</span>}
-        </div>
-      )}
-      <ActivityLine e={e} />
-      <LiveOrPreview id={id} preview={e.preview} title={e.title} />
-      <Subagents e={e} />
+    <Compact id={id} selected={selected} stripe={colorOf(e, useStore.getState().accounts)} title={e.title} pill={pill}
+      avatar={<AgentLogo source={e.source} size={16} color={acc?.color || src.color} working={running} />}
+      now={<NowLine running={running} now={now} fallback={latest.text} error={latest.error} />}
+      meta={<Meta parts={[acc?.label || src.label, cat && <span className={`kind-chip ${cat}`}>{cat === 'coding' ? 'Code' : 'Chat'}</span>, folder && <span className="mono" title={e.meta?.cwd}>{folder}{branch && <em> · {branch}</em>}</span>, ago(e.updatedAt)]} chip={subsLabel(subs)} />}>
+      {running && a?.prompt && <div className="act-prompt" title={a.prompt}>{a.prompt}</div>}
+      <Reply id={id} text={latest.text} title={e.title} live={latest.live} />
+      <SubRows id={id} subs={subs} />
       <Composer id={id} placeholder="Reply…" />
-    </Card>
+    </Compact>
   );
-});
+}
 
 const PROMPT_ACCOUNTS = ['claude-code', 'codex', 'anthropic-api', 'openai-compatible', 'grok-bot'];
 
@@ -284,53 +363,71 @@ const TINTS = ['#D97757', '#2F6B55', '#6D5BD0', '#B08A2E', '#3F5E8C'];
 
 export const MeetingNode = memo(({ id, selected }: NodeProps) => {
   const e = useEntity(id); if (!e) return <Gone />;
+  return <MeetingCard id={id} e={e} selected={selected} />;
+});
+
+function MeetingCard({ id, e, selected }: { id: string; e: Entity; selected?: boolean }) {
+  const latest = useLatest(id, e.preview);
+  const pill = usePill(e);
   const people: any[] = e.meta?.attendees || [];
   const day = new Date(e.meta?.at || e.updatedAt).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
-  return (
-    <Card id={id} selected={selected} stripe={SOURCE.granola.color}>
-      <Top e={e} label={day} />
-      <div className="card-title">{e.title}</div>
-      {people.length > 0 && <div className="people">{people.slice(0, 5).map((p, i) => <span key={p.email || i} title={p.name || p.email} style={{ background: TINTS[i % TINTS.length] }}>{(p.name || p.email || '?').slice(0, 1).toUpperCase()}</span>)}</div>}
-      <LiveOrPreview id={id} preview={e.preview} title={e.title} />
-    </Card>
+  const faces = people.length > 0 && (
+    <span className="people">{people.slice(0, 4).map((p, i) => <span key={p.email || i} title={p.name || p.email} style={{ background: TINTS[i % TINTS.length] }}>{(p.name || p.email || '?').slice(0, 1).toUpperCase()}</span>)}{people.length > 4 && <em>+{people.length - 4}</em>}</span>
   );
-});
+  return (
+    <Compact id={id} selected={selected} stripe={SOURCE.granola.color} title={e.title} pill={pill}
+      avatar={<AgentLogo source="granola" size={16} color={SOURCE.granola.color} working={pill === 'running'} />}
+      now={<NowLine running={pill === 'running'} now={latest.text.split('\n').filter(Boolean).pop()} fallback={latest.text} error={latest.error} />}
+      meta={<Meta parts={[day, faces]} />}>
+      <Reply id={id} text={latest.text} title={e.title} live={latest.live} />
+    </Compact>
+  );
+}
 
 export const ThreadNode = memo(({ id, selected }: NodeProps) => {
   const e = useEntity(id); if (!e) return <Gone />;
-  return (
-    <Card id={id} selected={selected} stripe={colorOf(e, useStore.getState().accounts)}>
-      <Top e={e} label={accountOf(e)?.label || 'Gmail'} />
-      <div className="card-title">{e.title}</div>
-      <LiveOrPreview id={id} preview={e.preview} title={e.title} />
-    </Card>
-  );
+  return <ThreadCard id={id} e={e} selected={selected} />;
 });
+
+function ThreadCard({ id, e, selected }: { id: string; e: Entity; selected?: boolean }) {
+  const latest = useLatest(id, e.preview);
+  const pill = usePill(e);
+  const color = colorOf(e, useStore.getState().accounts);
+  return (
+    <Compact id={id} selected={selected} stripe={color} title={e.title} pill={pill}
+      avatar={<AgentLogo source={e.source} size={16} color={color} working={pill === 'running'} />}
+      now={<NowLine running={pill === 'running'} now={latest.text.split('\n').filter(Boolean).pop()} fallback={latest.text} error={latest.error} />}
+      meta={<Meta parts={[accountOf(e)?.label || 'Gmail', ago(e.updatedAt)]} />}>
+      <Reply id={id} text={latest.text} title={e.title} live={latest.live} />
+    </Compact>
+  );
+}
 
 export const ClientNode = memo(({ id, selected }: NodeProps) => {
   const e = useEntity(id); const due = useStore(useShallow((s) => s.due.filter((d) => `cl:${d.clientId}` === id)));
+  const pill = useStore((s) => (s.liveByEntity[id]?.status === 'running' ? 'running' as const : null));
   if (!e) return <Gone />;
   const c = e.meta.client;
   const tone = c.status === 'lead' ? 'amber' : c.status === 'active' ? 'green' : '';
+  const next = due[0];
+  const company = c.company || c.domains?.[0] || c.emails?.[0] || 'Client';
   return (
-    <Card id={id} selected={selected} stripe="#2F6B55">
-      <div className="acc-head">
-        <div className="avatar" style={{ background: '#2F6B55' }}>{(c.name || '?').slice(0, 1).toUpperCase()}</div>
-        <div className="acc-id">
-          <div className="t">{c.name}</div>
-          <div className="s">{c.company || c.domains?.[0] || c.emails?.[0] || 'Client'}</div>
-        </div>
-        <span className={`chip ${tone}`}>{c.status}</span>
-      </div>
-      {due.length > 0 && (
+    <Compact id={id} selected={selected} stripe="#2F6B55" title={c.name} pill={pill}
+      avatar={<span className="client-av">{(c.name || '?').slice(0, 1).toUpperCase()}</span>}
+      extra={!pill && c.status ? <span className={`status-pill client ${tone}`}>{c.status}</span> : null}
+      now={next
+        ? <div className="card-now" title={next.title}><span className={`due-tag ${next.overdue ? 'red' : ''}`}>{dueLabel(next.due) || 'Open'}</span>{next.title}</div>
+        : <NowLine running={false} fallback={c.next_action || c.notes || company} />}
+      meta={<Meta parts={[company, due.length > 1 && `${due.length} open`]} />}>
+      {due.length > 1 && (
         <div className="due-lines">
-          {due.slice(0, 2).map((d) => (
+          {due.slice(0, 4).map((d) => (
             <div key={d.id} className="due-line"><span className={`chip ${d.overdue ? 'red' : 'amber'}`}>{dueLabel(d.due) || 'Open'}</span><span className="txt">{d.title}</span></div>
           ))}
         </div>
       )}
       <Composer id={id} placeholder="Ask an agent about this client…" />
-    </Card>
+    </Compact>
   );
 });
 
@@ -359,13 +456,18 @@ export const OutputNode = memo(({ id, selected }: NodeProps) => {
       </Card>
     );
   }
+  const lines = text.split('\n').map((l) => l.trim()).filter(Boolean);
+  const body = lines[0] && oneLine(lines[0]) === oneLine(e.title) ? lines.slice(1).join(' ') : lines.join(' ');
   return (
-    <Card id={id} selected={selected} className="output-card" stripe={SOURCE.output.color}>
-      <Top e={e} icon={<FileText size={13} />} label="Output" />
-      <div className="card-title">{e.title}</div>
-      <div className="md" dangerouslySetInnerHTML={{ __html: md(text) }} />
-      <span className="grip nodrag" draggable onDragStart={(ev) => dragOutput(ev, { text, title: e.title, sourceId: id })} title="Drag onto a card to send it"><GripVertical size={13} /></span>
-    </Card>
+    <Compact id={id} selected={selected} className="output-card" stripe={SOURCE.output.color} title={e.title}
+      avatar={<FileText size={15} />}
+      now={<NowLine running={false} fallback={body} />}
+      meta={<Meta parts={['Output', ago(e.updatedAt)]} />}>
+      <div className="card-reply">
+        <div className="md" dangerouslySetInnerHTML={{ __html: md(text) }} />
+        <span className="grip nodrag" draggable onDragStart={(ev) => dragOutput(ev, { text, title: e.title, sourceId: id })} title="Drag onto a card to send it"><GripVertical size={13} /></span>
+      </div>
+    </Compact>
   );
 });
 

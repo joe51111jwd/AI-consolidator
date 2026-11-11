@@ -1,8 +1,8 @@
 import { Entity, BoardRow, Client } from './api';
 import { baseName, categoryOf, isNoise } from './format';
 
-export const CARD_W = 300, GUTTER = 22, PAD = 24, HEAD = 56, GAP = 72;
-const MAXW = 2400, COL = CARD_W + GUTTER, DAY = 86400000;
+export const CARD_W = 260, GUTTER = 16, PAD = 20, HEAD = 52, GAP = 56, COMPACT_H = 88;
+const MAXW = 2200, COL = CARD_W + GUTTER, DAY = 86400000;
 export const PALETTE = ['#D97757', '#6D5BD0', '#2F6B55', '#3F5E8C', '#B08A2E', '#9A4B5B', '#4E6E7E', '#52525B'];
 
 const blank = (e: Entity) => !(e.preview || '').trim();
@@ -41,16 +41,13 @@ export function filterKeys(e: Entity): string[] {
 export const passesFilter = (e: Entity, off: Set<string>) => !off.size || !filterKeys(e).some((k) => off.has(k));
 
 // Rough card heights before the cards have rendered; real measurements are used when known.
+// Agent, chat, meeting, mail, client and output cards are a fixed compact height (their drawer floats).
 export function estH(e?: Entity): number {
-  if (!e) return 160;
-  const prev = !blank(e);
+  if (!e) return COMPACT_H;
   switch (e.kind) {
     case 'account': return ['claude-code', 'codex', 'anthropic-api', 'openai-compatible', 'grok-bot'].includes(e.source) ? 136 : 72;
-    case 'session': return prev ? 228 : 150;
-    case 'meeting': return prev ? 196 : 112;
-    case 'thread': return prev ? 172 : 100;
-    case 'client': return 150;
-    case 'output': return prev ? 248 : 132;
+    case 'session': case 'meeting': case 'thread': case 'client': return COMPACT_H;
+    case 'output': return blank(e) ? 132 : COMPACT_H;
     case 'note': return 150;
     default: return 120;
   }
@@ -124,8 +121,9 @@ export function frameLayout(groups: GroupSpec[], heightOf: (id: string) => numbe
   let x = 0, y = 0, shelf = 0;
   groups.forEach((g, gi) => {
     const n = g.ids.length; if (!n) return;
-    const short = g.ids.reduce((t, id) => t + heightOf(id), 0) / n < 150;
-    const cols = short ? Math.min(n, 4) : n <= 3 ? n : n <= 6 ? 2 : n <= 12 ? 3 : 4;
+    const short = g.ids.reduce((t, id) => t + heightOf(id), 0) / n < 120;
+    const cols = short ? (n <= 3 ? n : n <= 8 ? Math.ceil(n / 2) : Math.min(5, Math.ceil(Math.sqrt(n * 2))))
+      : n <= 3 ? n : n <= 6 ? 2 : n <= 12 ? 3 : 4;
     const colH = new Array(cols).fill(0);
     const gid = `grp:smart:${slug(g.label)}-${gi}`;
     const kids: BoardRow[] = g.ids.map((id) => {

@@ -15,12 +15,15 @@ const { execFileSync } = require('child_process');
 const { _electron } = require('playwright-core');
 
 const ROOT = path.join(__dirname, '..');
-const HOME = path.join(os.tmpdir(), 'switchboard-e2e');
+const RUN = `${process.pid}`;
+const HOME = path.join(os.tmpdir(), `switchboard-e2e-${RUN}`);
 const BIN = path.join(__dirname, 'fixtures', 'bin');
-const LOG = path.join(os.tmpdir(), 'switchboard-e2e-calls.log');
-const LOGINS = path.join(os.tmpdir(), 'switchboard-e2e-logins.json');
-const OPENED = path.join(os.tmpdir(), 'switchboard-e2e-opened.log');
-const PORT = '47911';
+const LOG = path.join(os.tmpdir(), `switchboard-e2e-${RUN}-calls.log`);
+const LOGINS = path.join(os.tmpdir(), `switchboard-e2e-${RUN}-logins.json`);
+const OPENED = path.join(os.tmpdir(), `switchboard-e2e-${RUN}-opened.log`);
+// Own folder and port per run, so two runs (or a run beside the installed app) never collide.
+const PORT = String(47911 + (process.pid % 2000));
+process.on('exit', () => { if (!process.env.SB_KEEP) for (const p of [HOME, LOG, LOGINS, OPENED]) { try { fs.rmSync(p, { recursive: true, force: true }); } catch {} } });
 const shot = async (name) => { if (process.env.SB_SHOTS && page) await page.screenshot({ path: path.join(process.env.SB_SHOTS, `${name}.png`) }).catch(() => {}); };
 
 const S = {
@@ -30,11 +33,26 @@ const S = {
   news: 'cc:a_claude3:0a1b2c3d-3333-4aaa-8bbb-000000000005',
   codex: 'cx:a_codex:0a1b2c3d-4444-4aaa-8bbb-000000000006',
   scratch: 'cc:a_claude1:0a1b2c3d-9999-4aaa-8bbb-000000000009',
+  desktop: 'cc:a_claude1:0a1b2c3d-7777-4aaa-8bbb-000000000007',
+  waiting: 'cc:a_claude2:0a1b2c3d-2222-4aaa-8bbb-00000000000a',
 };
+// A Claude Code session file as the CLI writes it. `mtime` (ms) backdates the file.
+function writeSession(configDir, cwd, sid, turns, mtime) {
+  const f = path.join(HOME, configDir, 'projects', cwd.replace(/[/.]/g, '-'), `${sid}.jsonl`);
+  const ts = new Date(mtime || Date.now()).toISOString();
+  fs.mkdirSync(path.dirname(f), { recursive: true });
+  fs.writeFileSync(f, turns.map(([role, text], i) => JSON.stringify(role === 'user'
+    ? { type: 'user', sessionId: sid, cwd, timestamp: ts, uuid: `${sid}-${i}`, message: { role, content: text } }
+    : { type: 'assistant', sessionId: sid, cwd, timestamp: ts, uuid: `${sid}-${i}`, message: { id: `msg_${sid}_${i}`, role, model: 'claude-sonnet-5-5', content: [{ type: 'text', text }], usage: { input_tokens: 10, output_tokens: 5 } } })).join('\n') + '\n');
+  if (mtime) fs.utimesSync(f, mtime / 1000, mtime / 1000);
+  return f;
+}
 
 const results = [];
 let current = '';
 async function check(name, fn) {
+  // SB_STOP=<n> ends the run after n checks (handy while working on one part).
+  if (process.env.SB_STOP && results.length >= Number(process.env.SB_STOP)) { await quit(); if (mock) mock.close(); console.log(`\nStopped after ${results.length} checks (SB_STOP)`); process.exit(results.some((r) => !r.ok) ? 1 : 0); }
   current = name;
   try { await fn(); results.push({ ok: true, name }); console.log(`  ✓ ${name}`); }
   catch (e) {
@@ -46,7 +64,7 @@ function assert(c, msg) { if (!c) throw new Error(msg); }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 async function until(fn, msg, ms = 10000) {
   const t0 = Date.now(); let last;
-  while (Date.now() - t0 < ms) { try { last = await fn(); if (last) return last; } catch (e) { last = e.message; } await sleep(150); }
+  while (Date.now() - t0 < ms) { try { last = await fn(); if (last) return last; } catch (e) { last = e.message; } await sleep(50); }
   throw new Error(`${msg} (waited ${ms / 1000}s${last && last !== true ? `; last: ${String(last).slice(0, 200)}` : ''})`);
 }
 const calls = () => { try { return fs.readFileSync(LOG, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)); } catch { return []; } };
@@ -67,9 +85,10 @@ async function launch() {
   if (process.platform === 'darwin') args.unshift('--use-mock-keychain');
   app = await _electron.launch({ executablePath: require('electron'), args, env, timeout: 60000 });
   page = await app.firstWindow();
+  page.setDefaultTimeout(8000);
   page.on('pageerror', (e) => console.log('    [page error]', e.message));
   await page.waitForSelector('.react-flow__node', { timeout: 30000 });
-  await sleep(800);
+  await sleep(300);
 }
 async function quit() { if (app) await app.close().catch(() => {}); app = null; }
 
@@ -91,6 +110,7 @@ const frameLabels = () => page.locator('.frame-tab .name').allInnerTexts();
 const smartCalls = () => promptCalls().filter((c) => /Group these cards from my work whiteboard/.test(c.prompt));
 async function center(id, zoom = 0.9) {
   await view('Board');
+  await page.mouse.move(5, 300); // a hovered card's drawer would cover the cards below it
   await until(() => page.evaluate(([i, z]) => window.__sbCenter && window.__sbCenter(i, z), [id, zoom]), `card ${id} is on the board`);
   await sleep(250);
 }
@@ -99,13 +119,15 @@ async function toast(re, ms = 8000) {
 }
 async function boardRow(id) { return (await api('board')).find((r) => r.id === id); }
 async function sendFromCard(id, text) {
+  // Compact cards keep the composer in a drawer that opens on hover.
+  await node(id).hover();
   const input = node(id).locator('.composer input, .composer textarea').first();
   await input.click();
   await input.fill(text);
   await input.press('Enter');
 }
 async function dragNode(id, dx, dy) {
-  const box = await node(id).locator('.card-title, .acc-head, .card-top').first().boundingBox();
+  const box = await node(id).locator('.card-title, .acc-head, .card-top .src').first().boundingBox();
   const x = box.x + box.width / 2, y = box.y + box.height / 2;
   await page.mouse.move(x, y); await page.mouse.down();
   for (let i = 1; i <= 12; i++) await page.mouse.move(x + (dx * i) / 12, y + (dy * i) / 12);
@@ -161,8 +183,43 @@ function sb(...args) {
   return execFileSync(process.execPath, [path.join(ROOT, 'electron', 'cli', 'sb.cjs'), ...args], { env: { ...process.env, HOME }, encoding: 'utf8', timeout: 30000 });
 }
 
+// A fake Grok Bot app cache under the test HOME: the same <base32(key)>.blob JSON files the real
+// app keeps, with a roster of two bots, a transcript and the selected bot.
+const GROK_DIR = path.join(HOME, 'Library', 'Application Support', 'Grok Bot', 'sand-client-persistence');
+function base32(str) {
+  const A = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+  let bits = 0, val = 0, out = '';
+  for (const b of Buffer.from(str, 'utf8')) { val = (val << 8) | b; bits += 8; while (bits >= 5) { out += A[(val >>> (bits - 5)) & 31]; bits -= 5; } }
+  if (bits > 0) out += A[(val << (5 - bits)) & 31];
+  return out;
+}
+function grokWrite(key, value, schemaVersion = 1) {
+  fs.mkdirSync(GROK_DIR, { recursive: true });
+  fs.writeFileSync(path.join(GROK_DIR, `${base32(key)}.blob`), JSON.stringify({ schemaVersion, value }));
+}
+function grokRoster(over = {}) {
+  const t = Date.now() - 20 * 60000;
+  grokWrite('u1.roster.last-roster', { rows: [
+    { id: 'bot_mkt', name: 'Marketing', description: 'Runs the campaigns', avatarColor: 'purple', avatarShape: 'cloud', lastEntry: { kind: 'message', text: 'Drafted the spring promo plan' }, unreadCount: 0, awaitingUserResponse: false, lastActivityAt: t, ...(over.bot_mkt || {}) },
+    { id: 'bot_cal', name: 'Calendar', description: 'Books calls', avatarColor: 'pink', avatarShape: 'egg', lastEntry: { kind: 'message', text: 'Booked Friday 2pm' }, unreadCount: 0, awaitingUserResponse: false, lastActivityAt: t - 60000, ...(over.bot_cal || {}) },
+  ] }, 4);
+}
+function grokSeed() {
+  const t = Date.now() - 20 * 60000;
+  grokRoster();
+  grokWrite('u1.transcript.replicas.bot_mkt', { entries: [
+    { id: 'm1', seq: 1, kind: 'message', role: 'user', content: 'Plan the spring promo', timestampMs: t - 60000 },
+    { id: 'm2', seq: 2, kind: 'message', role: 'assistant', content: 'Drafted the spring promo plan', timestampMs: t },
+  ] });
+  grokWrite('u1.transcript.replicas.bot_cal', { entries: [{ id: 'c1', seq: 1, kind: 'message', role: 'assistant', content: 'Booked Friday 2pm', timestampMs: t - 60000 }] });
+  grokWrite('u1.selection.last-agent', { agentId: 'bot_mkt' });
+}
+const GB = { mkt: 'gb:a_grok:bot_mkt', cal: 'gb:a_grok:bot_cal' };
+const opened = () => { try { return fs.readFileSync(OPENED, 'utf8').trim().split('\n').filter(Boolean); } catch { return []; } };
+
 async function main() {
   require('../scripts/seed.cjs').seed(HOME);
+  grokSeed();
   // A throwaway session in a scratch workspace: it must never become a card.
   {
     const cwd = path.join(os.tmpdir(), 'scratch-workspaces', 'e2e', 'scratch-1');
@@ -175,6 +232,9 @@ async function main() {
       { type: 'assistant', sessionId: sid, cwd, timestamp: ts, uuid: `${sid}-1`, message: { id: 'msg_scratch', role: 'assistant', model: 'claude-sonnet-5-5', content: [{ type: 'text', text: 'Scratch reply' }], usage: { input_tokens: 10, output_tokens: 5 } } },
     ].map((r) => JSON.stringify(r)).join('\n') + '\n');
   }
+  // A chat from the Claude desktop app: its scratch folder lives under ~/Library/Application Support.
+  writeSession('.claude', path.join(HOME, 'Library', 'Application Support', 'Claude', 'scratch-workspaces', 'ws-1', 'sess-1', 'scratch-2026-11-11-e2e'), S.desktop.split(':')[2],
+    [['user', 'Plan the Harbor Coffee loyalty card'], ['assistant', 'Here is a loyalty card plan: ten stamps, the tenth drink free.']], Date.now() - 30 * 60000);
   for (const f of [LOG, OPENED]) fs.rmSync(f, { force: true });
   // The fake Claude sign-in: which account each Claude Code folder ends up signed in to.
   // Two plans on one email, as with a Team organization and a personal Max plan.
@@ -202,6 +262,22 @@ async function main() {
     assert((await node(S.scratch).count()) === 0, 'no scratch session card');
     assert(/Code/.test(await node(S.menu).locator('.kind-chip').innerText()), 'coding sessions are marked Code');
   });
+  await check('chats from the Claude desktop app show up; temp-folder sessions stay hidden', async () => {
+    const ents = await api('entities', {});
+    const d = ents.find((e) => e.id === S.desktop);
+    assert(d && d.meta.category === 'desktop' && d.meta.noise === false, `desktop chat: ${JSON.stringify(d && d.meta && { c: d.meta.category, n: d.meta.noise })}`);
+    await until(async () => (await node(S.desktop).count()) === 1, 'the desktop chat is a card');
+    assert((await node(S.scratch).count()) === 0, 'the temp-folder session is not');
+  });
+  await check('the Grok Bot permission prompt shows once and "Later" hides it', async () => {
+    const prompt = page.locator('.sb-onboard');
+    await until(async () => (await prompt.count()) === 1, 'the prompt asks for Accessibility permission');
+    assert(/Allow Switchboard to send to Grok Bot/.test(await prompt.innerText()), 'says what it is for');
+    await prompt.locator('.sb-onboard-x').click();
+    await until(async () => (await prompt.count()) === 0, 'hidden');
+    const v = await api('app:version');
+    assert(await page.evaluate((k) => localStorage.getItem(k), `sb.permLater.${v}`), 'remembered for this version');
+  });
   await check('Smart group sorts the board into named frames on first open', async () => {
     await until(async () => { const l = await frameLabels(); return l.includes('Maya Lin') && l.includes('Dev Patel') ? l : false; }, 'frames named by the AI grouping', 20000);
     const c = smartCalls()[0];
@@ -220,7 +296,7 @@ async function main() {
     await center('nt:n1', 0.6);
     const before = await boardRow('nt:n1');
     const spot = await emptySpot();
-    const grip = await node('nt:n1').locator('.card-top').boundingBox();
+    const grip = await node('nt:n1').locator('.card-top .src').boundingBox();
     await dragNode('nt:n1', spot.sx - (grip.x + grip.width / 2), spot.sy - 60 - (grip.y + grip.height / 2));
     const after = await until(async () => { const r = await boardRow('nt:n1'); return r && (Math.abs(r.x - before.x) > 40 || Math.abs(r.y - before.y) > 40 || r.parent_id !== before.parent_id) ? r : false; }, 'saved position changed');
     movedTo = { x: after.x, y: after.y, parent: after.parent_id };
@@ -237,9 +313,11 @@ async function main() {
   let manualGroup;
   await check('shift-click selects without opening, and ⌘G groups the selection', async () => {
     await center(S.menu, 0.6);
-    await node(S.menu).locator('.card-title').click();
+    // A selected card's drawer floats over the card below it, so pick the lower card first.
+    await page.mouse.click(5, 300);
+    await node(S.seo).locator('.card-title').click();
     await page.keyboard.press('Escape');
-    await node(S.seo).locator('.card-title').click({ modifiers: ['Shift'] });
+    await node(S.menu).locator('.card-title').click({ modifiers: ['Shift'] });
     assert((await page.locator('.inspector').count()) === 0, 'shift-click did not open a card');
     await page.keyboard.press(mod('g'));
     manualGroup = await until(async () => (await api('board')).find((r) => r.id.startsWith('grp:manual')), 'a new group');
@@ -316,6 +394,38 @@ async function main() {
     await page.keyboard.press('Escape');
   });
 
+  console.log('\nLive view');
+  await check('Live lists every chat, grouped, with a summary line', async () => {
+    await view('Board');
+    await page.getByTestId('mode-live').click();
+    await until(async () => (await page.getByTestId('live-view').count()) === 1, 'Live view shown');
+    const summary = (await page.getByTestId('live-summary').innerText()).replace(/\s+/g, ' ');
+    assert(/\d+ working\W*\d+ need you\W*\d+ today/.test(summary), `summary: ${summary}`);
+    const ids = await page.getByTestId('live-row').evaluateAll((els) => els.map((e) => e.dataset.id));
+    for (const id of [S.menu, S.crew, S.desktop, GB.mkt]) assert(ids.includes(id), `row for ${id}`);
+    assert(!ids.includes(S.scratch), 'no temp-folder session');
+    assert(!(await page.locator('.react-flow__node').first().isVisible()), 'the board is hidden behind it');
+  });
+  await check('Live filters and search narrow the list', async () => {
+    await page.getByTestId('live-filter-desktop').click();
+    await until(async () => { const ids = await page.getByTestId('live-row').evaluateAll((els) => els.map((e) => e.dataset.id)); return ids.length >= 1 && ids.includes(S.desktop) && !ids.includes(S.menu); }, 'only desktop chats');
+    await page.getByTestId('live-filter-grok').click();
+    await until(async () => { const ids = await page.getByTestId('live-row').evaluateAll((els) => els.map((e) => e.dataset.id)); return ids.includes(GB.mkt) && ids.every((i) => i.startsWith('gb:')); }, 'only Grok bots');
+    await page.getByTestId('live-filter-all').click();
+    await page.getByTestId('live-search').fill('menu page');
+    await until(async () => { const ids = await page.getByTestId('live-row').evaluateAll((els) => els.map((e) => e.dataset.id)); return ids.includes(S.menu) && !ids.includes(S.crew); }, 'search matched the menu page chat');
+    await page.getByTestId('live-search').press('Escape');
+    await until(async () => (await page.getByTestId('live-search').inputValue()) === '', 'Escape cleared the search');
+  });
+  await check('clicking a Live row opens that chat in the side panel', async () => {
+    await page.locator(`[data-testid="live-row"][data-id="${S.menu}"]`).click();
+    await until(async () => (await page.locator('.inspector .title').count()) === 1 && /menu page/i.test(await page.locator('.inspector .title').innerText()), 'the chat opened');
+    await page.locator('.inspector .insp-head button[title="Close"]').click();
+    await page.getByTestId('mode-board').click();
+    await until(async () => page.locator('.react-flow__node').first().isVisible(), 'back on the board');
+    assert((await page.evaluate(() => localStorage.getItem('sb.mode'))) === 'board', 'mode saved');
+  });
+
   console.log('\nConnections and messages between agents');
   let link;
   await check('draw a line from one card to another', async () => {
@@ -380,6 +490,7 @@ async function main() {
   console.log('\nDrag and drop, outputs');
   await check('drag a message from an open chat onto another card attaches it', async () => {
     await center(S.seo, 0.55);
+    await page.mouse.click(5, 300);
     await node(S.seo).click({ position: { x: 60, y: 20 } });
     await until(async () => (await page.locator('.inspector .msg.assistant').count()) > 0, 'chat opens');
     const r = await htmlDrag('.inspector .msg.assistant .tools button[draggable]', { nodeId: S.menu });
@@ -429,7 +540,10 @@ async function main() {
     await page.mouse.up();
     await until(async () => (await node(S.crew).locator('.att .chip.green').count()) > 0, 'attachment chip on the agent card');
     assert((await page.locator('.inspector').count()) === 0, 'dragging did not open the card');
-    void o; void tAbs;
+    void tAbs;
+    // Put the output back where it was so it doesn't cover the cards around the target.
+    await api('board:save', [{ id: newOut.id, x: o.x, y: o.y, parent_id: o.parent_id || null, data: {} }]);
+    await page.evaluate(() => window.__sbRefresh());
   });
 
   console.log('\nPrompting each kind of card');
@@ -479,12 +593,32 @@ async function main() {
     assert(c.args.includes('resume') && c.args.includes(S.codex.split(':')[2]), `resumed the Codex session (${c.args.join(' ')})`);
     await until(async () => /Codex done/.test(await node(S.codex).innerText()), 'reply on the card');
   });
-  await check('the Grok Bot card copies the prompt for Grok Bot', async () => {
+  await check('Grok bots are read from the Grok Bot app cache as their own cards', async () => {
+    for (const id of [GB.mkt, GB.cal]) await until(async () => (await node(id).count()) === 1, `card ${id}`);
+    const mkt = (await api('entities', {})).find((e) => e.id === GB.mkt);
+    assert(mkt.title === 'Marketing' && mkt.source === 'grok-bot' && /spring promo/.test(mkt.preview), JSON.stringify({ t: mkt.title, p: mkt.preview }));
+    assert(mkt.meta.avatarShape === 'cloud' && mkt.meta.avatarColor, 'avatar from the roster');
+    const tr = await api('transcript', GB.mkt).catch(() => null);
+    if (tr) assert(tr.some((m) => /Plan the spring promo/.test(m.text)), 'transcript read from the cache');
+  });
+  await check('sending to a Grok bot opens a grokbot:// link and leaves the clipboard alone', async () => {
+    await app.evaluate(({ clipboard }) => clipboard.writeText('clipboard-sentinel'));
+    fs.rmSync(OPENED, { force: true });
+    await center(GB.mkt, 0.8);
+    await sendFromCard(GB.mkt, 'Check the Fieldline repo for open PRs');
+    const url = await until(() => opened().find((u) => u.startsWith('grokbot://')), 'a grokbot:// link was opened');
+    assert(url === `grokbot://app/v1/prompt?id=bot_mkt&text=${encodeURIComponent('Check the Fieldline repo for open PRs')}`, url);
+    await until(async () => /Marketing['’]s (message )?box/.test(await node(GB.mkt).innerText()), 'the card says where the message went');
+    assert((await app.evaluate(({ clipboard }) => clipboard.readText())) === 'clipboard-sentinel', 'clipboard untouched');
+  });
+  await check('the Grok Bot account card sends to the bot selected in Grok Bot', async () => {
+    fs.rmSync(OPENED, { force: true });
     await center('ac:a_grok', 0.8);
-    await sendFromCard('ac:a_grok', 'Check the Fieldline repo for open PRs');
-    await until(async () => /Copied to your clipboard/.test(await node('ac:a_grok').innerText()), 'card says it was copied');
-    const clip = await app.evaluate(({ clipboard }) => clipboard.readText());
-    assert(clip === 'Check the Fieldline repo for open PRs', `clipboard: ${clip}`);
+    await sendFromCard('ac:a_grok', 'Draft the Harbor newsletter');
+    const url = await until(() => opened().find((u) => u.startsWith('grokbot://')), 'a grokbot:// link was opened');
+    assert(url.includes('id=bot_mkt') && url.includes(encodeURIComponent('Draft the Harbor newsletter')), url);
+    assert((await app.evaluate(({ clipboard }) => clipboard.readText())) === 'clipboard-sentinel', 'clipboard untouched');
+    fs.rmSync(OPENED, { force: true });
   });
   await check('a Granola meeting opens with its notes', async () => {
     const m = (await api('entities', {})).find((e) => e.kind === 'meeting' && /Harbor Coffee kickoff/.test(e.title));
@@ -511,6 +645,8 @@ async function main() {
     await page.keyboard.press(mod('t'));
     await toast(/Tagged as context/);
     await page.keyboard.press('Escape');
+    await page.getByTestId('dock-plus').click();
+    await page.locator('.chief-panel .cf-act', { hasText: 'New chat' }).click();
     await page.getByTestId('dock-new').click();
     await until(async () => /1 tagged/.test(await page.getByTestId('dock').innerText()), 'the dock shows the tag');
     const input = page.getByTestId('dock-input');
@@ -522,6 +658,12 @@ async function main() {
   });
 
   console.log('\nOverall agent');
+  const chiefClose = () => page.evaluate(() => window.__sbChief(false));
+  await check('the + in the dock opens the agent panel', async () => {
+    await page.getByTestId('dock-plus').click();
+    await until(async () => (await page.locator('.sb-chief.open').count()) === 1, 'the panel slid in');
+    await until(() => page.evaluate(() => !!document.activeElement && !!document.activeElement.closest('.chief-bar')), 'the cursor is in its message box');
+  });
   await check('ask across everything and get an answer', async () => {
     await page.locator('.chief-bar input').fill('What needs me today?');
     await page.locator('.chief-bar input').press('Enter');
@@ -532,11 +674,12 @@ async function main() {
     assert(c.args.includes('--mcp-config'), 'it can use the Switchboard tools');
   });
   await check('ask about selected cards only', async () => {
-    await page.locator('.chief-panel .icon-btn').click().catch(() => {});
+    await chiefClose();
     await center(S.crew, 0.6);
     await node(S.crew).locator('.card-title').click();
     await page.keyboard.press('Escape');
     await node(S.news).locator('.card-title').click({ modifiers: ['Shift'], timeout: 3000 }).catch(() => {});
+    await page.getByTestId('dock-plus').click();
     await page.locator('.chief-bar input').fill('Compare these');
     await page.locator('.chief-bar input').press('Enter');
     const c = await until(() => promptCalls().find((x) => /User: Compare these/.test(x.prompt)), 'asked');
@@ -550,7 +693,7 @@ async function main() {
   await check('the overall agent remembers the conversation', async () => {
     const h = await api('chief:history');
     assert(h.filter((m) => m.role === 'user').length >= 2 && h.some((m) => m.role === 'assistant'), 'history kept');
-    await page.locator('.chief-panel .icon-btn').click().catch(() => {});
+    await chiefClose();
   });
   let dismissed;
   await check('the agent flags what needs you: click to open it, × to dismiss it', async () => {
@@ -564,14 +707,18 @@ async function main() {
     assert((await page.locator('.sb-chief .cf-badge').innerText()).match(/\d+/), 'the tab shows a count');
     await item.click();
     await until(async () => (await page.locator('.inspector .title').count()) === 1 && /Rosa Grant/.test(await page.locator('.inspector .title').innerText()), 'opened the client');
+    await until(async () => (await page.locator('.sb-chief.open').count()) === 0, 'the card took the side panel from the agent');
     await page.locator('.inspector .insp-head button[title="Close"]').click();
     dismissed = (await api('proactive:list')).find((i) => /Send AEO proposal/.test(i.title));
     assert(dismissed, 'listed by proactive:list');
+    await page.evaluate(() => window.__sbChief(true));
+    if (await needs.locator('.cf-more').count()) await needs.locator('.cf-more').click();
     await item.hover();
     await item.locator('.cf-x').click();
     await until(async () => (await item.count()) === 0, 'gone from the list');
     assert(!(await api('proactive:list')).some((i) => i.id === dismissed.id), 'stays dismissed');
-    await page.locator('.chief-panel .icon-btn').click();
+    await page.locator('.chief-panel .cf-titlebar .icon-btn').click();
+    await until(async () => (await page.locator('.sb-chief.open').count()) === 0, 'the panel closed');
   });
 
   console.log('\nClaude sign-in: two plans on one email');
@@ -625,9 +772,10 @@ async function main() {
   await check('the board shows which org and plan each Claude card uses', async () => {
     const t = await team();
     await center(`ac:${t.id}`, 0.9);
-    await until(async () => /Acme Studio · Team/.test(await node(`ac:${t.id}`).innerText()), 'Team card subtitle');
+    const plan = (id) => node(id).locator('.acc-id .s').getAttribute('title');
+    await until(async () => /Acme Studio · Team/.test(await plan(`ac:${t.id}`)), 'Team card shows its org and plan');
     await center('ac:a_claude1', 0.9);
-    await until(async () => /Individual Org · Max/.test(await node('ac:a_claude1').innerText()), 'Max card subtitle');
+    await until(async () => /Individual Org · Max/.test(await plan('ac:a_claude1')), 'Max card shows its org and plan');
     await page.evaluate(() => window.__sbCenter('ac:a_claude1', 0.75)); await sleep(300); await shot('board-accounts');
   });
   await check('prompting the Team card runs as the Team account', async () => {
@@ -664,10 +812,16 @@ async function main() {
     await until(async () => /Not signed in/.test(await page.getByTestId('claude-auth-a_claude3').innerText()), 'back to not signed in');
     fs.rmSync(path.join(HOME, '.claude-3', '.slow-login'), { force: true });
   });
-  await check('"Add Switchboard tools" registers the MCP server in every Claude and Codex account', async () => {
-    await page.locator('button', { hasText: 'Add Switchboard tools to my agents' }).click();
-    await until(async () => (await page.locator('.panel .well').first().innerText()).includes('Codex: added'), 'results listed');
-    const adds = calls().filter((x) => x.args && x.args[0] === 'mcp' && x.args[1] === 'add');
+  await check('"Let agents use Switchboard" registers the MCP server in every Claude and Codex account', async () => {
+    assert(calls().some((x) => x.bin === 'claude' && x.args && x.args[0] === 'mcp' && x.args[1] === 'add'), 'set up automatically on startup');
+    const sw = page.locator('button[role="switch"][aria-label="Let agents use Switchboard"]');
+    assert((await sw.getAttribute('aria-checked')) === 'true', 'on by default');
+    await sw.click();
+    await until(async () => (await sw.getAttribute('aria-checked')) === 'false' && /removed/.test(await page.getByTestId('agent-tools-results').innerText()), 'switched off and removed');
+    const n = calls().length;
+    await sw.click();
+    await until(async () => (await page.getByTestId('agent-tools-results').innerText()).includes('Codex: added'), 'results listed');
+    const adds = calls().slice(n).filter((x) => x.args && x.args[0] === 'mcp' && x.args[1] === 'add');
     const dirs = adds.filter((x) => x.bin === 'claude').map((x) => x.configDir ? path.basename(x.configDir) : '.claude').sort();
     assert(JSON.stringify(dirs) === JSON.stringify(['.claude', '.claude-2', '.claude-3', '.claude-4']), `added to ${dirs.join(', ')}`);
     const t = await team();
@@ -783,6 +937,32 @@ async function main() {
     await until(async () => /move the pastries above the drinks/.test(await page.locator('.inspector').innerText()), 'thread opens with the full mail');
     assert(mock.state.tokenRequests.filter((r) => r.grant_type === 'refresh_token').length === n + 1, 'refreshed once');
     await page.locator('.inspector .insp-head button[title="Close"]').click();
+  });
+
+  await check('a chat waiting on you gets an attention dot that clears once opened', async () => {
+    const base = Number(await page.evaluate(() => localStorage.getItem('sb.attnBase')));
+    // Ended on your message over 90 s ago (so not running), but after Switchboard first opened.
+    const wait = base + 95000 - Date.now(); if (wait > 0) await sleep(wait);
+    writeSession('.claude-2', path.join(HOME, 'code', 'fieldline-app'), S.waiting.split(':')[2],
+      [['assistant', 'Which date format should the export use?'], ['user', 'Should the crew export use ISO dates?']], Math.max(base + 1000, Date.now() - 92000));
+    await page.evaluate(() => window.__sbRefresh());
+    await until(async () => ((await api('entities', { force: true })).find((e) => e.id === S.waiting) || {}).status === 'waiting', 'the session is waiting on you');
+    await page.evaluate(() => window.__sbRefresh());
+    await until(() => page.evaluate((id) => (window.__sbAttention || []).includes(id), S.waiting), 'flagged as needing you');
+    await center(S.waiting, 0.8);
+    await until(async () => (await node(S.waiting).locator('.attn-dot').count()) === 1, 'attention dot on the card');
+    await page.evaluate(() => window.__sbMode('live'));
+    const row = page.locator(`[data-testid="live-needs"] [data-testid="live-row"][data-id="${S.waiting}"]`);
+    await until(async () => (await row.count()) === 1, 'listed under Needs you in Live');
+    assert((await row.getByTestId('live-attn').count()) === 1, 'with the dot');
+    await row.click();
+    await until(async () => (await page.locator('.inspector .title').count()) === 1, 'opened');
+    await page.locator('.inspector .insp-head button[title="Close"]').click();
+    await until(async () => (await row.count()) === 0, 'no longer under Needs you');
+    await page.evaluate(() => window.__sbMode('board'));
+    await until(() => page.evaluate((id) => !(window.__sbAttention || []).includes(id), S.waiting), 'cleared');
+    await center(S.waiting, 0.8);
+    assert((await node(S.waiting).locator('.attn-dot').count()) === 0, 'no dot after opening it');
   });
 
   console.log('\nShared brain');
@@ -914,8 +1094,11 @@ async function main() {
   await check('the outputs drawer lists outputs, and ticking one marks it done', async () => {
     await page.locator('.pn-out-face').click();
     const panel = page.locator('.pn-outputs.open .pn-out-panel');
-    await until(async () => /Harbor SEO plan/.test(await panel.innerText()), 'the seeded output is listed');
-    await panel.locator('.pn-out', { hasText: 'Harbor SEO plan' }).first().locator('.pn-check').click();
+    await panel.locator('.pn-tabs button', { hasText: 'Saved' }).click();
+    await until(async () => /Harbor SEO plan/.test(await panel.innerText()), 'the seeded output is listed under Saved');
+    await panel.locator('.pn-tabs button', { hasText: 'Recent' }).click();
+    await until(async () => /Hello from the team plan/.test(await panel.innerText()), 'replies from agents are listed under Recent');
+    await panel.locator('.pn-out', { hasText: 'Hello from the team plan' }).first().locator('.pn-check').click();
     await until(async () => ((await api('settings:get', 'outputsDone', [])) || []).length > 0, 'done saved');
     await until(async () => (await panel.locator('.pn-out-done').count()) === 1, 'folded into Done');
     await panel.locator('.icon-btn[title="Close"]').click();

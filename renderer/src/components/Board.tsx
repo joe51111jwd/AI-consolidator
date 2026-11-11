@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ReactFlow, Background, BackgroundVariant, Controls, MiniMap, Node, Edge, useNodesState, useEdgesState,
   useReactFlow, Connection, NodeChange, OnSelectionChangeParams, Viewport, SelectionMode,
+  getNodesBounds,
 } from '@xyflow/react';
 import { useStore } from '../lib/store';
 import { api, BoardRow, Entity } from '../lib/api';
@@ -12,7 +13,7 @@ import FlowEdge from './FlowEdge';
 import BoardTools from './BoardTools';
 import { attentionIds, useSeen } from '../lib/attention';
 import {
-  defaultVisible, suppressed, passesFilter, heuristicGroups, cleanGroups, frameLayout, placeNew, fitFrame, estH, unoverlap, GroupSpec, GAP, PAD, HEAD,
+  defaultVisible, suppressed, passesFilter, heuristicGroups, cleanGroups, frameLayout, placeNew, fitFrame, estH, unoverlap, GroupSpec, GAP, PAD, HEAD, CARD_W,
 } from '../lib/layout';
 import { PROMPTABLE, colorOf } from '../lib/format';
 import { EyeOff, Maximize2, Sparkles, Trash2, Zap, Unlink, Group, Ungroup, StickyNote } from 'lucide-react';
@@ -30,7 +31,6 @@ const deleted = new Set<string>();
 const hiddenIds = new Map<string, number>();
 // Background saves (unoverlap, drags, placement) can race a hide or delete; they must never undo it.
 const guard = (rows: BoardRow[]) => rows.filter((r) => !deleted.has(r.id)).map((r) => (Date.now() - (hiddenIds.get(r.id) || 0) < 8000 ? { ...r, hidden: 1 } : r));
-const defaultW = (kind: string) => (kind === 'note' ? 260 : 300);
 
 function toNodes(rows: BoardRow[], byId: Record<string, Entity>, show: (e: Entity) => boolean): Node[] {
   const groups = rows.filter((r) => isGroup(r.id) && !r.hidden);
@@ -44,7 +44,7 @@ function toNodes(rows: BoardRow[], byId: Record<string, Entity>, show: (e: Entit
     const e = byId[r.id];
     if (r.hidden || !e || suppressed(e) || !show(e)) continue;
     if (parent) shown.set(parent, (shown.get(parent) || 0) + 1);
-    cards.push({ id: r.id, type: e.kind, position: { x: r.x, y: r.y }, data: {}, style: { width: r.w || defaultW(e.kind), ...(r.h ? { height: r.h } : {}) }, ...(parent ? { parentId: parent } : {}) });
+    cards.push({ id: r.id, type: e.kind, position: { x: r.x, y: r.y }, data: {}, style: { width: r.w || CARD_W, ...(r.h ? { height: r.h } : {}) }, ...(parent ? { parentId: parent } : {}) });
   }
   // A frame whose cards are all hidden (old project frames, filtered out) disappears with them.
   const frames: Node[] = groups.filter((g) => !kids.get(g.id) || shown.get(g.id)).map((g) => ({
@@ -79,6 +79,24 @@ export default function Board() {
   const down = useRef<{ x: number; y: number } | null>(null);
   const [overview, setOverview] = useState(false);
   const beforeOverview = useRef<Viewport | null>(null);
+  const demoActive = useDemo((d) => d.active);
+  const beforeDemo = useRef<Viewport | null>(null);
+
+  // Top-left at a readable zoom, zoomed out just enough that the whole board fits when it can.
+  const home = (duration: number) => {
+    const roots = rf.getNodes().filter((n) => !n.parentId && !isDemo(n.id) && !n.hidden);
+    if (!roots.length) { rf.setViewport(START_VIEW, { duration }); return; }
+    const b = getNodesBounds(roots);
+    const z = Math.max(0.55, Math.min(START_VIEW.zoom, (window.innerWidth - 96) / b.width, (window.innerHeight - 200) / b.height));
+    const x = b.width * z <= window.innerWidth - 96 ? (window.innerWidth - b.width * z) / 2 - b.x * z : START_VIEW.x - b.x * z;
+    rf.setViewport({ x, y: START_VIEW.y - b.y * z, zoom: z }, { duration });
+  };
+
+  // Leaving the showcase returns to where you were, not to the empty canvas it was on.
+  useEffect(() => {
+    if (demoActive) { beforeDemo.current = rf.getViewport(); return; }
+    if (beforeDemo.current) { rf.setViewport(beforeDemo.current, { duration: 400 }); beforeDemo.current = null; }
+  }, [demoActive]);
   useSeen((s) => s.seen); // opening a card re-renders so __sbAttention stays current
 
   useEffect(() => { api.getSetting<{ off?: string[] }>('boardFilter', { off: [] }).then((v) => setOffState(Array.isArray(v?.off) ? v.off : [])).catch(() => {}); }, []);
@@ -107,7 +125,7 @@ export default function Board() {
     await api.deleteBoard(board.filter((r) => isGroup(r.id) && !r.id.startsWith('grp:ai:')).map((r) => r.id));
     await api.saveBoard(rows);
     await refreshBoard();
-    setTimeout(() => rf.setViewport(START_VIEW, { duration: 400 }), 60);
+    setTimeout(() => home(400), 60);
   };
 
   const smartGroup = async (auto = false) => {
@@ -151,7 +169,7 @@ export default function Board() {
       await api.saveBoard(guard(rows));
       await refreshBoard();
       placing.current = false;
-      if (first) { setTimeout(() => rf.setViewport(START_VIEW, { duration: 300 }), 80); smartGroup(true); }
+      if (first) { setTimeout(() => home(300), 80); smartGroup(true); }
     })();
   }, [entities, board, boardLoaded]);
 
@@ -454,7 +472,7 @@ export default function Board() {
         <Background variant={BackgroundVariant.Dots} gap={20} size={1.2} color="#D4D4D8" bgColor="#FFFFFF" />
         <Controls showInteractive={false} position="bottom-left" orientation="horizontal" className="board-controls" />
         <MiniMap pannable zoomable position="bottom-left" className="board-minimap" nodeColor={mini} nodeStrokeWidth={0} nodeBorderRadius={6}
-          bgColor="#FFFFFF" maskColor="rgba(24,24,27,.07)" maskStrokeColor="rgba(24,24,27,.35)" maskStrokeWidth={1} style={{ width: 200, height: 130 }} />
+          bgColor="#FFFFFF" maskColor="rgba(24,24,27,.07)" maskStrokeColor="rgba(24,24,27,.35)" maskStrokeWidth={1} style={{ width: 168, height: 108 }} />
       </ReactFlow>
 
       <BoardTools busy={busy} onSmart={() => smartGroup()} off={off} setOff={setOff} overview={overview} onOverview={toggleOverview} />

@@ -36,7 +36,7 @@ function readIndex(sub) {
 const ts = (v) => (typeof v === 'number' ? v : Date.parse(v) || 0);
 
 function load() {
-  if (Date.now() - memo.at < 20000) return memo;
+  if (Date.now() - memo.at < 5000) return memo;
   const titles = new Map();
   for (const s of readIndex('claude-code-sessions')) if (s.cliSessionId) titles.set(s.cliSessionId, { title: s.title || null, archived: !!s.isArchived });
   const agents = readIndex('local-agent-mode-sessions').map((s) => {
@@ -46,7 +46,7 @@ function load() {
       id: `cd:${s.acct.slice(0, 8)}-${s.org.slice(0, 8)}:${s.localId}`, localId: s.localId, acct: s.acct, org: s.org,
       title: s.title || null, cwd: s.cwd || (s.userSelectedFolders && s.userSelectedFolders[0]) || null,
       createdAt: ts(s.createdAt), updatedAt: Math.max(ts(s.lastActivityAt), files[0] ? files[0].mtimeMs : 0),
-      archived: !!s.isArchived, file: files[0] ? files[0].path : null, initialMessage: typeof s.initialMessage === 'string' ? s.initialMessage : '',
+      archived: !!s.isArchived, file: files[0] ? files[0].path : null, accountName: typeof s.accountName === 'string' ? s.accountName : null, initialMessage: typeof s.initialMessage === 'string' ? s.initialMessage : '',
     };
   });
   memo = { at: Date.now(), titles, agents };

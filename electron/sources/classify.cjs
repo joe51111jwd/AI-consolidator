@@ -1,6 +1,8 @@
 'use strict';
-// Sorts agent sessions by where they ran: "coding" (a repo or project folder) or "chat", and flags
-// throwaway ones (scratch workspaces and temp folders) as noise so the board can leave them out.
+// Sorts agent sessions by where they ran: "coding" (a repo or project folder), "desktop" (a chat
+// started from the Claude desktop app's Code tab without a folder: it runs in the app's
+// scratch-workspaces folder) or "chat", and flags throwaway ones (temp and test folders) as noise
+// so the board can leave them out.
 const os = require('os');
 const path = require('path');
 const { HOME, exists } = require('../util.cjs');
@@ -14,14 +16,21 @@ const HOME_N = norm(HOME);
 const TEMP = [...new Set([os.tmpdir(), '/var/folders', '/tmp'].map(norm))];
 const MARKERS = ['.git', 'package.json', 'pyproject.toml', 'requirements.txt', 'setup.py', 'Cargo.toml', 'go.mod', 'Gemfile', 'pom.xml', 'build.gradle', 'Package.swift', 'composer.json', 'deno.json', 'CMakeLists.txt', 'Makefile'];
 const CODE_ROOTS = new Set(['code', 'projects', 'dev', 'src', 'repos', 'developer', 'github', 'git', 'workspace', 'workspaces', 'sites']);
+const DESKTOP_SCRATCH = norm(path.join(HOME, 'Library', 'Application Support', 'Claude', 'scratch-workspaces'));
+const TEST_DIRS = /\/(switchboard-e2e(-[0-9]+)?|switchboard-demo)(\/|$)/;
 const memo = new Map(); // cwd -> { at, coding }
 
+function isDesktopChat(cwd) {
+  return !!cwd && under(norm(cwd), DESKTOP_SCRATCH);
+}
+
+// Anything under the home folder is real work (the e2e and demo runs use a temp folder as HOME, so
+// their seeded sessions stay visible); outside it, temp and test folders are throwaway.
 function isNoise(cwd) {
   if (!cwd) return false;
   const p = norm(cwd);
-  if (p.includes('/scratch-workspaces/')) return true;
   if (under(p, HOME_N)) return false;
-  return TEMP.some((t) => under(p, t));
+  return TEST_DIRS.test(p) || TEMP.some((t) => under(p, t));
 }
 
 function looksLikeProject(cwd) {
@@ -43,6 +52,7 @@ function looksLikeProject(cwd) {
 
 function category(cwd, gitBranch) {
   if (!cwd || norm(cwd) === HOME_N) return 'chat';
+  if (isDesktopChat(cwd)) return 'desktop';
   if (gitBranch && gitBranch !== 'HEAD') return 'coding';
   const hit = memo.get(cwd);
   if (hit && Date.now() - hit.at < 600000) return hit.coding ? 'coding' : 'chat';
@@ -51,4 +61,6 @@ function category(cwd, gitBranch) {
   return coding ? 'coding' : 'chat';
 }
 
-module.exports = { isNoise, category };
+const CATEGORY_LABEL = { coding: 'Coding', chat: 'Chat', desktop: 'Claude app' };
+
+module.exports = { isNoise, isDesktopChat, category, CATEGORY_LABEL };

@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowUp, ChevronDown, ChevronRight, X, GripVertical, Copy, FileOutput, MessageSquarePlus, StickyNote, LayoutTemplate, Sparkles, Zap, Play, Square } from 'lucide-react';
 import { useStore } from '../lib/store';
-import { useDemo } from '../lib/demo';
+import { useDemo, showcaseZoom } from '../lib/demo';
 import { api, Message } from '../lib/api';
 import { md } from '../lib/format';
 import { AgentLogo } from './Logos';
@@ -116,7 +116,7 @@ function Actions({ onDone }: { onDone: () => void }) {
     const d = useDemo.getState();
     if (d.active) { d.stop(); return; }
     d.start(); onDone();
-    const centre = (tries: number) => setTimeout(() => { if (!(window as any).__sbCenter?.('demo:claude', 0.7) && tries > 0) centre(tries - 1); }, 150);
+    const centre = (tries: number) => setTimeout(() => { if (!(window as any).__sbCenter?.('demo:anchor', showcaseZoom()) && tries > 0) centre(tries - 1); }, 150);
     centre(5);
   };
   const list = accounts.filter((a) => a.kind === 'claude-code' || a.kind === 'grok-bot' || a.kind === 'codex');
@@ -150,7 +150,7 @@ function Actions({ onDone }: { onDone: () => void }) {
       <button className="cf-act" onClick={run('Note added', () => api.saveNote({ text: '' }))}><StickyNote size={14} />New note</button>
       <button className="cf-act" onClick={run('Blank board', () => api.call('boards:blank'))}><LayoutTemplate size={14} />New blank board</button>
       <button className="cf-act" onClick={run('Example board added', () => api.call('examples:add'))}><Sparkles size={14} />Example board</button>
-      <button className={`cf-act ${demoOn ? 'on' : ''}`} data-testid="live-demo" onClick={toggleDemo}>{demoOn ? <Square size={13} /> : <Play size={14} />}{demoOn ? 'Stop demo' : 'Live demo'}</button>
+      <button className={`cf-act ${demoOn ? 'on' : ''}`} data-testid="live-demo" onClick={toggleDemo}>{demoOn ? <Square size={13} /> : <Play size={14} />}{demoOn ? 'Stop showcase' : 'Showcase'}</button>
     </div>
   );
 }

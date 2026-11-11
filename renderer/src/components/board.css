@@ -269,3 +269,113 @@
 .board .grok-hide { border: 0; background: transparent; color: #A1A1AA; padding: 2px; cursor: pointer; opacity: 0; display: inline-flex; transition: opacity .15s; }
 .board .grok-card:hover .grok-hide { opacity: 1; }
 .board .grok-hide:hover { color: #18181B; }
+
+/* ---------- compact cards (v2): three quiet rows; hover/select opens a drawer over the board ---------- */
+.board .react-flow__node > .card.v2 {
+  background: transparent; box-shadow: none !important; padding: 0; gap: 0; border-radius: 14px; outline: 0 !important; transform: none !important;
+  height: 88px; overflow: visible; display: block;
+}
+.board .react-flow__node > .card.v2.sized { height: 100%; }
+.board .card.v2 .card-face {
+  position: absolute; top: 0; left: 0; right: 0; min-height: 100%; box-sizing: border-box;
+  display: flex; flex-direction: column; gap: 5px; padding: 12px 14px 11px 15px;
+  background: #FFFFFF; border-radius: 14px;
+  box-shadow: 0 0 0 1px rgba(24, 24, 27, .07), 0 1px 2px rgba(24, 24, 27, .04), 0 6px 16px -12px rgba(24, 24, 27, .14);
+  transition: box-shadow .18s ease;
+}
+.board .card.v2.sized .card-face { bottom: 0; overflow: hidden; }
+.board .card.v2 .card-face > * { min-width: 0; }
+.board .react-flow__node:hover > .card.v2 .card-face,
+.board .react-flow__node > .card.v2:focus-within .card-face { box-shadow: 0 0 0 1px rgba(24, 24, 27, .10), 0 2px 4px rgba(24, 24, 27, .05), 0 18px 36px -16px rgba(24, 24, 27, .28); }
+.board .react-flow__node.selected > .card.v2 .card-face { box-shadow: 0 0 0 1.5px #18181B, 0 18px 36px -16px rgba(24, 24, 27, .3); }
+.board .react-flow__node.dragging > .card.v2 .card-face { box-shadow: 0 0 0 1px rgba(24, 24, 27, .10), 0 22px 44px -16px rgba(24, 24, 27, .32); }
+.board .react-flow__node.drop-hot > .card.v2 { outline: 0 !important; }
+.board .react-flow__node.drop-hot > .card.v2 .card-face { outline: 1.5px dashed #18181B; outline-offset: 4px; }
+.board .card.v2.needs-you .card-face { box-shadow: 0 0 0 1.5px rgba(37, 99, 235, .55), 0 0 0 5px rgba(37, 99, 235, .10), 0 8px 22px -14px rgba(24, 24, 27, .25); }
+.board .react-flow__node.selected > .card.v2.needs-you .card-face { box-shadow: 0 0 0 1.5px #2563EB, 0 0 0 5px rgba(37, 99, 235, .12), 0 18px 36px -16px rgba(24, 24, 27, .3); }
+.board .card.v2 .card-stripe { top: 14px; bottom: auto; height: 60px; width: 2px; opacity: .75; }
+.board .card.v2.sized .card-stripe { bottom: 14px; height: auto; }
+
+/* a hovered, selected or focused card floats above its neighbours while its drawer is open */
+.board .react-flow__node:not(.react-flow__node-group):hover,
+.board .react-flow__node.selected:not(.react-flow__node-group),
+.board .react-flow__node:not(.react-flow__node-group):focus-within { z-index: 1000 !important; }
+
+.board .card.v2 .card-row { display: flex; align-items: center; gap: 8px; height: 20px; min-width: 0; }
+.board .card.v2 .card-av { flex: none; width: 20px; height: 20px; display: grid; place-items: center; color: #3F3F46; }
+.board .card.v2 .card-title {
+  flex: 1; min-width: 0; font-size: 13px; font-weight: 600; line-height: 20px; letter-spacing: -0.01em; color: #18181B;
+  display: block; -webkit-line-clamp: unset; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.board .card.v2 .card-now { height: 18px; line-height: 18px; font-size: 12.5px; color: #52525B; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.board .card.v2 .card-now.empty { color: #A1A1AA; }
+.board .card.v2 .card-now.err { color: var(--red, #B42318); }
+.board .card.v2 .card-now.act-now { color: #18181B; font-weight: 550; }
+.board .card.v2 .card-meta { height: 16px; margin: 0; gap: 5px; font-size: 11px; color: #8A8A93; white-space: nowrap; overflow: hidden; }
+.board .card.v2 .card-meta .m { min-width: 0; overflow: hidden; text-overflow: ellipsis; display: inline-flex; align-items: center; }
+.board .card.v2 .card-meta .m { flex: 0 0 auto; }
+/* The folder gives way first, then the account name; the kind chip and the age never squash. */
+.board .card.v2 .card-meta .m:first-child { flex: 0 1 auto; }
+.board .card.v2 .card-meta .m:has(> .mono) { flex: 0 20 auto; }
+.board .card.v2 .card-meta .m:has(> .kind-chip) { flex: none; }
+.board .card.v2 .card-meta .sep { flex: none; color: #D4D4D8; }
+.board .card.v2 .card-meta .mono { font-size: 10.5px; }
+.board .card.v2 .meta-chip { margin-left: auto; flex: none; height: 16px; padding: 0 6px; border-radius: 5px; display: inline-flex; align-items: center; background: #F4F4F5; color: #52525B; font-size: 10.5px; font-weight: 550; }
+.board .card.v2 .people { display: inline-flex; align-items: center; }
+.board .card.v2 .people span { width: 14px; height: 14px; border-radius: 50%; font-size: 8px; font-weight: 650; color: #FFFFFF; display: grid; place-items: center; margin-left: -3px; box-shadow: 0 0 0 1.5px #FFFFFF; }
+.board .card.v2 .people span:first-child { margin-left: 0; }
+.board .card.v2 .people em { font-style: normal; margin-left: 4px; }
+
+.board .card.v2 .status-pill { flex: none; height: 18px; padding: 0 7px; border-radius: 999px; display: inline-flex; align-items: center; gap: 5px; font-size: 10.5px; font-weight: 600; background: #F4F4F5; color: #52525B; text-transform: none; }
+.board .card.v2 .status-pill i { width: 5px; height: 5px; border-radius: 50%; background: var(--green, #1F7A4D); animation: board-live 1.4s infinite; }
+.board .card.v2 .status-pill.running { background: #18181B; color: #FFFFFF; }
+.board .card.v2 .status-pill.running i { background: #4ADE80; }
+.board .card.v2 .status-pill.waiting { background: rgba(37, 99, 235, .09); color: #1D4ED8; }
+.board .card.v2 .status-pill.done { background: #F4F4F5; color: #3F3F46; }
+.board .card.v2 .status-pill.error { background: var(--red-soft, #FEF3F2); color: var(--red, #B42318); }
+.board .card.v2 .status-pill.client { text-transform: capitalize; }
+.board .card.v2 .status-pill.client.green { background: var(--green-soft, #ECFDF3); color: var(--green, #1F7A4D); }
+.board .card.v2 .status-pill.client.amber { background: var(--amber-soft, #FFFAEB); color: var(--amber, #B54708); }
+.board .card.v2 .attn-dot { top: -4px; right: -4px; }
+.board .card.v2 .client-av { width: 18px; height: 18px; border-radius: 6px; background: #2F6B55; color: #FFFFFF; font-size: 10px; font-weight: 650; display: grid; place-items: center; }
+.board .card.v2 .due-tag { display: inline-block; margin-right: 6px; padding: 0 5px; border-radius: 4px; font-size: 10.5px; font-weight: 600; background: var(--amber-soft, #FFFAEB); color: var(--amber, #B54708); }
+.board .card.v2 .due-tag.red { background: var(--red-soft, #FEF3F2); color: var(--red, #B42318); }
+
+/* the drawer */
+.board .card.v2 .card-more { display: grid; grid-template-rows: 0fr; opacity: 0; margin-top: -5px; transition: grid-template-rows .22s cubic-bezier(.2, .7, .2, 1), opacity .16s ease, margin-top .22s ease; }
+.board .card.v2 .card-more-in { min-height: 0; overflow: hidden; display: flex; flex-direction: column; gap: 8px; }
+.board .card.v2 .card-more-in > :first-child { margin-top: 6px; }
+.board .react-flow__node:hover > .card.v2 .card-more { grid-template-rows: 1fr; opacity: 1; margin-top: 0; transition-delay: .12s; }
+.board .react-flow__node.selected > .card.v2 .card-more,
+.board .react-flow__node > .card.v2:focus-within .card-more,
+.board .card.v2.sized .card-more { grid-template-rows: 1fr; opacity: 1; margin-top: 0; transition-delay: 0s; }
+.board .react-flow__node.dragging > .card.v2:not(.sized) .card-more { grid-template-rows: 0fr; opacity: 0; transition: none; }
+.board .card.v2.sized .card-more { flex: 1 1 auto; min-height: 0; }
+.board .card.v2.sized .card-more-in { overflow: hidden; }
+
+.board .card.v2 .card-reply { position: relative; flex: none; padding: 8px 10px; border-radius: 10px; background: #F7F7F8; font-size: 12px; line-height: 1.45; color: #3F3F46; }
+.board .card.v2 .card-reply.live { background: #F4F4F5; color: #18181B; }
+.board .card.v2 .card-reply .md { max-height: calc(1.45em * 5); overflow: hidden; overflow-wrap: anywhere; -webkit-mask-image: linear-gradient(#000 70%, transparent); mask-image: linear-gradient(#000 70%, transparent); }
+.board .card.v2 .card-reply .md > * { margin: 0 0 4px; }
+.board .card.v2 .card-reply .md :is(h1, h2, h3, h4) { font-size: 12.5px; font-weight: 600; }
+.board .card.v2 .card-reply .md :is(ul, ol) { padding-left: 16px; }
+.board .card.v2 .card-reply .md pre, .board .card.v2 .card-reply .md code { font-size: 11px; white-space: pre-wrap; }
+.board .card.v2.sized .card-reply { flex: 1 1 auto; min-height: 40px; display: flex; flex-direction: column; }
+.board .card.v2.sized .card-reply .md { max-height: none; flex: 1 1 auto; min-height: 0; overflow: auto; mask-image: none; -webkit-mask-image: none; }
+.board .card.v2 .act-prompt { font-size: 11.5px; color: #8A8A93; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.board .card.v2 .subagents { flex: none; }
+.board .card.v2 .composer { flex: none; }
+.board .card.v2 .due-lines { flex: none; }
+
+/* grok cards in compact form: the feed and computer only live in the drawer */
+.board .card.v2.grok-card .grok-feed { max-height: 120px; }
+.board .card.v2.grok-card.sized .grok-feed { max-height: none; flex: 1 1 auto; min-height: 0; }
+.board .card.v2 .grok-hide { margin-left: -2px; }
+.board .react-flow__node:hover .card.v2.grok-card .grok-hide { opacity: 1; }
+
+/* overview: the now line is the headline */
+.board.overview .card.v2.is-running .card-now { font-size: 12.5px; }
+.board.overview .react-flow__node > .card.v2:not(.is-running):not(.needs-you) { opacity: .55; }
+.board .card.v2 > .react-flow__handle { z-index: 2; }
+.board .card.v2 > .react-flow__resize-control { z-index: 3; }
+.board .card.v2 .kind-chip { height: auto; padding: 0; background: none; box-shadow: none; color: inherit; font-size: inherit; font-weight: 500; letter-spacing: 0; }

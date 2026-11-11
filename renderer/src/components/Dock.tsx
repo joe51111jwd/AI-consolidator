@@ -14,8 +14,8 @@ function placeholder(a: Account, auto: boolean) {
   return `New session on ${a.label}`;
 }
 
-function oneLine(s?: string, n = 70) {
-  const t = (s || '').replace(/[#*`_>|[\]]/g, '').replace(/\s+/g, ' ').trim();
+function oneLine(s?: unknown, n = 70) {
+  const t = (typeof s === 'string' ? s : '').replace(/[#*`_>|[\]]/g, '').replace(/\s+/g, ' ').trim();
   return t.length > n ? '…' + t.slice(-n) : t;
 }
 
@@ -113,7 +113,8 @@ export default function Dock() {
   const leave = () => { clearTimeout(hoverT.current); hoverT.current = setTimeout(() => setHover(null), 220); };
   const choose = (id: string) => { set({ chiefOpen: false }); setPick(pick === id ? null : id); };
   const label = (a: Account, off: boolean) => off ? `${a.label} · not signed in` : pct[a.id] != null ? `${a.label} · ${pct[a.id]}% this week` : a.label;
-  const activity = (e: Entity) => oneLine(e.meta?.activity) || (live[e.id]?.status === 'running' ? oneLine(live[e.id]?.text) : '') || oneLine(e.preview) || '—';
+  const activityText = (a: any): string => typeof a === 'string' ? a : a ? [a.tool, a.text].filter(Boolean).join(' · ') : '';
+  const activity = (e: Entity) => oneLine(activityText(e.meta?.activity)) || (live[e.id]?.status === 'running' ? oneLine(live[e.id]?.text) : '') || oneLine(e.preview) || '—';
   const send = async () => {
     const t = text.trim();
     if (!t || !target) return;

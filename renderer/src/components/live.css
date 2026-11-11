@@ -1,0 +1,66 @@
+/* Simple mode: the board stays mounted underneath so switching back is instant. */
+/* !important: React Flow puts visibility: visible inline on its nodes, which would show through. */
+.main.is-hidden, .main.is-hidden * { visibility: hidden !important; pointer-events: none !important; }
+
+.mode-seg { height: 36px; display: flex; align-items: center; gap: 2px; padding: 4px; border-radius: 999px; background: var(--card); box-shadow: var(--shadow); -webkit-app-region: no-drag; }
+.mode-seg button { height: 28px; padding: 0 12px; border-radius: 999px; color: var(--ink-3); font-weight: 500; transition: background .18s var(--ease), color .18s var(--ease); }
+.mode-seg button:hover { color: var(--ink); }
+.mode-seg button.on { background: var(--accent); color: var(--accent-ink); }
+
+.lv { position: absolute; inset: 0; overflow-y: auto; background: var(--bg); z-index: 1; animation: lv-in .22s var(--ease); }
+@keyframes lv-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+.lv-col { max-width: 760px; margin: 0 auto; padding: 72px 24px 140px; }
+
+.lv-summary { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--ink-3); margin-bottom: 16px; }
+.lv-summary b { color: var(--ink); font-weight: 600; margin-right: 3px; font-variant-numeric: tabular-nums; }
+.lv-summary i { width: 3px; height: 3px; border-radius: 50%; background: var(--line-2); }
+.lv-summary .warn b { color: var(--amber); }
+
+.lv-bar { display: flex; align-items: center; gap: 12px; margin-bottom: 22px; }
+.lv-filters { display: flex; gap: 4px; flex-wrap: wrap; }
+.lv-filter { height: 28px; padding: 0 11px; border-radius: 999px; color: var(--ink-2); font-size: 12.5px; font-weight: 500; display: inline-flex; align-items: center; gap: 6px; box-shadow: inset 0 0 0 1px var(--line); transition: background .15s, color .15s, box-shadow .15s; }
+.lv-filter:hover { background: var(--well); }
+.lv-filter.on { background: var(--accent); color: var(--accent-ink); box-shadow: none; }
+.lv-filter .n { font-size: 11px; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px; background: var(--amber-soft); color: var(--amber); display: inline-grid; place-items: center; }
+.lv-filter.on .n { background: rgba(255, 255, 255, .18); color: inherit; }
+.lv-search { margin-left: auto; height: 30px; display: flex; align-items: center; gap: 7px; padding: 0 8px 0 10px; border-radius: 999px; background: var(--well); color: var(--ink-3); width: 200px; }
+.lv-search input { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; font: inherit; font-size: 12.5px; color: var(--ink); }
+.lv-search button { color: var(--ink-3); display: grid; place-items: center; }
+
+.lv-section { margin-bottom: 26px; }
+.lv-h { font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-3); margin: 0 0 8px; display: flex; align-items: center; gap: 8px; }
+.lv-h span { font-weight: 500; color: var(--ink-3); opacity: .7; letter-spacing: 0; }
+.lv-group + .lv-group { margin-top: 10px; }
+.lv-gh { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ink-2); font-weight: 500; padding: 4px 10px; }
+
+.lv-row { display: flex; align-items: flex-start; gap: 12px; padding: 10px 12px; border-radius: var(--r-sm); cursor: pointer; transition: background .15s var(--ease); outline: none; }
+.lv-row:hover, .lv-row.hot, .lv-row:focus-visible { background: var(--well); }
+.lv-logo { width: 24px; height: 22px; flex: none; display: grid; place-items: center; margin-top: 1px; }
+.lv-body { flex: 1; min-width: 0; }
+.lv-top { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.lv-title { font-size: 13.5px; font-weight: 500; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.lv-chip { flex: none; font-size: 11px; color: var(--ink-2); background: var(--well-2); padding: 1px 7px; border-radius: 6px; max-width: 160px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lv-row:hover .lv-chip, .lv-row.hot .lv-chip { background: var(--card); box-shadow: inset 0 0 0 1px var(--line); }
+.lv-subs { flex: none; display: inline-flex; align-items: center; gap: 3px; font-size: 11px; color: var(--ink-3); }
+.lv-subs em { font-style: normal; color: var(--green); margin-left: 3px; }
+.lv-act { font-size: 12.5px; color: var(--ink-3); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lv-shimmer { background: linear-gradient(90deg, var(--ink-2) 0%, var(--ink-2) 40%, #C4C4CA 50%, var(--ink-2) 60%, var(--ink-2) 100%); background-size: 250% 100%; -webkit-background-clip: text; background-clip: text; color: transparent; animation: lv-shimmer 1.8s linear infinite; }
+@keyframes lv-shimmer { from { background-position: 120% 0; } to { background-position: -120% 0; } }
+.lv-reply { margin-top: 8px; cursor: default; animation: lv-in .16s var(--ease); }
+
+.lv-meta { flex: none; display: flex; align-items: center; gap: 8px; font-size: 11.5px; color: var(--ink-3); margin-top: 2px; }
+.lv-age { font-variant-numeric: tabular-nums; }
+.lv-working { display: inline-flex; align-items: center; gap: 5px; color: var(--green); font-weight: 500; }
+.lv-working i { width: 6px; height: 6px; border-radius: 50%; background: var(--green); animation: lv-pulse 1.6s ease-in-out infinite; }
+@keyframes lv-pulse { 50% { opacity: .35; } }
+.lv-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--amber); box-shadow: 0 0 0 3px var(--amber-soft); }
+
+.lv-empty { padding: 48px 0; text-align: center; color: var(--ink-3); font-size: 13px; }
+.lv-more { display: block; margin: 4px auto 0; height: 28px; padding: 0 14px; border-radius: 999px; color: var(--ink-3); font-size: 12px; box-shadow: inset 0 0 0 1px var(--line); }
+.lv-more:hover { color: var(--ink); background: var(--well); }
+
+@media (prefers-reduced-motion: reduce) {
+  .lv, .lv-reply { animation: none; }
+  .lv-shimmer { animation: none; color: var(--ink-2); background: none; }
+  .lv-working i { animation: none; }
+}

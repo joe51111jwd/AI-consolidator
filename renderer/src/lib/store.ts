@@ -51,7 +51,8 @@ export const useStore = create<State>((set, get) => ({
     set({ board, edges, boardLoaded: true });
   },
   refreshDue: async () => { try { set({ due: await api.due() }); } catch {} },
-  open: (id) => set({ inspector: id }),
+  // An open card takes the right-hand side, so it replaces the agent panel instead of hiding under it.
+  open: (id) => set(id ? { inspector: id, chiefOpen: false } : { inspector: null }),
   addAttach: (target, a) => set((s) => ({ attach: { ...s.attach, [target]: [...(s.attach[target] || []), a] } })),
   clearAttach: (target) => set((s) => { const n = { ...s.attach }; delete n[target]; return { attach: n }; }),
   notify: (t) => { set({ toast: t }); setTimeout(() => { if (get().toast === t) set({ toast: null }); }, 3200); },

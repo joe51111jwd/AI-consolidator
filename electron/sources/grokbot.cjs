@@ -193,6 +193,78 @@ function activity(b, entries, running) {
   return { text: b.description ? truncate(b.description, 140) : 'Idle', running };
 }
 
+// Claude Code runs a bot starts with the `claude` CLI on its own (cloud) computer. Grok Bot keeps no
+// structured record of them, so they are read from what the bot says and does: a command line
+// (`claude -p ...`, claude --print/--resume/--continue), a sentence about running Claude Code, or a
+// Cursor agent titled for Claude. Plain mentions ("Claude's pricing page", "a note for Claude") are
+// not runs. Entries that can carry private data (email drafts, forms, secret requests, connectors)
+// are never read, and anything shaped like a key or token is masked.
+const CLI_RUN_MS = 120000;
+const PRIVATE_TYPES = new Set(['email-draft', 'email-offer', 'user-form', 'secret-request', 'onepassword-connect', 'connector', 'attachment']);
+const CLI_CMD = /(?:^|[\s`$>(])(claude\s+(?:-p|--print|--resume|-r|--continue|-c|--model|--output-format|--permission-mode|--dangerously-skip-permissions)\b[^\n`]*)/i;
+const CLI_TICK = /`(claude\s+[^`\n]+)`/i;
+const CLI_SAY = /\b(?:run|runs|running|ran|start|starts|started|starting|kick(?:s|ed|ing)? off|launch(?:es|ed|ing)?|spun up|spin(?:ning)? up|fire[sd]? up|firing up|hand(?:ed|ing)? (?:it|this|that) (?:off )?to)\s+(?:up\s+)?(?:a\s+|an\s+|the\s+|my\s+)?(?:new\s+|fresh\s+)?Claude Code\b(?!['’]s)|\bClaude Code (?:is|was) (?:now )?(?:running|working|done|finished|building|fixing)\b|\bvia (?:the )?Claude (?:Code )?CLI\b/i;
+const SECRETISH = /\b(?:sk|pk|rk|ghp|gho|xox[abp]|AKIA|AIza)[-_A-Za-z0-9]{12,}\b|\b[A-Za-z0-9+/_-]{32,}={0,2}\b|\b([A-Z][A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|PASS))=\S+/g;
+const mask = (t) => String(t || '').replace(SECRETISH, (m, name) => (name ? `${name}=•••` : '•••'));
+
+function entryText(e) {
+  if (e.kind === 'notice') return typeof e.text === 'string' ? e.text : '';
+  if (e.kind === 'message') return e.role === 'user' ? '' : typeof e.content === 'string' ? e.content : textOf(e);
+  if (e.kind === 'send-message') {
+    const m = e.message || {};
+    if (PRIVATE_TYPES.has(m.type)) return '';
+    if (m.type === 'text') return textOf(m);
+    if (m.type === 'cursor-agent') return typeof m.title === 'string' ? m.title : '';
+    return '';
+  }
+  if (e.kind === 'event') {
+    const ev = e.event || {};
+    return ['command', 'text', 'title', 'summary', 'description'].map((k) => (typeof ev[k] === 'string' ? ev[k] : '')).filter(Boolean).join('\n');
+  }
+  return '';
+}
+
+function cliTitle(text) {
+  const cmd = text.match(CLI_CMD) || text.match(CLI_TICK);
+  if (cmd) {
+    const line = cmd[1].trim();
+    const quoted = line.match(/["“']([^"”']{4,})["”']/);
+    return quoted ? quoted[1] : line;
+  }
+  const sentence = text.split(/(?<=[.!?])\s+|\n+/).find((x) => CLI_SAY.test(x)) || text;
+  return sentence.trim();
+}
+const lastLine = (text) => (String(text || '').split('\n').map((x) => x.trim()).filter(Boolean).pop() || '');
+
+function claudeRuns(entries, now = Date.now()) {
+  const runs = [];
+  let cur = null;
+  for (const e of entries) {
+    const text = entryText(e);
+    const isAgent = e.kind === 'send-message' && e.message && e.message.type === 'cursor-agent';
+    const hit = text && (CLI_CMD.test(text) || CLI_TICK.test(text) || CLI_SAY.test(text) || (isAgent && /\bclaude\b/i.test(text)));
+    const ts = e.timestampMs || 0;
+    if (hit) {
+      cur = { id: `claude-cli:${e.id || e.seq}`, kind: 'claude-cli', title: truncate(mask(cliTitle(text)), 100) || 'Claude Code run', startedAt: ts, updatedAt: ts, lastText: '' };
+      runs.push(cur);
+      continue;
+    }
+    // Later bot lines (until the user speaks again) are that run's output.
+    if (!cur) continue;
+    if (e.kind === 'message' && e.role === 'user') { cur = null; continue; }
+    if (text) { cur.lastText = truncate(mask(lastLine(text)), 160); cur.updatedAt = ts || cur.updatedAt; }
+  }
+  return runs.slice(-10).reverse().map((r) => ({
+    id: r.id, kind: r.kind, title: r.title, updatedAt: r.updatedAt,
+    status: now - r.updatedAt < CLI_RUN_MS ? 'running' : 'done', lastText: r.lastText || r.title,
+  }));
+}
+
+// Only with SB_DEMO=1 and nothing real to show: one clearly-marked sample, so the layout is visible.
+function sampleRun(now = Date.now()) {
+  return { id: 'claude-cli:sample', kind: 'claude-cli', sample: true, title: 'Sample: claude -p "Tidy the pricing page copy"', updatedAt: now, status: 'running', lastText: 'Sample run (SB_DEMO=1): not a real Claude Code session' };
+}
+
 // Cursor agent runs belong to the bot whose chat started them; any others go to the first bot.
 function subagentsByBot(visible, replicas) {
   const owner = new Map();
@@ -207,10 +279,22 @@ function subagentsByBot(visible, replicas) {
     if (!id) continue;
     const done = r.status !== 'running';
     const lastText = r.status === 'error' ? 'Failed' : done && r.filesChanged != null ? `${r.filesChanged} files · +${r.linesAdded || 0} −${r.linesRemoved || 0}` : done ? 'Finished' : 'Working';
-    const s = { id: r.id, title: r.name || r.branch || 'Cursor agent', status: done ? 'done' : 'running', updatedAt: r.lastActivityAt || 0, lastText };
+    const s = { id: r.id, kind: 'cursor-agent', title: r.name || r.branch || 'Cursor agent', status: done ? 'done' : 'running', updatedAt: r.lastActivityAt || 0, lastText };
     if (r.prUrl) s.prUrl = r.prUrl;
     if (!by.has(id)) by.set(id, []);
     by.get(id).push(s);
+  }
+  let found = false;
+  for (const b of visible) {
+    const cli = claudeRuns(replicas.get(b.id) || []);
+    if (!cli.length) continue;
+    found = true;
+    if (!by.has(b.id)) by.set(b.id, []);
+    by.get(b.id).push(...cli);
+  }
+  if (!found && process.env.SB_DEMO === '1' && visible[0]) {
+    if (!by.has(visible[0].id)) by.set(visible[0].id, []);
+    by.get(visible[0].id).push(sampleRun());
   }
   for (const list of by.values()) list.sort((a, b) => b.updatedAt - a.updatedAt);
   return by;
@@ -298,4 +382,4 @@ async function send(agentId, text, { prefillOnly } = {}) {
   return { text: `Pressed Return in Grok Bot but couldn't confirm ${name} got it. If the bot already had a draft, Grok Bot keeps that draft instead: check the app.` };
 }
 
-module.exports = { PERSIST, status, bots, cloudRuns, selectedAgent, transcript, list, send, openBot, enabled, MAX_TEXT };
+module.exports = { PERSIST, claudeRuns, status, bots, cloudRuns, selectedAgent, transcript, list, send, openBot, enabled, MAX_TEXT };

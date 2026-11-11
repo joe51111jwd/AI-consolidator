@@ -265,3 +265,6 @@ table.t tr:hover td { background: #FAFAFA; cursor: pointer; }
 .signin .btn:not(.accent):not(.primary) { background: var(--card); box-shadow: 0 0 0 1px var(--hair); }
 
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; } }
+.dedicated input { height: 30px; border: 1px solid var(--line-2); background: var(--card); border-radius: 8px; padding: 0 10px; font-size: 12px; outline: 0; transition: border-color .15s, box-shadow .15s; }
+.dedicated input::placeholder { color: #A1A1AA; }
+.dedicated input:focus { border-color: var(--ink); box-shadow: 0 0 0 3px rgba(24, 24, 27, .06); }

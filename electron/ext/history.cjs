@@ -76,6 +76,21 @@ function resolve(id) {
 }
 hub.addFinder(resolve);
 
+// Imported chats: older sessions the user brought onto the board. They stay cards even though the
+// sources only list the last week.
+const db = require('../db.cjs');
+const IMPORTED = 'importedChats';
+const imported = () => db.getSetting(IMPORTED, []) || [];
+hub.addExtraEntities(() => imported().map((id) => { try { return resolve(id); } catch { return null; } }).filter(Boolean));
+function importChat(id) {
+  const e = resolve(id);
+  if (!e) throw new Error('Chat not found');
+  const ids = imported();
+  if (!ids.includes(id)) db.setSetting(IMPORTED, [...ids, id].slice(-200));
+  hub.invalidate();
+  return item(e);
+}
+
 // ⌘K also finds older sessions: they are added after the board's own results, matched on title,
 // preview and folder from the sessions History has already read.
 const HISTORY_PREFIX = /^(claude|chat|chats|code|coding|history)(?::|\s)\s*/i;
@@ -114,6 +129,7 @@ module.exports = {
   handlers: {
     'history:list': (opts) => list(opts || {}),
     'history:get': (id) => { const e = resolve(id); return e ? item(e) : null; },
+    'history:import': (id) => importChat(id),
   },
   start() { setTimeout(warm, 4000); },
 };

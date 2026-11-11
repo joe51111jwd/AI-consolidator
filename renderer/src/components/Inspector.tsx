@@ -83,6 +83,14 @@ export default function Inspector() {
   const [width, setWidth] = useState(() => Number(localStorage.getItem('sb.inspectorW')) || 480);
   const [resizing, setResizing] = useState(false);
 
+  // Publish how much of the window the inspector covers, so the board can centre cards in the free area.
+  useEffect(() => {
+    const root = document.documentElement;
+    (window as any).__sbInspectorW = Math.min(width, window.innerWidth - 24) + 12;
+    root.style.setProperty('--insp-open-w', `${(window as any).__sbInspectorW}px`);
+    return () => { (window as any).__sbInspectorW = 0; root.style.removeProperty('--insp-open-w'); };
+  }, [width]);
+
   // Notes edit inline on the board; they never open here.
   useEffect(() => { if (e?.kind === 'note') open(null); }, [e?.kind]);
 

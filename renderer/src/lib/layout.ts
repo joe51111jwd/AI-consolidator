@@ -7,9 +7,17 @@ export const PALETTE = ['#D97757', '#6D5BD0', '#2F6B55', '#3F5E8C', '#B08A2E', '
 
 const blank = (e: Entity) => !(e.preview || '').trim();
 
+// Runs Switchboard itself started (the overall agent, smart grouping) are plumbing, not the user's work.
+const INTERNAL_RE = /^\s*(You are the overall agent inside Switchboard|Group these cards from my work whiteboard)/;
+const APP_DIR_RE = /[\\/]\.switchboard([\\/]|$)/;
+export const isInternal = (e: Entity) =>
+  e.kind === 'session' && (
+    (typeof e.meta?.cwd === 'string' && APP_DIR_RE.test(e.meta.cwd))
+    || [e.title, e.preview, e.meta?.activity?.prompt, e.meta?.firstPrompt].some((t) => typeof t === 'string' && INTERNAL_RE.test(t)));
+
 // Which cards show up on the board without the user placing them.
 export function defaultVisible(e: Entity, now = Date.now()) {
-  if (isNoise(e)) return false;
+  if (isNoise(e) || isInternal(e)) return false;
   // Grok bots you haven't touched in three weeks stay off the board until you add them back.
   if (e.source === 'grok-bot' && e.kind === 'session') return now - (e.meta?.lastActivityAt || e.updatedAt) < 21 * DAY;
   switch (e.kind) {
@@ -24,7 +32,7 @@ export function defaultVisible(e: Entity, now = Date.now()) {
 
 // Cards that never render, even if an older layout placed them.
 export function suppressed(e: Entity, now = Date.now()) {
-  return e.kind === 'project' || isNoise(e) || (e.kind === 'output' && blank(e) && now - e.updatedAt > 600000);
+  return e.kind === 'project' || isNoise(e) || isInternal(e) || (e.kind === 'output' && blank(e) && now - e.updatedAt > 600000);
 }
 
 // ---------- filter ----------

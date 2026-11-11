@@ -161,7 +161,8 @@ async function recap() {
 function start({ send }) {
   let t;
   const tick = async () => {
-    try { memo.at = 0; const items = await list(); send({ type: 'proactive', count: items.length, items }); } catch {}
+    // Tips are suggestions, not things that need you: they never count toward the badge.
+    try { memo.at = 0; const items = await list(); send({ type: 'proactive', count: items.filter((i) => i.kind !== 'tip').length, items }); } catch {}
   };
   const soon = () => { clearTimeout(t); t = setTimeout(tick, 2500); };
   hub.events.on('event', (e) => {

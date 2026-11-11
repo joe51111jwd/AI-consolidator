@@ -23,6 +23,12 @@ const edgeTypes = { flow: FlowEdge };
 // Opens at a readable zoom in the top-left corner; zoom out to see everything.
 const START_VIEW = { x: 48, y: 104, zoom: 0.78 };
 const isGroup = (id: string) => id.startsWith('grp:');
+// The part of the window the canvas really shows: below the top bar, above the dock, left of the open card.
+const INSPECTOR_W = 480, TOP_BAR = 64, DOCK_H = 84;
+const freeArea = () => {
+  const right = useStore.getState().inspector ? INSPECTOR_W : 0;
+  return { x: 0, y: TOP_BAR, w: window.innerWidth - right, h: window.innerHeight - TOP_BAR - DOCK_H };
+};
 // Demo cards live only in memory: draggable, never saved, deleted or opened.
 const isDemo = (id: string) => id.startsWith('demo:');
 const allNodeTypes = { ...nodeTypes, ...demoNodeTypes };
@@ -294,6 +300,19 @@ export default function Board() {
     const d = down.current;
     if (d && Math.hypot(ev.clientX - d.x, ev.clientY - d.y) > 4) return;
     open(n.id);
+    revealBesideInspector(n.id);
+  };
+
+  // The inspector covers the right of the canvas; slide the board so the card you opened stays in view.
+  const revealBesideInspector = (id: string) => {
+    const n = rf.getInternalNode(id); if (!n) return;
+    const vp = rf.getViewport(); const f = freeArea();
+    const left = n.internals.positionAbsolute.x * vp.zoom + vp.x;
+    const right = left + (n.measured?.width || 260) * vp.zoom;
+    const margin = 32;
+    if (right <= f.w - margin) return;
+    const dx = Math.max(f.w - margin - right, margin - left);
+    rf.setViewport({ ...vp, x: vp.x + dx }, { duration: 300 });
   };
 
   // Drops from card grips and the inspector (HTML drag and drop).
@@ -354,7 +373,8 @@ export default function Board() {
       if (id.startsWith('nt:') || id.startsWith('out:')) { deleted.add(id); await api.deleteEntity(id); continue; }
       const r = useStore.getState().board.find((b) => b.id === id);
       hiddenIds.set(id, Date.now());
-      rows.push({ ...(r || { x: 0, y: 0, data: {} }), id, parent_id: r?.parent_id || null, hidden: 1 });
+      // Deleted by you, so it stays gone; only cards a blank board hid (data.viewHidden) come back on new work.
+      rows.push({ ...(r || { x: 0, y: 0 }), id, parent_id: r?.parent_id || null, hidden: 1, data: { ...(r?.data || {}), viewHidden: undefined, deletedAt: Date.now() } });
     }
     setNodes((ns) => ns.filter((n) => !ids.includes(n.id)));
     if (rows.length) await api.saveBoard(rows);
@@ -419,24 +439,26 @@ export default function Board() {
     (window as any).__sbCenter = (id: string, zoom = 0.9) => {
       const n = rf.getInternalNode(id); if (!n) return false;
       const p = n.internals.positionAbsolute; const w = n.measured?.width || 300, h = n.measured?.height || 200;
-      rf.setCenter(p.x + w / 2, p.y + h / 2, { zoom, duration: 0 }); return true;
+      const f = freeArea();
+      rf.setViewport({ x: f.x + f.w / 2 - (p.x + w / 2) * zoom, y: f.y + f.h / 2 - (p.y + h / 2) * zoom, zoom }, { duration: 0 });
+      return true;
     };
   });
 
-  // Overview: group by client/project, fit every frame, and let what's running stand out.
-  const toggleOverview = async () => {
+  // Overview: zoom out to everything as you laid it out, frame names enlarged. Regrouping is Smart group's job.
+  const toggleOverview = () => {
     if (overview) {
       setOverview(false);
       if (beforeOverview.current) rf.setViewport(beforeOverview.current, { duration: 400 });
       return;
     }
+    const roots = rf.getNodes().filter((n) => !n.parentId && !isDemo(n.id) && !n.hidden);
+    if (!roots.length) { notify('Nothing on the board yet'); return; }
     beforeOverview.current = rf.getViewport();
     setOverview(true);
-    await smartGroup();
-    setTimeout(() => {
-      const frames = rf.getNodes().filter((n) => n.type === 'group');
-      rf.fitView({ nodes: frames.length ? frames : undefined, padding: 0.08, duration: 500 });
-    }, 500);
+    const b = getNodesBounds(roots); const f = freeArea(); const pad = 40;
+    const z = Math.max(0.15, Math.min(1, (f.w - pad * 2) / b.width, (f.h - pad * 2) / b.height));
+    rf.setViewport({ x: f.x + (f.w - b.width * z) / 2 - b.x * z, y: f.y + (f.h - b.height * z) / 2 - b.y * z, zoom: z }, { duration: 500 });
   };
 
   const viewport = useMemo<Viewport | undefined>(() => { try { return JSON.parse(localStorage.getItem('sb.viewport') || ''); } catch { return undefined; } }, []);

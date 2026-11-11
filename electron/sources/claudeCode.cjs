@@ -4,7 +4,7 @@
 // Prompting runs the user's own `claude` CLI in print mode, so it uses that account's login.
 const fs = require('fs');
 const path = require('path');
-const { HOME, APP_DIR, expand, exists, readJsonl, walk, truncate, run, which } = require('../util.cjs');
+const { HOME, APP_DIR, expand, exists, readJsonl, walk, truncate, plain, run, which } = require('../util.cjs');
 const classify = require('./classify.cjs');
 const claudeDesktop = require('./claudeDesktop.cjs');
 
@@ -34,10 +34,33 @@ function isNoise(text) {
 const isWrapper = (text) => { const t = String(text || '').trim(); return !t || t.startsWith('<') || t.startsWith('Caveat:'); };
 
 const base = (f) => String(f || '').split(/[\\/]/).pop();
+// What a tool call is doing, as a short verb phrase. Raw shell arguments are never shown.
+function commandVerb(cmd) {
+  const c = String(cmd || '');
+  if (/\b(test|jest|vitest|pytest|mocha|e2e|playwright)\b/i.test(c)) return 'Running tests';
+  if (/\b(tsc|eslint|lint|ruff|mypy|prettier)\b/i.test(c)) return 'Checking the code';
+  if (/\b(build|vite|webpack|next build|cargo build|make)\b/i.test(c)) return 'Building';
+  if (/\b(npm|pnpm|yarn|pip|brew|bun)\s+(i|install|add)\b/i.test(c)) return 'Installing packages';
+  if (/^\s*git\b|\bgh\b/.test(c)) return 'Using git';
+  if (/\b(curl|wget)\b/.test(c)) return 'Fetching a URL';
+  if (/^\s*(ls|cat|head|tail|find|grep|rg|sed -n|wc)\b/.test(c)) return 'Looking through files';
+  return 'Running a command';
+}
 function toolLabel(b) {
   const i = b.input || {};
-  const target = i.file_path ? base(i.file_path) : i.command ? truncate(i.command, 50) : i.pattern || i.description || i.url || i.query || i.skill || (i.prompt ? truncate(i.prompt, 50) : '');
-  return truncate(`${b.name}${target ? ' ' + target : ''}`, 80);
+  const file = i.file_path || i.notebook_path ? base(i.file_path || i.notebook_path) : '';
+  switch (b.name) {
+    case 'Bash': return truncate(i.description ? String(i.description) : commandVerb(i.command), 60);
+    case 'Edit': case 'MultiEdit': case 'Write': case 'NotebookEdit': return truncate(file ? `Editing ${file}` : 'Editing files', 60);
+    case 'Read': return truncate(file ? `Reading ${file}` : 'Reading files', 60);
+    case 'Grep': case 'Glob': return 'Searching the code';
+    case 'WebFetch': return 'Reading a web page';
+    case 'WebSearch': return truncate(i.query ? `Searching the web for ${i.query}` : 'Searching the web', 60);
+    case 'Task': case 'Agent': return truncate(i.description ? `Subagent: ${i.description}` : 'Running a subagent', 60);
+    case 'TodoWrite': return 'Updating the plan';
+    case 'Skill': return truncate(i.skill ? `Using ${i.skill}` : 'Using a skill', 60);
+    default: return truncate(String(b.name || 'Tool').replace(/^mcp__[^_]+(?:_[^_]+)*?__/, '').replace(/[_-]+/g, ' '), 60);
+  }
 }
 
 function parseSession(file) {
@@ -49,7 +72,7 @@ function parseSession(file) {
   const usage = []; // {ts, model, input, output}
   const seenUsage = new Set();
   let cwd = null, summary = null, gitBranch = null, sessionId = path.basename(file, '.jsonl');
-  const act = { prompt: '', tool: '', text: '', last: null };
+  const act = { prompt: '', tool: '', text: '', last: null, textAt: 0 };
   for (const l of lines) {
     if (l.type === 'summary' && l.summary) summary = l.summary;
     if (l.cwd) cwd = l.cwd;
@@ -71,9 +94,9 @@ function parseSession(file) {
       else if (Array.isArray(m.content)) {
         for (const b of m.content) {
           if (b.type === 'tool_use') { act.tool = toolLabel(b); act.last = 'tool'; }
-          else if (b.type === 'text' && b.text && b.text.trim()) { act.text = truncate(b.text, 200); act.last = 'text'; }
+          else if (b.type === 'text' && b.text && b.text.trim()) { act.text = truncate(plain(b.text), 200); act.last = 'text'; act.textAt = ts; }
         }
-      } else if (text) { act.text = truncate(text, 200); act.last = 'text'; }
+      } else if (text) { act.text = truncate(plain(text), 200); act.last = 'text'; act.textAt = ts; }
       const isTool = l.type === 'assistant' && Array.isArray(m.content) && m.content.every((b) => b.type !== 'text');
       messages.push({ id: l.uuid || `${messages.length}`, role: m.role || l.type, text, ts, kind: isTool ? 'tool' : undefined });
     }
@@ -86,7 +109,7 @@ function parseSession(file) {
   const parsed = {
     sessionId, cwd, gitBranch, messages, usage,
     title: truncate((firstUser && firstUser.text) || summary || 'Untitled session', 80),
-    preview: shown ? truncate(shown.text, 220) : '',
+    preview: shown ? truncate(plain(shown.text), 220) : '',
     previewAt: shown ? shown.ts : null,
     lastRole: lastText ? lastText.role : null,
     updatedAt: st.mtimeMs,
@@ -97,10 +120,13 @@ function parseSession(file) {
 }
 
 // What the session is doing right now. Recomputed on every read since "running" depends on the clock.
+// A sentence the agent wrote in the last 30 s says more than the tool it then reached for.
 function activityOf(s) {
   const a = s.act || {};
-  const running = !!a.last && a.last !== 'text' && Date.now() - s.updatedAt < 90000;
-  return { prompt: a.prompt || '', tool: a.last === 'tool' || a.last === 'result' ? a.tool : '', text: a.text || '', running };
+  const now = Date.now();
+  const running = !!a.last && a.last !== 'text' && now - s.updatedAt < 90000;
+  const fresh = a.text && a.textAt && now - a.textAt < 30000;
+  return { prompt: a.prompt || '', tool: !fresh && (a.last === 'tool' || a.last === 'result') ? a.tool : '', text: a.text || '', running };
 }
 
 // Read only the start or end of a big file, as JSONL lines (a cut first/last line is dropped).
@@ -137,7 +163,7 @@ function subagentInfo(file, st) {
     if (l.type !== 'assistant' || !l.message) continue;
     const c = l.message.content;
     const t = typeof c === 'string' ? c : Array.isArray(c) ? c.filter((b) => b.type === 'text').map((b) => b.text).join('\n') : '';
-    if (t.trim()) lastText = truncate(t, 200);
+    if (t.trim()) lastText = truncate(plain(t), 200);
   }
   const info = { id: path.basename(file, '.jsonl'), title: truncate(title || 'Subagent', 80), lastText, parent: (head.find((l) => l.sessionId) || {}).sessionId || null };
   subCache.set(file, { mtimeMs: st.mtimeMs, size: st.size, info });
@@ -177,13 +203,33 @@ function sessionFiles(account, days = 21) {
   return walk(dir, (n) => n.endsWith('.jsonl') && !n.startsWith('agent-'), days == null ? 0 : Date.now() - days * DAY).filter((f) => !SIDE.test(f.path));
 }
 
+// Switchboard's own runs (the overall agent, smart group) are not cards of their own. They run in
+// ~/.switchboard, and older ones are known by how their prompt starts. Their ids are kept so the
+// board can drop rows it saved for them.
+const INTERNAL_PROMPT = /^(You are the overall agent inside Switchboard|Group these cards from my work whiteboard)/;
+const internal = new Set();
+const internalSessions = () => internal;
+function isInternal(s) {
+  if (s.cwd) { const d = realDir(s.cwd), app = realDir(APP_DIR); if (d === app || d.startsWith(app + path.sep)) return true; }
+  const first = s.messages.find((m) => m.role === 'user' && !isWrapper(m.text));
+  return !!first && INTERNAL_PROMPT.test(first.text.trim());
+}
+
+// The desktop app names chats started from the phone "Remote Control session (from a project)";
+// the first prompt says more.
+function titleOf(app, s) {
+  const t = app && app.title;
+  if (t && !/^Remote Control session/i.test(t)) return t;
+  if (s.title && s.title !== 'Untitled session') return s.title;
+  return t || (s.preview ? truncate(s.preview, 80) : s.title);
+}
+
 // One session file as a card, or null when it has nothing to show.
 function entityFor(account, file) {
   let s;
   try { s = parseSession(file); } catch { return null; }
   if (!s.messages.length) return null;
-  // The overall agent runs Claude Code inside ~/.switchboard; those runs are not cards of their own.
-  if (s.cwd && realDir(s.cwd) === realDir(APP_DIR)) return null;
+  if (isInternal(s)) { internal.add(s.sessionId); return null; }
   const app = claudeDesktop.titleFor(s.sessionId);
   const activity = activityOf(s);
   const subagents = subagentsFor(file, s.sessionId);
@@ -192,7 +238,7 @@ function entityFor(account, file) {
   return {
     id: `cc:${account.id}:${s.sessionId}`,
     kind: 'session', source: 'claude-code', accountId: account.id,
-    title: (app && app.title) || s.title, preview: s.preview, updatedAt: s.updatedAt,
+    title: titleOf(app, s), preview: s.preview, updatedAt: s.updatedAt,
     status: running ? 'running' : (s.lastRole === 'assistant' ? 'idle' : 'waiting'),
     meta: {
       cwd: s.cwd, gitBranch: s.gitBranch, file, sessionId: s.sessionId, messages: s.messages.length,
@@ -218,7 +264,7 @@ function desktopEntity(d) {
   const category = classify.category(d.cwd || s.cwd, null);
   return {
     id: d.id, kind: 'session', source: 'claude-app', accountId: null,
-    title: d.title || s.title || truncate(d.initialMessage, 80) || 'Claude app session', preview: s.preview, updatedAt: d.updatedAt || s.updatedAt,
+    title: titleOf({ title: d.title }, s) || truncate(d.initialMessage, 80) || 'Claude app session', preview: s.preview, updatedAt: d.updatedAt || s.updatedAt,
     status: activity.running ? 'running' : 'idle',
     meta: {
       activity, cwd: d.cwd || s.cwd, file: d.file, sessionId: s.sessionId, messages: s.messages.length,
@@ -250,7 +296,21 @@ function usage(account) {
       if (now - u.ts < 7 * DAY) { w.d7 += t; w.out7 += u.output; w.byModel[u.model || 'unknown'] = (w.byModel[u.model || 'unknown'] || 0) + t; }
     }
   }
+  // The real weekly % from the Claude app's plan meter, when it tracks this account's org.
+  const plan = planFor(account);
+  if (plan) Object.assign(w, { weekPct: plan.week, fiveHourPct: plan.fiveHour, resetsAt: plan.resetsAt, planAt: plan.at, org: plan.org, exact: true });
   return w;
+}
+
+function orgOf(account) {
+  const auth = account.config && account.config.auth;
+  if (auth && auth.orgId) return auth.orgId;
+  const f = readAccountFile(account);
+  return (f && f.organizationUuid) || null;
+}
+function planFor(account) {
+  const org = orgOf(account);
+  return org ? claudeDesktop.planUsage().find((p) => p.org === org) || null : null;
 }
 
 function detect() {
@@ -369,4 +429,4 @@ async function prompt(account, { sessionId, cwd, text, onText, signal, extraArgs
   return { text: final || acc, sessionId: newSession, usage: usageOut };
 }
 
-module.exports = { list, entityFor, sessionFiles, desktopList, desktopEntity, parseSession, transcript, usage, detect, prompt, configDir, childEnv, authStatus, login, logout };
+module.exports = { orgOf, internalSessions, list, entityFor, sessionFiles, desktopList, desktopEntity, parseSession, transcript, usage, detect, prompt, configDir, childEnv, authStatus, login, logout };

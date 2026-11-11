@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Search, StickyNote, Sparkles, Inbox, Settings, Users, BookOpen, LayoutGrid, Tag, Plus, Check, X, Shapes, Sun } from 'lucide-react';
+import { Search, StickyNote, Sparkles, Inbox, Settings, Users, BookOpen, LayoutGrid, Tag, Plus, Check, X, Shapes, Sun, Download } from 'lucide-react';
 import { useStore } from '../lib/store';
+import { useImport } from './ImportChats';
 import { api, Entity, BoardRow } from '../lib/api';
 import { SOURCE, ago } from '../lib/format';
 import { suppressed } from '../lib/layout';
@@ -61,16 +62,37 @@ function viewportCentre() {
 }
 
 // Puts a card back on the board (or on it for the first time) near the middle of the screen.
-async function placeOnBoard(id: string) {
+export async function placeOnBoard(id: string) {
   const s = useStore.getState();
   const row = s.board.find((r) => r.id === id);
   if (row && !row.hidden) return false;
   const c = viewportCentre();
-  const n = s.board.filter((r) => !r.hidden && Math.abs(r.x - (c.x - 150)) < 40 && Math.abs(r.y - (c.y - 110)) < 40).length;
-  const next: BoardRow = { id, x: c.x - 150 + n * 28, y: c.y - 110 + n * 28, parent_id: null, data: row?.data || {}, hidden: 0 };
+  const spot = freeSpot(s.board, c.x - 130, c.y - 55);
+  const next: BoardRow = { id, x: spot.x, y: spot.y, parent_id: null, data: row?.data || {}, hidden: 0 };
   await api.saveBoard([next]);
   await s.refreshBoard();
   return true;
+}
+
+// The nearest empty spot to (x, y), searching outwards in card-sized steps, so a card that comes
+// back never lands on top of another one.
+function freeSpot(board: BoardRow[], x: number, y: number) {
+  const W = 260, H = 120, GAP = 20;
+  const byId = new Map(board.map((r) => [r.id, r]));
+  const rects = board.filter((r) => !r.hidden).map((r) => {
+    const p = r.parent_id ? byId.get(r.parent_id) : null;
+    const ax = r.x + (p ? p.x : 0), ay = r.y + (p ? p.y : 0);
+    return { x: ax, y: ay, w: r.w || (r.id.startsWith('grp:') ? 0 : W), h: r.h || (r.id.startsWith('grp:') ? 0 : H) };
+  }).filter((q) => q.w && q.h);
+  const free = (px: number, py: number) => rects.every((q) => px + W + GAP <= q.x || px >= q.x + q.w + GAP || py + H + GAP <= q.y || py >= q.y + q.h + GAP);
+  for (let ring = 0; ring < 12; ring++) {
+    for (let dx = -ring; dx <= ring; dx++) for (let dy = -ring; dy <= ring; dy++) {
+      if (Math.max(Math.abs(dx), Math.abs(dy)) !== ring) continue;
+      const px = x + dx * (W + GAP), py = y + dy * (H + GAP);
+      if (free(px, py)) return { x: px, y: py };
+    }
+  }
+  return { x, y };
 }
 
 const centre = (id: string) => setTimeout(() => (window as any).__sbCenter?.(id), 200);
@@ -104,6 +126,7 @@ export default function Palette() {
 
   const { pre, text, rest } = parse(q);
   const commands: Cmd[] = [
+    { id: 'import', label: 'Import chats', icon: Download, run: async () => { useImport.getState().set(true); } },
     { id: 'examples', label: 'Add example board', icon: Shapes, run: async () => {
       try {
         const r = await api.call<{ frameId: string }>('examples:add');

@@ -82,6 +82,12 @@ function truncate(s, n) {
   return s.length > n ? s.slice(0, n - 1) + '…' : s;
 }
 
+// Markdown a one-line preview can't render: links become their text (a link cut short by an
+// earlier truncation too), bare URLs and backticks go.
+function plain(s) {
+  return String(s || '').replace(/!?\[([^\]]*)\]\([^)\s]*\)?/g, '$1').replace(/\bhttps?:\/\/\S+/g, '').replace(/`+/g, '').replace(/[ \t]{2,}/g, ' ').trim();
+}
+
 function uid(prefix = '') {
   return prefix + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 }
@@ -126,4 +132,4 @@ async function pool(items, n, fn) {
   return out;
 }
 
-module.exports = { HOME, APP_DIR, expand, exists, fixPath, which, readJsonl, walk, truncate, uid, run, pool };
+module.exports = { HOME, APP_DIR, expand, exists, fixPath, which, readJsonl, walk, truncate, plain, uid, run, pool };

@@ -305,6 +305,7 @@ function firePulse(get: () => DemoState, set: (p: Partial<DemoState>) => void) {
 }
 
 function clearTimers() {
+  stopTour();
   if (timer) clearInterval(timer);
   if (pulseTimer) clearTimeout(pulseTimer);
   timer = null; pulseTimer = null;
@@ -343,11 +344,55 @@ export const useDemo = create<DemoState>((set, get) => ({
   },
 }));
 
-// Zoom that fits the whole showcase in the window.
+// Zoom for the showcase: never below 0.8, where card text stays readable. When the whole thing
+// doesn't fit at that size, the tour pans through the clients one after another instead.
+export const SHOWCASE_MIN_ZOOM = 0.8;
 export function showcaseZoom() {
   // Leave room for the toolbars above and the dock below.
   const z = Math.min((window.innerWidth - 160) / SHOWCASE_SIZE.w, (window.innerHeight - 250) / SHOWCASE_SIZE.h);
-  return Math.max(0.25, Math.min(0.85, z));
+  return Math.max(SHOWCASE_MIN_ZOOM, Math.min(0.9, z));
+}
+
+const TOUR_MS = 7000;
+let tourTimer: ReturnType<typeof setTimeout> | null = null;
+let tourStop: (() => void) | null = null;
+const centre = (id: string, zoom: number) => !!(window as any).__sbCenter?.(id, zoom);
+
+function stopTour() {
+  if (tourTimer) clearTimeout(tourTimer);
+  tourTimer = null;
+  tourStop?.();
+  tourStop = null;
+  document.body.classList.remove('sb-tour');
+}
+
+// Starts on Harbor Coffee at a readable zoom and glides to the next client every few seconds.
+// Any click, scroll or key from the user ends the tour and leaves the board where it is.
+export function startShowcaseTour() {
+  stopTour();
+  const zoom = showcaseZoom();
+  const fitsWhole = (window.innerWidth - 160) / SHOWCASE_SIZE.w >= zoom && (window.innerHeight - 250) / SHOWCASE_SIZE.h >= zoom;
+  const stops = fitsWhole ? ['demo:anchor'] : CLIENTS.map((c) => `demo:f-${c.key}`);
+  let i = 0;
+  const first = (tries: number) => {
+    tourTimer = setTimeout(() => {
+      if (!centre(stops[0], zoom)) { if (tries > 0) first(tries - 1); return; }
+      if (stops.length > 1) { document.body.classList.add('sb-tour'); next(); }
+    }, 150);
+  };
+  const next = () => {
+    tourTimer = setTimeout(() => {
+      if (!useDemo.getState().active) return stopTour();
+      i = (i + 1) % stops.length;
+      centre(stops[i], zoom);
+      next();
+    }, TOUR_MS);
+  };
+  const end = (e: Event) => { if (e.type !== 'keydown' || (e as KeyboardEvent).key !== 'Shift') stopTour(); };
+  const evs = ['wheel', 'pointerdown', 'keydown'] as const;
+  for (const ev of evs) window.addEventListener(ev, end, { capture: true, passive: true });
+  tourStop = () => { for (const ev of evs) window.removeEventListener(ev, end, { capture: true }); };
+  first(5);
 }
 
 export const isDemoId = (id: string) => id.startsWith('demo:');

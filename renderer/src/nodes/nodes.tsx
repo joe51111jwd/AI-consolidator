@@ -1,6 +1,6 @@
 import React, { memo, useEffect, useRef, useState } from 'react';
 import { Handle, Position, NodeResizer, NodeProps } from '@xyflow/react';
-import { GripVertical, FolderGit2, FileText, StickyNote, AlertTriangle, Target, Play, Clock, UserRound, MessageSquare, Zap, Wrench, Plug, Bot, Info, GitPullRequest, Monitor, EyeOff, MessageSquarePlus, Send } from 'lucide-react';
+import { GripVertical, FolderGit2, FileText, StickyNote, AlertTriangle, Target, Play, Clock, UserRound, MessageSquare, Zap, Wrench, Plug, Bot, Info, GitPullRequest, EyeOff, MessageSquarePlus, Send } from 'lucide-react';
 import { useStore } from '../lib/store';
 import { useShallow } from 'zustand/react/shallow';
 import { api, BoardRow, Entity } from '../lib/api';
@@ -8,8 +8,7 @@ import { ago, tokens, md, SOURCE, dueLabel, categoryOf, baseName, colorOf, PROMP
 import { sendPrompt } from '../lib/send';
 import Composer from '../components/Composer';
 import { AgentLogo } from '../components/Logos';
-import ComputerPreview from '../components/demo/DemoNodes';
-import { GrokAvatar, GroupAvatar } from '../components/GrokAvatar';
+import { GrokAvatar, GroupAvatar, botLook } from '../components/GrokAvatar';
 import { useAttention, needsAttention, useSeen } from '../lib/attention';
 import { COMPACT_H } from '../lib/layout';
 
@@ -117,7 +116,19 @@ type Pill = 'running' | 'waiting' | 'done' | 'error' | null;
 const PILL_LABEL: Record<string, string> = { running: 'Working', waiting: 'Your turn', done: 'Done', error: 'Failed' };
 const RECENT = 120000;
 
-const oneLine = (t?: unknown) => (typeof t === 'string' ? t : '').replace(/[#*_`>]+/g, '').replace(/\s+/g, ' ').trim().slice(0, 240);
+// Plain text for one-line previews: links keep their words, bare URLs and markdown symbols go.
+const plain = (t?: unknown) => (typeof t === 'string' ? t : '')
+  .replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1')
+  .replace(/<?https?:\/\/[^\s)>]+>?/g, '')
+  .replace(/[#*_`>]+/g, '')
+  .replace(/\(\s*\)/g, '');
+const oneLine = (t?: unknown) => plain(t).replace(/\s+/g, ' ').trim().slice(0, 240);
+// The last line worth showing; a line that only introduces what follows ("…came in today:") is skipped.
+const lastLine = (t?: string) => {
+  const lines = (t || '').split('\n').map(oneLine).filter(Boolean);
+  for (let i = lines.length - 1; i >= 0; i--) if (!lines[i].endsWith(':') || i === 0) return lines[i];
+  return '';
+};
 
 function usePill(e: Entity, extraRunning = false): Pill {
   const live = useStore((s) => s.liveByEntity[e.id]);
@@ -155,7 +166,7 @@ function StatusPill({ pill }: { pill: Pill }) {
 // Row 2: what it's doing right now (shimmering while it works), else the latest reply.
 function NowLine({ running, now, fallback, error }: { running: boolean; now?: string; fallback?: string; error?: string }) {
   if (error) return <div className="card-now err" title={error}>{error}</div>;
-  if (running) return <div className="card-now act-now" title={now}>▸ <span className="shimmer">{now || 'Thinking'}</span></div>;
+  if (running) return <div className="card-now act-now" title={now}>▸ <span className="shimmer">{oneLine(now) || 'Thinking'}</span></div>;
   const t = oneLine(fallback);
   return <div className={`card-now ${t ? '' : 'empty'}`} title={t}>{t || 'Nothing yet'}</div>;
 }
@@ -199,6 +210,17 @@ function SubRows({ id, subs }: { id: string; subs: Sub[] }) {
   );
 }
 
+// What the drawer adds to the card's face: what was asked and the step before the current one.
+function Steps({ steps }: { steps: [string, string | undefined][] }) {
+  const shown = steps.filter(([, v]) => oneLine(v));
+  if (!shown.length) return null;
+  return (
+    <div className="card-steps">
+      {shown.map(([k, v]) => <div key={k} className="step" title={oneLine(v)}><b>{k}</b>{oneLine(v)}</div>)}
+    </div>
+  );
+}
+
 // The compact card: one line of who/what + status, one line of "now", one line of meta.
 // Hover, select or focus opens the drawer (reply, agents, composer) over whatever sits below,
 // so the card's footprint on the board never changes. Resized cards show the drawer in place.
@@ -207,10 +229,12 @@ function Compact({ id, selected, stripe, className = '', avatar, title, pill, ex
   pill?: Pill; extra?: React.ReactNode; now: React.ReactNode; meta: React.ReactNode; children?: React.ReactNode;
 }) {
   const sized = useStore((s) => !!s.board.find((b) => b.id === id)?.h);
+  const inspected = useStore((s) => s.inspector === id);
   const attn = useAttention(id);
-  const drawer = React.Children.toArray(children).length > 0;
+  // While the card is open in the inspector, that is where you read and reply; the card stays compact.
+  const drawer = !inspected && React.Children.toArray(children).length > 0;
   return (
-    <div className={`card v2 ${sized ? 'sized' : ''} ${pill === 'running' ? 'is-running' : ''} ${attn ? 'needs-you' : ''} ${className}`} style={{ ['--stripe' as any]: stripe }}>
+    <div className={`card v2 ${sized ? 'sized' : ''} ${inspected ? 'inspected' : ''} ${pill === 'running' ? 'is-running' : ''} ${attn ? 'needs-you' : ''} ${className}`} style={{ ['--stripe' as any]: stripe }}>
       <NodeResizer isVisible={!!selected} minWidth={220} minHeight={COMPACT_H} lineClassName="card-resize-line" handleClassName="card-resize-handle"
         onResizeEnd={(_, p) => saveSize(id, p)} />
       <Handles />
@@ -238,41 +262,54 @@ const ACTION_ICON: Record<string, React.ReactNode> = {
 };
 
 // A Grok bot is a hub: its own avatar, what it's doing now, what it did, and the agents it launched.
+// A group chat shows its bots as clustered avatars; people in it (you) are left out of the title.
+function useGroupMembers(id: string, e: Entity) {
+  const isGroup = !!e.meta?.isGroup || (e.title || '').includes(',');
+  const bots = useStore(useShallow((s) => (isGroup ? s.entities.filter((x) => x.source === 'grok-bot' && x.kind === 'session' && x.id !== id && !(x.title || '').includes(','))
+    .map((x) => `${x.id}\t${(x.title || '').trim().toLowerCase()}\t${x.title}\t${x.meta?.avatarColor || ''}\t${x.meta?.avatarShape || ''}`) : [])));
+  if (!isGroup) return { isGroup, title: e.title, members: [] as { color?: string; shape?: string; seed?: string }[] };
+  const parts = (e.title || '').split(',').map((t) => t.trim()).filter(Boolean);
+  const known = parts.map((p) => bots.find((b) => b.split('\t')[1] === p.toLowerCase())).filter(Boolean).map((b) => b!.split('\t'));
+  const members = Array.isArray(e.meta?.members) && e.meta.members.length ? e.meta.members
+    : known.length ? known.map(([bid, , , color, shape]) => ({ seed: bid, color: color || undefined, shape: shape || undefined }))
+    : parts.map((p) => ({ seed: p }));
+  return { isGroup, title: known.length ? known.map((k) => k[2]).join(', ') : e.title, members };
+}
+
 function GrokNode({ id, e, selected }: { id: string; e: Entity; selected?: boolean }) {
   const running = useRunning(e);
-  const [screen, setScreen] = useState(false);
-  const color: string = e.meta?.avatarColor || colorOf(e, useStore.getState().accounts);
-  const shape: string = e.meta?.avatarShape || 'circle';
+  const look = botLook(id, e.meta?.avatarColor, e.meta?.avatarShape);
   const a: Activity | undefined = e.meta?.activity;
   const actions: GrokAction[] = Array.isArray(e.meta?.actions) ? e.meta.actions : [];
   const subs: Sub[] = Array.isArray(e.meta?.subagents) ? e.meta.subagents : [];
-  const live = running || !!a?.running;
+  // A Claude CLI run the bot launched counts as the bot working.
+  const live = running || !!a?.running || subs.some((x) => x.status === 'running');
   const pill = usePill(e, live);
   const latest = useLatest(id, a?.text || actions[0]?.text || e.preview);
   const attn = useAttention(id);
-  const group = !!e.meta?.isGroup || (e.title || '').includes(',');
-  const members: { color?: string; shape?: string }[] = Array.isArray(e.meta?.members) && e.meta.members.length
-    ? e.meta.members : (e.title || '').split(',').slice(0, 4).map((_, i) => ({ color: i ? undefined : color, shape }));
+  const group = useGroupMembers(id, e);
+  const nowText = live ? (a?.tool || a?.text || subs.find((x) => x.status === 'running')?.title) : '';
+  const shownNow = oneLine(live ? nowText : latest.text);
+  // The card already shows the now line; previews are cut short, so compare their starts.
+  const head = shownNow.replace(/…$/, '').slice(0, 60);
+  const feed = actions.filter((x) => { const t = oneLine(x.text); return t && (!head || t.slice(0, head.length) !== head); });
+  const when = e.meta?.lastActivityAt || e.updatedAt;
   return (
-    <Compact id={id} selected={selected} stripe={color} className="grok-card" title={e.title} pill={pill}
-      avatar={group ? <GroupAvatar members={members} size={20} attention={attn} /> : <GrokAvatar color={color} shape={shape} size={20} working={live} attention={attn} title={e.title} />}
+    <Compact id={id} selected={selected} stripe={look.color} className="grok-card" title={group.title} pill={pill}
+      avatar={group.isGroup ? <GroupAvatar members={group.members} size={20} attention={attn} /> : <GrokAvatar color={look.color} shape={look.shape} seed={id} size={20} working={live} attention={attn} title={e.title} />}
       extra={<button className="grok-hide nodrag" title="Hide bot" onClick={(ev) => { ev.stopPropagation(); (window as any).__sbHide?.([id]); }}><EyeOff size={11} /></button>}
-      now={<NowLine running={live} now={a?.tool || a?.text} fallback={latest.text} error={latest.error} />}
-      meta={<Meta parts={['Grok', e.meta?.unreadCount > 0 && `${e.meta.unreadCount} unread`, ago(e.meta?.lastActivityAt || e.updatedAt)]} chip={subsLabel(subs)} />}>
-      {actions.length > 0 && (
+      now={<NowLine running={live} now={nowText} fallback={latest.text} error={latest.error} />}
+      meta={<Meta parts={['Grok', e.meta?.unreadCount > 0 && `${e.meta.unreadCount} unread`, when > 0 ? ago(when) : '—']} chip={subsLabel(subs)} />}>
+      {feed.length > 0 && (
         <div className="grok-feed nowheel">
-          {actions.slice(0, 15).map((x, i) => (
-            <div key={`${x.ts}-${i}`} className={`grok-act ${i >= 5 ? 'extra' : ''}`} title={x.text}>
-              <span className="ic">{ACTION_ICON[x.kind] || ACTION_ICON.notice}</span><span className="t">{x.text}</span><span className="age">{ago(x.ts)}</span>
+          {feed.slice(0, 15).map((x, i) => (
+            <div key={`${x.ts}-${i}`} className={`grok-act ${i >= 3 ? 'extra' : ''}`} title={oneLine(x.text)}>
+              <span className="ic">{ACTION_ICON[x.kind] || ACTION_ICON.notice}</span><span className="t">{oneLine(x.text)}</span><span className="age">{ago(x.ts)}</span>
             </div>
           ))}
         </div>
       )}
       <SubRows id={id} subs={subs} />
-      <button className={`grok-screen-toggle nodrag ${screen ? 'on' : ''}`} onClick={(ev) => { ev.stopPropagation(); setScreen(!screen); }} title="Show its computer">
-        <Monitor size={11} />Computer
-      </button>
-      {screen && <div className="grok-screen nodrag"><ComputerPreview name={e.title} color={color} live={live} /></div>}
       <Composer id={id} placeholder="Message…" />
     </Compact>
   );
@@ -295,14 +332,15 @@ function AgentCard({ id, e, selected }: { id: string; e: Entity; selected?: bool
   const a: Activity | undefined = e.meta?.activity;
   const subs: Sub[] = Array.isArray(e.meta?.subagents) ? e.meta.subagents : [];
   const running = pill === 'running';
-  const now = a?.tool || a?.text?.split('\n').filter(Boolean).pop() || latest.text.split('\n').filter(Boolean).pop();
+  const sized = useStore((s) => !!s.board.find((b) => b.id === id)?.h);
+  const now = a?.tool || lastLine(a?.text) || lastLine(latest.text);
   return (
     <Compact id={id} selected={selected} stripe={colorOf(e, useStore.getState().accounts)} title={e.title} pill={pill}
       avatar={<AgentLogo source={e.source} size={16} color={acc?.color || src.color} working={running} />}
       now={<NowLine running={running} now={now} fallback={latest.text} error={latest.error} />}
       meta={<Meta parts={[acc?.label || src.label, cat && <span className={`kind-chip ${cat}`}>{cat === 'coding' ? 'Code' : 'Chat'}</span>, folder && <span className="mono" title={e.meta?.cwd}>{folder}{branch && <em> · {branch}</em>}</span>, ago(e.updatedAt)]} chip={subsLabel(subs)} />}>
-      {running && a?.prompt && <div className="act-prompt" title={a.prompt}>{a.prompt}</div>}
-      <Reply id={id} text={latest.text} title={e.title} live={latest.live} />
+      <Steps steps={[['Asked', a?.prompt], ['Said', running && a?.tool ? a?.text : undefined]]} />
+      {sized && <Reply id={id} text={latest.text} title={e.title} live={latest.live} />}
       <SubRows id={id} subs={subs} />
       <Composer id={id} placeholder="Reply…" />
     </Compact>
@@ -377,7 +415,7 @@ function MeetingCard({ id, e, selected }: { id: string; e: Entity; selected?: bo
   return (
     <Compact id={id} selected={selected} stripe={SOURCE.granola.color} title={e.title} pill={pill}
       avatar={<AgentLogo source="granola" size={16} color={SOURCE.granola.color} working={pill === 'running'} />}
-      now={<NowLine running={pill === 'running'} now={latest.text.split('\n').filter(Boolean).pop()} fallback={latest.text} error={latest.error} />}
+      now={<NowLine running={pill === 'running'} now={lastLine(latest.text)} fallback={latest.text} error={latest.error} />}
       meta={<Meta parts={[day, faces]} />}>
       <Reply id={id} text={latest.text} title={e.title} live={latest.live} />
     </Compact>
@@ -396,7 +434,7 @@ function ThreadCard({ id, e, selected }: { id: string; e: Entity; selected?: boo
   return (
     <Compact id={id} selected={selected} stripe={color} title={e.title} pill={pill}
       avatar={<AgentLogo source={e.source} size={16} color={color} working={pill === 'running'} />}
-      now={<NowLine running={pill === 'running'} now={latest.text.split('\n').filter(Boolean).pop()} fallback={latest.text} error={latest.error} />}
+      now={<NowLine running={pill === 'running'} now={lastLine(latest.text)} fallback={latest.text} error={latest.error} />}
       meta={<Meta parts={[accountOf(e)?.label || 'Gmail', ago(e.updatedAt)]} />}>
       <Reply id={id} text={latest.text} title={e.title} live={latest.live} />
     </Compact>

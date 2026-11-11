@@ -1,12 +1,13 @@
 import React, { memo, useMemo, useRef, useState } from 'react';
-import { Bot, Search, X } from 'lucide-react';
+import { Bot, Download, Search, X } from 'lucide-react';
 import { useStore } from '../lib/store';
 import { Account, Entity, Run } from '../lib/api';
 import { needsAttention, useSeen } from '../lib/attention';
 import { ago, baseName, isNoise, PROMPTABLE } from '../lib/format';
 import { AgentLogo, ClaudeLogo } from './Logos';
-import { GrokAvatar } from './GrokAvatar';
+import { GrokAvatar, GroupAvatar } from './GrokAvatar';
 import Composer from './Composer';
+import { useImport } from './ImportChats';
 import './live.css';
 
 type Filter = 'all' | 'claude' | 'grok' | 'desktop' | 'attn';
@@ -34,23 +35,82 @@ function familyOf(e: Entity): Family {
   return 'other';
 }
 
-const clean = (s: string) => s.replace(/[#*`_>|[\]]/g, '').replace(/\s+/g, ' ').trim();
+// Plain one-line text: markdown links keep their label, bare URLs and code ticks go.
+export const clean = (s: string) => s
+  .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+  .replace(/https?:\/\/\S+/g, '')
+  .replace(/[#*`_>|[\]]/g, '')
+  .replace(/\(\s*\)/g, '')
+  .replace(/\s+/g, ' ')
+  .trim();
+
+// The first meaningful line; a lead-in ending in ":" pulls in the line after it.
+function firstLine(s: string): string {
+  const lines = s.split('\n').map(clean).filter(Boolean);
+  if (!lines.length) return '';
+  return lines[0].endsWith(':') && lines[1] ? lines[1] : lines[0];
+}
+
+const lastSentence = (s: string) => {
+  const lines = s.split('\n').map(clean).filter(Boolean);
+  const last = lines[lines.length - 1] || '';
+  return last.endsWith(':') && lines.length > 1 ? lines[lines.length - 2] : last;
+};
+
+// A tool call as a short verb ("Running tests"), never its raw arguments.
+export function toolVerb(label: string): string {
+  const [name = '', ...rest] = label.trim().split(/\s+/);
+  const arg = rest.join(' ');
+  const file = /^[\w.@-]+\.\w{1,6}$/.test(arg) ? arg : '';
+  if (name === 'Bash') {
+    if (/\b(pytest|jest|vitest|mocha|e2e|npm (run )?test|go test|cargo test)\b/.test(arg)) return 'Running tests';
+    if (/\b(tsc|vite build|npm run build|cargo build|make|webpack|next build)\b/.test(arg)) return 'Building';
+    if (/\b(npm|pnpm|yarn|pip|brew) (i|install|add)\b/.test(arg)) return 'Installing packages';
+    if (/\bgit\b/.test(arg)) return 'Working with git';
+    if (/\b(grep|rg|find|ls|cat|head|tail|sed -n)\b/.test(arg)) return 'Looking through files';
+    if (/\b(curl|wget)\b/.test(arg)) return 'Fetching from the web';
+    return 'Running a command';
+  }
+  if (name === 'Edit' || name === 'MultiEdit' || name === 'NotebookEdit') return file ? `Editing ${file}` : 'Editing files';
+  if (name === 'Write') return file ? `Writing ${file}` : 'Writing a file';
+  if (name === 'Read') return file ? `Reading ${file}` : 'Reading files';
+  if (name === 'Grep' || name === 'Glob') return 'Searching the code';
+  if (name === 'WebFetch' || name === 'WebSearch') return 'Reading the web';
+  if (name === 'Task' || name === 'Agent') return 'Running a subagent';
+  if (name === 'TodoWrite') return 'Planning next steps';
+  if (name === 'Skill') return 'Using a skill';
+  if (name.startsWith('mcp__')) return `Using ${name.split('__')[1]?.replace(/[-_]/g, ' ') || 'a connector'}`;
+  return name ? 'Working' : '';
+}
+
+const tsOf = (v: unknown) => (typeof v === 'number' ? v : typeof v === 'string' ? Date.parse(v) || 0 : 0);
 
 function activityOf(e: Entity, live: Run | undefined, running: boolean): string {
   const a = e.meta?.activity;
-  if (running && live?.status === 'running' && live.text) return clean(live.text).slice(-140);
-  if (typeof a === 'string') return clean(a).slice(0, 140);
-  const now = a?.tool || (a?.text || '').split('\n').filter(Boolean).pop();
-  if (now && (running || a?.running)) return clean(now).slice(0, 140);
-  return clean(e.preview || now || '').slice(0, 140);
+  if (running && live?.status === 'running' && live.text) return lastSentence(live.text).slice(-140);
+  if (typeof a === 'string') return firstLine(a).slice(0, 140);
+  const fresh = Date.now() - tsOf(e.meta?.previewAt) < 30000;
+  if (running || a?.running) {
+    if (a?.text && fresh) return lastSentence(a.text).slice(0, 140);
+    // A source-written line ("Running Claude Code · …") beats a generic verb for an unknown tool.
+    if (a?.tool) { const v = toolVerb(a.tool); if (v !== 'Working' || !a.text) return v; }
+    if (a?.text) return lastSentence(a.text).slice(0, 140);
+    return 'Working';
+  }
+  return firstLine(e.preview || a?.text || '').slice(0, 140);
 }
+
+const SCRATCH = /\/scratch-workspaces\//;
 
 function clientChip(e: Entity, clientPaths: [string, string][]): string {
   if (e.meta?.client?.name) return e.meta.client.name;
   const cwd: string = e.meta?.cwd || '';
   if (cwd) for (const [p, name] of clientPaths) if (cwd === p || cwd.startsWith(`${p}/`)) return name;
-  if (typeof e.meta?.project === 'string' && !e.meta.project.startsWith('pj:')) return e.meta.project;
-  return baseName(cwd);
+  let chip = typeof e.meta?.project === 'string' && !e.meta.project.startsWith('pj:') ? e.meta.project : baseName(cwd);
+  // Desktop-app chats live in throwaway scratch folders; their names mean nothing to the user.
+  if (/^scratch-/.test(chip) || (SCRATCH.test(cwd) && /^scratch-|^[0-9a-f-]{20,}$/.test(baseName(cwd)))) return '';
+  if (chip === 'Desktop') chip = 'Desktop folder';
+  return chip;
 }
 
 function attentionSet(): Set<string> {
@@ -79,9 +139,11 @@ function useItems(): Item[] {
       if (e.kind !== 'session' || e.meta?.archived || isNoise(e)) continue;
       const family = familyOf(e);
       const run = live[e.id];
-      const running = e.status === 'running' || run?.status === 'running' || !!(e.meta?.activity?.running);
-      const acc = e.accountId ? accById[e.accountId] : undefined;
       const subs = Array.isArray(e.meta?.subagents) ? e.meta.subagents : [];
+      const subsLive = subs.filter((s: any) => s?.status === 'running').length;
+      // A Grok bot whose Claude CLI run is live is working, even if the bot itself is quiet.
+      const running = e.status === 'running' || run?.status === 'running' || !!(e.meta?.activity?.running) || subsLive > 0;
+      const acc = e.accountId ? accById[e.accountId] : undefined;
       out.push({
         e, family, running,
         group: `${family}:${family === 'desktop' ? '' : e.accountId || ''}`,
@@ -90,7 +152,7 @@ function useItems(): Item[] {
         activity: activityOf(e, run, running),
         chip: clientChip(e, clientPaths),
         subs: subs.length,
-        subsLive: subs.filter((s: any) => s?.status === 'running').length,
+        subsLive,
       });
     }
     return out.sort((x, y) => (y.e.updatedAt || 0) - (x.e.updatedAt || 0));
@@ -109,7 +171,8 @@ function groupItems(items: Item[]): Group[] {
 
 function RowLogo({ it }: { it: Item }) {
   const { e } = it;
-  if (it.family === 'grok') return <GrokAvatar color={e.meta?.avatarColor} shape={e.meta?.avatarShape || 'circle'} size={22} working={it.running} />;
+  if (it.family === 'grok' && e.meta?.isGroup && Array.isArray(e.meta.members) && e.meta.members.length) return <GroupAvatar members={e.meta.members} size={22} />;
+  if (it.family === 'grok') return <GrokAvatar color={e.meta?.avatarColor} shape={e.meta?.avatarShape} seed={e.meta?.agentId || e.id} size={22} working={it.running} />;
   if (it.family === 'desktop') return <ClaudeLogo size={16} working={it.running} />;
   return <AgentLogo source={e.source} size={16} working={it.running} />;
 }
@@ -204,7 +267,7 @@ export default function LiveView() {
   }, [all, filter, q]);
 
   const sections = useMemo(() => {
-    const since = Date.now() - DAY;
+    const since = Date.now() - 3 * DAY;
     const needs: Item[] = [], working: Item[] = [], recent: Item[] = [], older: Item[] = [];
     for (const i of shown) {
       if (i.attn) needs.push(i);
@@ -241,14 +304,15 @@ export default function LiveView() {
               onKeyDown={(ev) => { ev.stopPropagation(); if (ev.key === 'Escape') setQ(''); }} />
             {q && <button onClick={() => setQ('')} title="Clear"><X size={12} /></button>}
           </label>
+          <button className="lv-import" data-testid="live-import" onClick={() => useImport.getState().set(true)} title="Bring past chats onto the board"><Download size={13} />Import chats</button>
         </div>
 
         {empty && <div className="lv-empty" data-testid="live-empty">No chats yet. Start one from the dock below and it shows up here live.</div>}
-        {none && <div className="lv-empty" data-testid="live-empty">{q || filter !== 'all' ? 'Nothing matches.' : 'All quiet. Nothing ran in the last day.'}</div>}
+        {none && <div className="lv-empty" data-testid="live-empty">{q || filter !== 'all' ? 'Nothing matches.' : 'All quiet. Nothing in the last 3 days.'}</div>}
 
         <Section title="Needs you" items={sections.needs} testId="live-needs" />
         <Section title="Working now" items={sections.working} testId="live-working" />
-        <Section title="Recent" items={sections.recent} testId="live-recent" />
+        <Section title="Last 3 days" items={sections.recent} testId="live-recent" />
         {earlier && <Section title="Earlier" items={sections.older} testId="live-earlier" />}
         {sections.older.length > 0 && (
           <button className="lv-more" onClick={() => setEarlier(!earlier)}>{earlier ? 'Hide earlier' : `Show ${sections.older.length} earlier`}</button>

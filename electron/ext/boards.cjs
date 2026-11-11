@@ -1,6 +1,8 @@
 'use strict';
 // Saved boards: named snapshots of the card layout and lines, so you can switch between setups.
 const db = require('../db.cjs');
+const hub = require('../hub.cjs');
+const claudeCode = require('../sources/claudeCode.cjs');
 
 const KEY = 'savedBoards';
 let send = () => {};
@@ -52,6 +54,64 @@ function smartName({ nodes = [] } = snapshot()) {
   return `${head} · ${date}`;
 }
 
+function viewHide(rows, at) {
+  for (const r of rows) {
+    const d = parse(r.data);
+    d.viewHidden = at;
+    db.exec('UPDATE board_nodes SET hidden = 1, parent_id = NULL, data = ? WHERE id = ?', JSON.stringify(d), r.id);
+  }
+}
+
+// Older blank boards hid everything with no mark, so new work never came back. Rows a blank board
+// hid sit outside any frame (a card you delete keeps its frame), so mark those once.
+function migrateHidden() {
+  if (db.getSetting('boardViewHiddenMarked', false)) return;
+  const rows = db.all("SELECT * FROM board_nodes WHERE hidden = 1 AND parent_id IS NULL AND id NOT LIKE 'grp:%' AND id NOT LIKE 'nt:%' AND id NOT LIKE 'out:%'")
+    .filter((r) => parse(r.data).viewHidden == null);
+  viewHide(rows, 0); // as if hidden long ago, so work active right now comes back on the first revive
+  db.setSetting('boardViewHiddenMarked', true);
+}
+
+const needsLook = (e) => e.status === 'running' || e.status === 'waiting' || (e.meta && (e.meta.unread > 0 || e.meta.awaiting));
+
+// A card a blank board hid comes back when it changes after it was hidden and is running, waiting
+// on you or has unread replies. Its row is dropped, so the board places it again in its project's
+// frame. Rows for Switchboard's own runs are removed outright.
+const RECENT = 3 * 86400000;
+// One-time: earlier blank boards hid chats you were still using. Bring back the last 3 days.
+async function restoreRecent() {
+  if (db.getSetting('recentChatsRestored', false)) return 0;
+  const list = await hub.entities();
+  const byId = new Map(list.map((e) => [e.id, e]));
+  let n = 0;
+  for (const r of db.all('SELECT id, hidden, data FROM board_nodes WHERE hidden = 1')) {
+    const e = byId.get(r.id);
+    if (!e || e.kind !== 'session' || parse(r.data).viewHidden == null || Date.now() - (e.updatedAt || 0) > RECENT) continue;
+    db.exec('DELETE FROM board_nodes WHERE id = ?', r.id); n++;
+  }
+  db.setSetting('recentChatsRestored', true);
+  if (n) { send({ type: 'board-changed' }); send({ type: 'entities-changed' }); }
+  return n;
+}
+
+async function revive() {
+  const list = await hub.entities();
+  const byId = new Map(list.map((e) => [e.id, e]));
+  const internal = claudeCode.internalSessions();
+  let changed = 0;
+  for (const r of db.all('SELECT id, hidden, data FROM board_nodes')) {
+    const sid = String(r.id).startsWith('cc:') ? String(r.id).split(':').pop() : null;
+    if (sid && internal.has(sid)) { db.exec('DELETE FROM board_nodes WHERE id = ?', r.id); changed++; continue; }
+    if (!r.hidden) continue;
+    const at = parse(r.data).viewHidden;
+    const e = at != null && byId.get(r.id);
+    if (!e || (e.updatedAt || 0) <= at || !(needsLook(e) || e.kind === 'session')) continue;
+    db.exec('DELETE FROM board_nodes WHERE id = ?', r.id); changed++;
+  }
+  if (changed) { send({ type: 'board-changed' }); send({ type: 'entities-changed' }); }
+  return changed;
+}
+
 function autosave() { const snap = snapshot(); upsert(`Autosave · ${smartName(snap)}`, snap, true); }
 
 const summary = () => list().map(({ id, name, ts, auto, nodes }) => ({ id, name, ts, auto: !!auto, cards: (nodes || []).filter((n) => !String(n.id).startsWith('grp:') && !n.hidden).length }));
@@ -74,11 +134,13 @@ module.exports = {
       db.setSetting('currentBoard', b.name);
       return summary();
     },
-    // A blank board keeps every card you already have, just hidden, so nothing respawns.
+    // A blank board keeps every card you already have, just hidden, so nothing respawns. Unlike a
+    // card you delete, a card hidden this way (data.viewHidden = when) comes back once it is
+    // active again; see revive().
     'boards:blank': () => {
       autosave();
       db.exec("DELETE FROM board_nodes WHERE id LIKE 'grp:%'");
-      db.exec('UPDATE board_nodes SET hidden = 1, parent_id = NULL');
+      viewHide(db.all('SELECT * FROM board_nodes WHERE hidden = 0'), Date.now());
       db.exec('DELETE FROM edges');
       db.setSetting('currentBoard', null);
       send({ type: 'board-changed' });
@@ -89,5 +151,16 @@ module.exports = {
       return summary();
     },
   },
-  start(ctx) { send = ctx.send; },
+  start(ctx) {
+    send = ctx.send;
+    try { migrateHidden(); } catch (e) { console.error('board migrate:', e.message); }
+    let t = null;
+    hub.events.on('event', (e) => {
+      if (e.type !== 'entities-changed') return;
+      if (t) return; // throttle, not debounce: a session that writes every second must not starve it
+      t = setTimeout(() => { t = null; revive().catch((err) => console.error('board revive:', err.message)); }, 1500);
+    });
+    setTimeout(() => restoreRecent().then(revive).catch(() => {}), 5000);
+  },
+  revive,
 };

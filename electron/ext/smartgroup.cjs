@@ -87,7 +87,30 @@ ${list.map((e, i) => describe(e, i, clients)).join('\n')}`;
   return { groups, rest: list.filter((_, i) => !used.has(i + 1)) };
 }
 
-async function run(ids, { ai = true } = {}) {
+// Notes and outputs follow the card they have a line to, so a line never crosses the board
+// between groups. Groups left empty are dropped.
+const FOLLOWS = /^(nt|out):/;
+function keepLinked(groups) {
+  const where = new Map();
+  groups.forEach((g, i) => g.ids.forEach((id) => where.set(id, i)));
+  for (const e of hub.edges()) {
+    const [mover, anchor] = FOLLOWS.test(e.source) && !FOLLOWS.test(e.target) ? [e.source, e.target]
+      : FOLLOWS.test(e.target) && !FOLLOWS.test(e.source) ? [e.target, e.source] : [null, null];
+    if (!mover || !where.has(mover) || !where.has(anchor) || where.get(mover) === where.get(anchor)) continue;
+    const from = groups[where.get(mover)], to = groups[where.get(anchor)];
+    from.ids = from.ids.filter((id) => id !== mover);
+    to.ids.push(mover);
+    where.set(mover, where.get(anchor));
+  }
+  return groups.filter((g) => g.ids.length);
+}
+
+async function run(ids, opts = {}) {
+  const r = await group(ids, opts);
+  return { ...r, groups: keepLinked(r.groups) };
+}
+
+async function group(ids, { ai = true } = {}) {
   const all = await hub.entities();
   const byId = new Map(all.map((e) => [e.id, e]));
   const list = [...new Set(Array.isArray(ids) ? ids : [])].map((id) => byId.get(id)).filter(Boolean);

@@ -35,6 +35,7 @@ const S = {
   scratch: 'cc:a_claude1:0a1b2c3d-9999-4aaa-8bbb-000000000009',
   desktop: 'cc:a_claude1:0a1b2c3d-7777-4aaa-8bbb-000000000007',
   waiting: 'cc:a_claude2:0a1b2c3d-2222-4aaa-8bbb-00000000000a',
+  old: 'cc:a_claude1:0a1b2c3d-1111-4aaa-8bbb-00000000000b',
 };
 // A Claude Code session file as the CLI writes it. `mtime` (ms) backdates the file.
 function writeSession(configDir, cwd, sid, turns, mtime) {
@@ -77,7 +78,7 @@ const node = (id) => page.locator(`.react-flow__node[data-id="${id}"]`);
 async function launch() {
   const env = {
     ...process.env, HOME, PATH: `${BIN}:${process.env.PATH}`, SB_PORT: PORT,
-    SB_TEST_LOG: LOG, SB_TEST_LOGINS: LOGINS, SB_TEST_OPEN_LOG: OPENED, ...mock.env,
+    SB_TEST_LOG: LOG, SB_TEST_LOGINS: LOGINS, SB_TEST_OPEN_LOG: OPENED, SB_USER_DATA: path.join(HOME, 'electron-profile'), ...mock.env,
   };
   delete env.ANTHROPIC_API_KEY; delete env.CLAUDE_CONFIG_DIR; delete env.ELECTRON_RUN_AS_NODE;
   const args = [ROOT];
@@ -235,6 +236,9 @@ async function main() {
   // A chat from the Claude desktop app: its scratch folder lives under ~/Library/Application Support.
   writeSession('.claude', path.join(HOME, 'Library', 'Application Support', 'Claude', 'scratch-workspaces', 'ws-1', 'sess-1', 'scratch-2026-11-11-e2e'), S.desktop.split(':')[2],
     [['user', 'Plan the Harbor Coffee loyalty card'], ['assistant', 'Here is a loyalty card plan: ten stamps, the tenth drink free.']], Date.now() - 30 * 60000);
+  // A month-old chat: too old for the board on its own, so it has to be imported.
+  writeSession('.claude', path.join(HOME, 'code', 'harbor-coffee-site'), S.old.split(':')[2],
+    [['user', 'Draft the Harbor Coffee winter menu'], ['assistant', 'Winter menu: maple latte, chestnut mocha, gingerbread cold brew.']], Date.now() - 30 * 86400000);
   for (const f of [LOG, OPENED]) fs.rmSync(f, { force: true });
   // The fake Claude sign-in: which account each Claude Code folder ends up signed in to.
   // Two plans on one email, as with a Team organization and a personal Max plan.
@@ -424,6 +428,20 @@ async function main() {
     await page.getByTestId('mode-board').click();
     await until(async () => page.locator('.react-flow__node').first().isVisible(), 'back on the board');
     assert((await page.evaluate(() => localStorage.getItem('sb.mode'))) === 'board', 'mode saved');
+  });
+  await check('Import chats finds a month-old chat and puts it on the board', async () => {
+    assert((await node(S.old).count()) === 0, 'the old chat is not on the board by itself');
+    await page.getByTestId('mode-live').click();
+    await page.getByTestId('live-import').click();
+    await page.getByTestId('import-search').fill('winter menu');
+    const row = page.locator(`[data-testid="import-row"][data-id="${S.old}"]`);
+    await until(async () => (await row.count()) === 1, 'the old chat is listed', 15000);
+    await row.getByTestId('import-add').click();
+    await until(async () => /On board/.test(await row.innerText()), 'marked as on the board');
+    await page.keyboard.press('Escape');
+    await page.getByTestId('mode-board').click();
+    await until(async () => (await node(S.old).count()) === 1, 'the old chat is a card on the board');
+    assert((await api('settings:get', 'importedChats', [])).includes(S.old), 'remembered as imported');
   });
 
   console.log('\nConnections and messages between agents');

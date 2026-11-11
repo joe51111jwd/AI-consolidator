@@ -6,7 +6,8 @@ One whiteboard on your Mac for every AI agent, chat, code project and client you
 - **Smart group.** Press **Smart group** and Claude sorts the cards into named frames by client, project or purpose. Frames are soft tinted areas with a name tab (double-click to rename) and an optional goal; **Work toward goal** prompts every agent in the frame. ⌘G still groups selected cards by hand.
 - **Connections.** When one agent sends work to another (for example Grok Bot asking a Claude session to fix a bug), a line appears between the two cards and lights up with the message as it travels. Lines you draw send each finished output to the next card automatically; switch that off from the line's menu.
 - **Quick start.** The dock at the bottom: pick a Claude account (or Grok Bot), type, press Enter. **+** starts on whichever Claude account has used the least this week.
-- **Overall agent.** Lives in the bottom-right corner as a small tab that shows when it's working and flags what needs you: whose turn it is, failed runs, replies you owe, late next steps. Open it (⌘J) to ask across everything, or select a few cards and ask "compare these".
+- **Live view (⌘2).** The simple mode: every chat as a list (needs you, working now, last 3 days), grouped by account. Click one to open it and talk. **Import chats** brings any older chat from any Claude account onto the board.
+- **Main agent.** The **+** in the dock opens it in the side panel (⌘J): ask across everything, start a chat on a chosen account, add a note, start a blank or example board, or run the Showcase.
 - **Search.** ⌘K searches every card, including transcripts stored on this Mac. Open the result, put it on the board (⌘Enter), or tag it as context for your next prompt (⌘T).
 - **Outputs.** A drawer on the right edge lists outputs and recent replies as a calm checklist.
 - **Agents can draw.** `sb board` (or the `make_board` tool) puts notes and arrows inside a frame on the board.

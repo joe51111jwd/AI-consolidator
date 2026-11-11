@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowUp, ChevronDown, ChevronRight, X, GripVertical, Copy, FileOutput, MessageSquarePlus, StickyNote, LayoutTemplate, Sparkles, Zap, Play, Square } from 'lucide-react';
 import { useStore } from '../lib/store';
-import { useDemo, showcaseZoom } from '../lib/demo';
+import { useDemo, startShowcaseTour } from '../lib/demo';
 import { api, Message } from '../lib/api';
 import { md } from '../lib/format';
 import { AgentLogo } from './Logos';
@@ -53,26 +53,69 @@ function NudgeIcon({ n }: { n: Nudge }) {
   return <i className={`cf-dot k-${n.tone || n.kind}`} />;
 }
 
-function Needs({ items, onAct, onDismiss }: { items: Nudge[]; onAct: (n: Nudge) => void; onDismiss: (id: string) => void }) {
+function NudgeRow({ n, onAct, onDismiss }: { n: Nudge; onAct: (n: Nudge) => void; onDismiss: (id: string) => void }) {
+  return (
+    <div className={`cf-item ${n.tone || ''} ${n.kind === 'tip' ? 'tip' : ''}`} role="button" tabIndex={0} onClick={() => onAct(n)} onKeyDown={(e) => { if (e.key === 'Enter') onAct(n); }}>
+      <span className="cf-ico"><NudgeIcon n={n} /></span>
+      <span className="cf-txt"><span className="cf-t">{n.title}</span>{n.detail && <span className="cf-d">{n.detail}</span>}</span>
+      <button className="cf-x" title="Dismiss" onClick={(e) => { e.stopPropagation(); onDismiss(n.id); }}><X size={12} /></button>
+    </div>
+  );
+}
+
+const TIPS_SEEN = 'sb.tipsSeen';
+const seenTips = (): string[] => { try { return JSON.parse(localStorage.getItem(TIPS_SEEN) || '[]'); } catch { return []; } };
+
+// Suggestions ("Connect Gmail") are not things that need you: they sit greyed under their own heading,
+// open the first time they appear and folded after that.
+function Suggestions({ tips, onAct, onDismiss }: { tips: Nudge[]; onAct: (n: Nudge) => void; onDismiss: (id: string) => void }) {
+  const [open, setOpen] = useState(() => { const seen = new Set(seenTips()); return tips.some((t) => !seen.has(t.id)); });
+  useEffect(() => {
+    if (!tips.length) return;
+    localStorage.setItem(TIPS_SEEN, JSON.stringify([...new Set([...seenTips(), ...tips.map((t) => t.id)])].slice(-100)));
+  }, [tips.map((t) => t.id).join('|')]);
+  if (!tips.length) return null;
+  return (
+    <div className="cf-tips">
+      <button className="cf-label" onClick={() => setOpen(!open)} aria-expanded={open}>
+        {open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}Suggestions<span className="cf-count">{tips.length}</span>
+      </button>
+      {open && tips.map((n) => <NudgeRow key={n.id} n={n} onAct={onAct} onDismiss={onDismiss} />)}
+    </div>
+  );
+}
+
+function Needs({ items, tips, onAct, onDismiss }: { items: Nudge[]; tips: Nudge[]; onAct: (n: Nudge) => void; onDismiss: (id: string) => void }) {
   const [all, setAll] = useState(false);
   const [hidden, setHidden] = useState(false);
-  if (!items.length) return null;
+  if (!items.length && !tips.length) return null;
   const shown = hidden ? [] : all ? items : items.slice(0, SHOWN);
   return (
     <div className="cf-needs">
-      <button className="cf-label" onClick={() => setHidden(!hidden)} aria-expanded={!hidden}>
-        {hidden ? <ChevronRight size={12} /> : <ChevronDown size={12} />}Needs you<span className="cf-count">{items.length}</span>
-      </button>
-      {shown.map((n) => (
-        <div key={n.id} className={`cf-item ${n.tone || ''}`} role="button" tabIndex={0} onClick={() => onAct(n)} onKeyDown={(e) => { if (e.key === 'Enter') onAct(n); }}>
-          <span className="cf-ico"><NudgeIcon n={n} /></span>
-          <span className="cf-txt"><span className="cf-t">{n.title}</span>{n.detail && <span className="cf-d">{n.detail}</span>}</span>
-          <button className="cf-x" title="Dismiss" onClick={(e) => { e.stopPropagation(); onDismiss(n.id); }}><X size={12} /></button>
-        </div>
-      ))}
+      {items.length > 0 && (
+        <button className="cf-label" onClick={() => setHidden(!hidden)} aria-expanded={!hidden}>
+          {hidden ? <ChevronRight size={12} /> : <ChevronDown size={12} />}Needs you<span className="cf-count">{items.length}</span>
+        </button>
+      )}
+      {shown.map((n) => <NudgeRow key={n.id} n={n} onAct={onAct} onDismiss={onDismiss} />)}
       {!hidden && items.length > SHOWN && <button className="cf-more" onClick={() => setAll(!all)}>{all ? 'Show less' : `${items.length - SHOWN} more`}</button>}
+      <Suggestions tips={tips} onAct={onAct} onDismiss={onDismiss} />
     </div>
   );
+}
+
+// One fresh line about the board, shown when the panel opens instead of an old reply.
+function StatusLine({ needs }: { needs: number }) {
+  const entities = useStore((s) => s.entities);
+  const live = useStore((s) => s.liveByEntity);
+  const working = useMemo(() => {
+    const ids = new Set<string>();
+    for (const e of entities) if (e.kind === 'session' && e.status === 'running') ids.add(e.id);
+    for (const [id, r] of Object.entries(live)) if (r.status === 'running' && id !== 'chief') ids.add(id);
+    return ids.size;
+  }, [entities, live]);
+  const parts = [working ? `${working} working` : 'Nothing running', needs ? `${needs} need${needs === 1 ? 's' : ''} you` : 'nothing needs you'];
+  return <div className="cf-status" data-testid="chief-status"><ChiefGlyph size={14} working={working > 0} /><span>{parts.join(' · ')}</span></div>;
 }
 
 function ChiefMsg({ m }: { m: Message }) {
@@ -116,8 +159,7 @@ function Actions({ onDone }: { onDone: () => void }) {
     const d = useDemo.getState();
     if (d.active) { d.stop(); return; }
     d.start(); onDone();
-    const centre = (tries: number) => setTimeout(() => { if (!(window as any).__sbCenter?.('demo:anchor', showcaseZoom()) && tries > 0) centre(tries - 1); }, 150);
-    centre(5);
+    startShowcaseTour();
   };
   const list = accounts.filter((a) => a.kind === 'claude-code' || a.kind === 'grok-bot' || a.kind === 'codex');
   const pct = useMemo(() => {
@@ -164,7 +206,11 @@ export default function Chief() {
   const { set, notify } = useStore.getState();
   const live = useStore((s) => s.liveByEntity['chief']);
   const running = live?.status === 'running';
-  const { items, dismiss } = useNudges();
+  const { items: nudges, dismiss } = useNudges();
+  const items = useMemo(() => nudges.filter((n) => n.kind !== 'tip'), [nudges]);
+  const tips = useMemo(() => nudges.filter((n) => n.kind === 'tip'), [nudges]);
+  const [since, setSince] = useState(() => Date.now());
+  const [showEarlier, setShowEarlier] = useState(false);
   const [q, setQ] = useState('');
   const [hist, setHist] = useState<Message[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
@@ -174,7 +220,9 @@ export default function Chief() {
   const msgs = useRef<HTMLDivElement>(null);
 
   useEffect(() => { if (open) api.chiefHistory().then(setHist).catch(() => {}); }, [open, live?.status]);
-  useEffect(() => { const el = msgs.current; if (el) el.scrollTop = el.scrollHeight; }, [hist.length, live?.text, open, notes.length, busy]);
+  // Each time the panel opens, the old conversation folds behind "Earlier".
+  useEffect(() => { if (open) { setSince(Date.now() - 1000); setShowEarlier(false); } }, [open]);
+  useEffect(() => { const el = msgs.current; if (el && !showEarlier) el.scrollTop = el.scrollHeight; }, [hist.length, live?.text, open, notes.length, busy]);
   useEffect(() => {
     if (!open) return;
     const t = setTimeout(() => input.current?.focus({ preventScroll: true }), 90);
@@ -243,7 +291,10 @@ export default function Chief() {
 
   const busyLabel = busy === 'recap' ? 'Writing your daily recap' : busy === 'organize' ? 'Organizing the board' : '';
   const late = items.some((i) => i.tone === 'error');
-  const empty = !hist.length && !live && !notes.length && !busy;
+  const earlier = hist.filter((m) => (m.ts || 0) < since);
+  const fresh = hist.filter((m) => (m.ts || 0) >= since);
+  const shownHist = showEarlier ? hist : fresh;
+  const quiet = !fresh.length && !running && live?.status !== 'error' && !notes.length && !busy;
   return (
     <div ref={root} className={`sb-chief ${open ? 'open' : ''} ${running ? 'working' : ''}`} aria-hidden={!open}
       onKeyDown={(e) => { if (e.key === 'Escape' && open) close(); }}>
@@ -257,10 +308,15 @@ export default function Chief() {
           </div>
           <Actions onDone={close} />
         </div>
-        <Needs items={items} onAct={act} onDismiss={dismiss} />
+        <Needs items={items} tips={tips} onAct={act} onDismiss={dismiss} />
         <div className="cf-msgs" ref={msgs}>
-          {empty && <div className="cf-empty"><ChiefGlyph size={20} /><span>Ask across all your agents.</span></div>}
-          {hist.map((m) => <ChiefMsg key={m.id} m={m} />)}
+          {earlier.length > 0 && (
+            <button className="cf-earlier" onClick={() => setShowEarlier(!showEarlier)}>
+              {showEarlier ? <ChevronDown size={12} /> : <ChevronRight size={12} />}{showEarlier ? 'Hide earlier' : `Earlier (${earlier.length})`}
+            </button>
+          )}
+          {quiet && !showEarlier && <StatusLine needs={items.length} />}
+          {shownHist.map((m) => <ChiefMsg key={m.id} m={m} />)}
           {running && (live?.text ? <ChiefMsg m={{ id: 'live', role: 'assistant', text: live.text, ts: Date.now() }} />
             : <div className="cf-thinking"><i /><i /><i /></div>)}
           {live?.status === 'error' && <div className="cf-err">{live.error}</div>}

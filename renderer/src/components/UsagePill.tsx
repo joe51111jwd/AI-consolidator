@@ -6,8 +6,11 @@ import { tokens } from '../lib/format';
 import { AgentLogo } from './Logos';
 import './shell.css';
 
-type Row = { id: string; label: string; kind: string; color: string; usage: Usage | null };
-const METERED = ['claude-code', 'codex'];
+// weekPct / fiveHourPct come from the Claude app's own plan meter (plan-usage-history.json) when it tracks
+// the account's org; without them the weekly % is a token estimate against a budget.
+type PlanUsage = Usage & { weekPct?: number; fiveHourPct?: number; resetsAt?: number | null; exact?: boolean };
+type Row = { id: string; label: string; kind: string; color: string; usage: PlanUsage | null };
+const METERED = ['claude-code', 'codex', 'claude-app'];
 
 // Rough weekly token allowance per plan. Input + output tokens only, the same numbers Claude Code logs.
 export function defaultBudget(plan?: string | null) {
@@ -48,8 +51,17 @@ export const useUsage = create<UsageState>((set) => ({
 export function budgetFor(id: string, accounts: Account[], budgets: Record<string, number>) {
   return budgets[id] || defaultBudget(accounts.find((a) => a.id === id)?.config?.auth?.plan);
 }
+const exact = (r: Row) => typeof r.usage?.weekPct === 'number';
 export function weeklyPct(r: Row, accounts: Account[], budgets: Record<string, number>) {
+  if (exact(r)) return r.usage!.weekPct!;
   return ((r.usage?.d7 || 0) / budgetFor(r.id, accounts, budgets)) * 100;
+}
+const unused = (r: Row) => !exact(r) && !(r.usage?.d7 || 0);
+const pctLabel = (r: Row, p: number) => `${exact(r) ? '' : '≈'}${Math.round(p)}%`;
+function resetsIn(ts?: number | null) {
+  if (!ts) return '';
+  const h = Math.max(0, (ts - Date.now()) / 3600000);
+  return h >= 24 ? `resets in ${Math.round(h / 24)}d` : `resets in ${Math.max(1, Math.round(h))}h`;
 }
 const tone = (p: number) => (p >= 90 ? 'var(--red)' : p >= 70 ? 'var(--amber)' : 'var(--ink)');
 
@@ -77,20 +89,30 @@ function UsageRow({ r, accounts }: { r: Row; accounts: Account[] }) {
   const [draft, setDraft] = useState(String(Math.round(budget / 1e6)));
   useEffect(() => setDraft(String(Math.round(budget / 1e6))), [budget]);
   const commit = () => { const n = Number(draft); setBudget(r.id, n > 0 ? n * 1e6 : null); };
+  const reset = resetsIn(r.usage?.resetsAt);
+  const appOnly = r.kind === 'claude-app';
   return (
-    <div className={`u-row ${open ? 'open' : ''}`} onClick={() => setOpen(!open)} data-testid={`usage-${r.id}`}>
+    <div className={`u-row ${open ? 'open' : ''} ${unused(r) ? 'unused' : ''}`} onClick={() => setOpen(!open)} data-testid={`usage-${r.id}`}>
       <div className="u-top">
-        <AgentLogo source={r.kind} size={13} color={r.color} />
+        <AgentLogo source={appOnly ? 'claude-code' : r.kind} size={13} color={r.color} />
         <span className="n">{r.label}</span>
-        <span className="p" style={{ color: tone(pct) }}>{Math.round(pct)}%</span>
+        {reset && <span className="u-reset">{reset}</span>}
+        <span className="p" style={{ color: tone(pct) }} title={exact(r) ? 'From the Claude app\'s plan meter' : 'Estimated from tokens against a weekly budget'}>{pctLabel(r, pct)}</span>
       </div>
-      <div className="u-bar"><i style={{ width: `${Math.min(100, Math.max(pct > 0 ? 2 : 0, pct))}%`, background: tone(pct) === 'var(--ink)' ? r.color : tone(pct) }} /></div>
-      <div className="u-more">
-        <div><span>5 hr</span><b>{tokens(r.usage?.h5)}</b></div>
-        <div><span>Today</span><b>{tokens(r.usage?.d1)}</b></div>
-        <div><span>7 days</span><b>{tokens(r.usage?.d7)}</b></div>
-      </div>
-      {open && (
+      <div className="u-bar"><i style={{ width: `${Math.min(100, Math.max(pct > 0 ? 2 : 0, pct))}%`, background: tone(pct) === 'var(--ink)' ? r.color || 'var(--ink)' : tone(pct) }} /></div>
+      {appOnly ? (
+        <div className="u-more">
+          <div><span>5 hr</span><b>{Math.round(r.usage?.fiveHourPct || 0)}%</b></div>
+          <div><span>7 days</span><b>{Math.round(pct)}%</b></div>
+        </div>
+      ) : (
+        <div className="u-more">
+          <div><span>5 hr</span><b>{typeof r.usage?.fiveHourPct === 'number' ? `${Math.round(r.usage.fiveHourPct)}% · ` : ''}{tokens(r.usage?.h5)}</b></div>
+          <div><span>Today</span><b>{tokens(r.usage?.d1)}</b></div>
+          <div><span>7 days</span><b>{tokens(r.usage?.d7)}</b></div>
+        </div>
+      )}
+      {open && !exact(r) && (
         <label className="u-budget" onClick={(e) => e.stopPropagation()}>
           Weekly budget
           <input type="number" min={1} value={draft} onChange={(e) => setDraft(e.target.value)} onBlur={commit} onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }} />
@@ -116,16 +138,18 @@ export default function UsagePill() {
     return () => { document.removeEventListener('mousedown', away); window.removeEventListener('keydown', esc); };
   }, [open]);
   if (!rows.length) return null;
-  const ranked = rows.map((r) => ({ r, p: weeklyPct(r, accounts, budgets) })).sort((a, b) => b.p - a.p);
+  // Unused accounts (a Codex login with nothing this week) sink to the bottom, quietly.
+  const ranked = rows.map((r) => ({ r, p: weeklyPct(r, accounts, budgets) }))
+    .sort((a, b) => Number(unused(a.r)) - Number(unused(b.r)) || b.p - a.p);
   const top = ranked[0];
   return (
     <div className="usage" ref={ref}>
       <button className="usage-pill" data-testid="usage-pill" title={`${top.r.label}: ${Math.round(top.p)}% of this week`} onClick={() => setOpen(!open)}>
-        <Ring pct={top.p} />{Math.round(top.p)}%<span className="lbl">week</span>
+        <Ring pct={top.p} />{pctLabel(top.r, top.p)}<span className="lbl">week</span>
       </button>
       {open && (
         <div className="usage-pop">
-          <div className="hd">This week<span className="hint">of weekly budget</span></div>
+          <div className="hd">This week<span className="hint">{ranked.some(({ r }) => exact(r)) ? 'weekly limit' : 'of weekly budget'}</span></div>
           {ranked.map(({ r }) => <UsageRow key={r.id} r={r} accounts={accounts} />)}
         </div>
       )}

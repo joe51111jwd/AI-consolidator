@@ -11,7 +11,7 @@
 //   flash at all needs an MCP connector in Grok Bot plus a tunnel (not built yet).
 const fs = require('fs');
 const path = require('path');
-const { HOME, truncate, run } = require('../util.cjs');
+const { HOME, truncate, plain, run } = require('../util.cjs');
 const db = require('../db.cjs');
 
 const APP_SUPPORT = path.join(HOME, 'Library', 'Application Support', 'Grok Bot');
@@ -92,7 +92,8 @@ function bots() {
     lastText: r.lastEntry && typeof r.lastEntry.text === 'string' ? r.lastEntry.text : '',
     lastKind: r.lastEntry ? r.lastEntry.kind : null,
     unread: r.unreadCount || 0, awaiting: !!r.awaitingUserResponse, hidden: !!r.isHiddenFromSidebar,
-    lastActivityAt: r.lastActivityAt || 0,
+    lastActivityAt: r.lastActivityAt || 0, createdAt: r.createdAt || r.localActivityAt || 0,
+    isGroup: !!r.isGroup, memberIds: Array.isArray(r.memberIds) ? r.memberIds.filter((m) => typeof m === 'string') : [],
   }));
 }
 
@@ -137,6 +138,32 @@ const COLORS = {
   magenta: '#D6409F', pink: '#E93D82', brown: '#A18072',
 };
 const hexColor = (c) => (typeof c !== 'string' || !c ? null : /^#[0-9a-f]{3,8}$/i.test(c) ? c : COLORS[c.toLowerCase()] || null);
+
+// Bots the cache gives no avatar get a stable one from their id, in Grok's own palette and shapes.
+const AVATAR_COLORS = ['#8B5CF6', '#F07A2E', '#EF4444', '#8B5E3C', '#EC4899', '#3B82F6', '#4ADE80', '#2DD4BF', '#F59E0B'];
+const AVATAR_SHAPES = ['cloud', 'circle', 'gumdrop', 'egg', 'squircle', 'star', 'hexagon', 'bean'];
+function idHash(id) {
+  let h = 2166136261;
+  for (const ch of String(id)) { h ^= ch.charCodeAt(0); h = Math.imul(h, 16777619); }
+  return h >>> 0;
+}
+function avatarOf(b) {
+  const h = idHash(b.id);
+  return {
+    color: hexColor(b.color) || AVATAR_COLORS[h % AVATAR_COLORS.length],
+    shape: b.shape || AVATAR_SHAPES[Math.floor(h / AVATAR_COLORS.length) % AVATAR_SHAPES.length],
+  };
+}
+
+// A group chat's roster name is a comma list that starts with the owner. Title it from the member
+// bots instead, and give the board their avatars to cluster.
+function groupInfo(b, byId) {
+  const bots = b.memberIds.map((m) => byId.get(m)).filter(Boolean);
+  const names = bots.map((m) => m.name);
+  const fallback = String(b.name || '').split(',').map((x) => x.trim()).filter(Boolean);
+  const title = names.length ? names.join(', ') : (fallback.length > 1 ? fallback.slice(1).join(', ') : b.name);
+  return { title: title || 'Group chat', members: bots.slice(0, 4).map(avatarOf) };
+}
 
 function describe(e) {
   if (e.kind === 'message') {
@@ -307,17 +334,31 @@ function list(account) {
   const visible = all.filter((b) => !b.hidden);
   const replicas = new Map(all.map((b) => [b.id, replica(b.id)]));
   const subs = subagentsByBot(visible, replicas);
+  const byId = new Map(all.map((b) => [b.id, b]));
   return visible.map((b) => {
     const entries = replicas.get(b.id) || [];
-    const running = !b.awaiting && now - (b.lastActivityAt || 0) < 60000 && b.lastKind !== 'message';
+    const mine = subs.get(b.id) || [];
+    // A Claude CLI run or Cursor agent the bot started counts as the bot working, as it does for
+    // Claude Code sessions with live subagents.
+    const running = !b.awaiting && ((now - (b.lastActivityAt || 0) < 60000 && b.lastKind !== 'message') || mine.some((x) => x.status === 'running'));
+    // Never used, or nothing recorded since: no activity time. Kept off the board and Live (the
+    // cache gives these updatedAt 0, which would show as Jan 1).
+    const unused = !b.lastActivityAt;
+    const av = avatarOf(b);
+    const group = b.isGroup ? groupInfo(b, byId) : null;
+    const live = !b.awaiting && mine.find((x) => x.status === 'running');
+    const act = live ? { text: truncate(`${live.kind === 'claude-cli' ? 'Running Claude Code' : 'Cursor agent'} · ${live.title}`, 140), tool: live.kind, running: true } : activity(b, entries, running);
     return {
       id: `gb:${account.id}:${b.id}`, kind: 'session', source: 'grok-bot', accountId: account.id,
-      title: b.name, preview: truncate(b.lastText || b.description, 220), updatedAt: b.lastActivityAt || 0,
+      title: group ? group.title : b.name, preview: truncate(plain(b.lastText || b.description), 220), updatedAt: b.lastActivityAt || b.createdAt || 0,
       status: b.awaiting ? 'waiting' : running ? 'running' : 'idle',
       meta: {
         agentId: b.id, description: b.description, unread: b.unread, color: b.color, category: 'chat',
-        avatarColor: hexColor(b.color) || undefined, avatarShape: b.shape || undefined,
-        activity: activity(b, entries, running), actions: actions(entries), subagents: subs.get(b.id) || [],
+        avatarColor: av.color, avatarShape: av.shape, avatarDerived: !hexColor(b.color) || !b.shape,
+        lastActivityAt: b.lastActivityAt || 0, createdAt: b.createdAt || 0,
+        ...(unused ? { unused: true, noise: true } : {}),
+        ...(group ? { isGroup: true, members: group.members } : {}),
+        activity: act, actions: actions(entries), subagents: mine,
       },
     };
   });

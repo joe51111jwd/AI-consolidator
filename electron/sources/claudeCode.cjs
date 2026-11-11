@@ -6,6 +6,7 @@ const fs = require('fs');
 const path = require('path');
 const { HOME, APP_DIR, expand, exists, readJsonl, walk, truncate, run, which } = require('../util.cjs');
 
+const realDir = (p) => { try { return fs.realpathSync(p); } catch { return path.resolve(p); } };
 const cache = new Map(); // file -> { mtimeMs, size, parsed }
 const DAY = 86400000;
 
@@ -83,7 +84,7 @@ function list(account, { days = 21, max = 60 } = {}) {
     try { s = parseSession(f.path); } catch { continue; }
     if (!s.messages.length) continue;
     // The overall agent runs Claude Code inside ~/.switchboard; those runs are not cards of their own.
-    if (s.cwd && path.resolve(s.cwd) === path.resolve(APP_DIR)) continue;
+    if (s.cwd && realDir(s.cwd) === realDir(APP_DIR)) continue;
     out.push({
       id: `cc:${account.id}:${s.sessionId}`,
       kind: 'session', source: 'claude-code', accountId: account.id,

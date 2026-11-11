@@ -11,7 +11,7 @@ export default function FlowEdge(p: EdgeProps) {
   const stroke = live ? 'var(--accent)' : p.selected ? 'var(--ink)' : isLink ? '#A9A398' : '#C9C3B8';
   return (
     <>
-      <BaseEdge id={p.id} path={path} style={{ stroke, strokeWidth: live ? 2.2 : 1.6, strokeDasharray: isLink && !live ? '0' : d.auto ? '5 4' : undefined, transition: 'stroke .3s' }} />
+      <BaseEdge id={p.id} path={path} className={live ? 'edge-live' : undefined} style={{ stroke, strokeWidth: live ? 2.2 : 1.6, strokeDasharray: live ? '8 6' : isLink ? '0' : d.auto ? '5 4' : undefined, transition: 'stroke .3s, stroke-width .3s' }} />
       {live && (
         <circle r="5" fill="var(--accent)">
           <animateMotion dur="1.2s" repeatCount="4" path={path} />

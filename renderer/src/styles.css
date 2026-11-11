@@ -265,3 +265,8 @@ table.t tr:hover td { background: #FBFAF7; cursor: pointer; }
 .signin .who { color: var(--ink); font-weight: 500; overflow-wrap: anywhere; }
 .btn:disabled { opacity: .55; cursor: default; }
 .signin .btn:not(.accent):not(.primary) { background: var(--card); }
+
+.card { transition: box-shadow .2s ease, transform .2s ease; }
+.react-flow__node:hover > .card { box-shadow: 0 6px 22px rgba(40, 30, 20, .12); transform: translateY(-1px); }
+.edge-live { animation: edge-flow .6s linear infinite; }
+@keyframes edge-flow { to { stroke-dashoffset: -14; } }

@@ -63,6 +63,7 @@ async function launch() {
   delete env.ANTHROPIC_API_KEY; delete env.CLAUDE_CONFIG_DIR; delete env.ELECTRON_RUN_AS_NODE;
   const args = [ROOT];
   if (process.platform === 'linux') args.unshift('--no-sandbox', '--password-store=basic');
+  if (process.platform === 'darwin') args.unshift('--use-mock-keychain');
   app = await _electron.launch({ executablePath: require('electron'), args, env, timeout: 60000 });
   page = await app.firstWindow();
   page.on('pageerror', (e) => console.log('    [page error]', e.message));

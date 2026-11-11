@@ -96,8 +96,12 @@ function start(port = 47821) {
       return send(404, { error: 'unknown route' });
     } catch (e) { return send(500, { error: e.message }); }
   });
-  srv.on('error', (e) => console.error('bus error', e.message));
-  srv.listen(port, '127.0.0.1', () => fs.writeFileSync(PORT_FILE, String(srv.address().port)));
+  srv.on('error', (e) => {
+    if (e.code === 'EADDRINUSE' && port !== 0) { console.error(`bus port ${port} in use, picking a free one`); port = 0; srv.listen(0, '127.0.0.1'); return; }
+    console.error('bus error', e.message);
+  });
+  srv.on('listening', () => fs.writeFileSync(PORT_FILE, String(srv.address().port)));
+  srv.listen(port, '127.0.0.1');
   return srv;
 }
 

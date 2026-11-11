@@ -6,6 +6,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { api, Entity } from '../lib/api';
 import { ago, tokens, md, SOURCE, dueLabel } from '../lib/format';
 import Composer from '../components/Composer';
+import ClaudeMark, { isClaude } from '../components/ClaudeMark';
 
 const Handles = () => (
   <>
@@ -33,7 +34,7 @@ function Top({ e, color, label }: { e: Entity; color?: string; label?: string })
   const src = SOURCE[e.source] || { label: e.source, color: '#999' };
   return (
     <div className="card-top">
-      <span className="src"><i style={{ background: color || acc?.color || src.color }} />{label || (acc ? acc.label : src.label)}</span>
+      <span className="src">{isClaude(e.source) ? <ClaudeMark color={color || acc?.color || src.color} /> : <i style={{ background: color || acc?.color || src.color }} />}{label || (acc ? acc.label : src.label)}</span>
       {e.status && e.kind === 'session' && <span className={`status ${e.status}`}><i />{e.status === 'running' ? 'Working' : e.status === 'waiting' ? 'Your turn' : ''}</span>}
       <span className="when">{ago(e.updatedAt)}</span>
     </div>
@@ -65,7 +66,7 @@ function LiveOrPreview({ id, preview, title }: { id: string; preview?: string; t
 export const SessionNode = memo(({ id }: NodeProps) => {
   const e = useEntity(id); if (!e) return <Gone />;
   return (
-    <div className="card" style={{ width: 300 }}>
+    <div className="card" style={{ width: 300, borderLeft: `3px solid ${accountOf(e)?.color || SOURCE[e.source]?.color || 'transparent'}` }}>
       <Handles />
       <Top e={e} />
       <div className="card-title">{e.title}</div>
@@ -92,10 +93,10 @@ export const AccountNode = memo(({ id }: NodeProps) => {
     ? (auth?.loggedIn ? [auth.org, auth.plan && auth.plan[0].toUpperCase() + auth.plan.slice(1)].filter(Boolean).join(' · ') || auth.email || 'Signed in' : auth ? 'Not signed in' : (e.meta?.config?.configDir || '~/.claude'))
     : src.label;
   return (
-    <div className="card" style={{ width: 280 }}>
+    <div className="card" style={{ width: 280, borderLeft: `3px solid ${color}` }}>
       <Handles />
       <div className="acc-head">
-        <div className="avatar" style={{ background: color }}>{e.title.slice(0, 1)}</div>
+        <div className="avatar" style={{ background: color }}>{isClaude(e.source) ? <ClaudeMark size={18} color="#fff" /> : e.title.slice(0, 1)}</div>
         <div style={{ minWidth: 0 }}>
           <div className="t">{e.title}</div>
           <div className={`s ${e.source === 'claude-code' && !auth ? 'mono' : ''}`} title={auth?.email || e.meta?.config?.configDir || ''}>{sub}</div>

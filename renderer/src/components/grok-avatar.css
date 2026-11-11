@@ -1,0 +1,33 @@
+.ga { position: relative; display: inline-flex; flex: none; }
+.ga svg { overflow: visible; display: block; }
+.ga-body, .ga-eyes { transform-box: fill-box; transform-origin: 50% 100%; }
+.ga-eyes { transform-origin: 50% 50%; }
+
+.ga.idle .ga-body { animation: ga-breathe 3.6s ease-in-out infinite; }
+.ga.idle .ga-eyes { animation: ga-blink 4.8s infinite; }
+.ga.working .ga-body { animation: ga-squish 0.9s cubic-bezier(.45, 0, .55, 1) infinite; }
+.ga.working .ga-eyes { animation: ga-glance 2.4s ease-in-out infinite, ga-blink 4.8s 1s infinite; }
+
+@keyframes ga-breathe { 0%, 100% { transform: scale(1, 1); } 50% { transform: scale(1.025, 0.975); } }
+@keyframes ga-blink { 0%, 92%, 100% { transform: scaleY(1); } 95% { transform: scaleY(0.12); } }
+@keyframes ga-squish {
+  0%, 100% { transform: translateY(0) scale(1.08, 0.9); }
+  35% { transform: translateY(-9%) scale(0.94, 1.07); }
+  60% { transform: translateY(-11%) scale(0.98, 1.02); }
+  85% { transform: translateY(0) scale(1.06, 0.93); }
+}
+@keyframes ga-glance {
+  0%, 20%, 100% { translate: 0 0; }
+  30%, 48% { translate: -1.8px 0; }
+  58%, 78% { translate: 1.8px 0; }
+}
+
+.ga-badge {
+  position: absolute; right: -1px; bottom: -1px; width: 28%; height: 28%; min-width: 6px; min-height: 6px;
+  border-radius: 50%; background: #3B82F6; box-shadow: 0 0 0 1.5px #fff;
+}
+
+.ga-group { position: relative; display: inline-block; flex: none; }
+.ga-group > span { position: absolute; display: inline-flex; }
+
+@media (prefers-reduced-motion: reduce) { .ga-body, .ga-eyes { animation: none !important; } }

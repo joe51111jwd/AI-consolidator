@@ -56,8 +56,8 @@ function layout(): { nodes: Node[]; edges: Edge[] } {
   const nodes: Node[] = [
     { id: 'demo:header', type: 'demoHeader', position: { x, y: y - 90 }, data: {}, style: { width: 1300 }, selectable: false },
     { id: 'demo:claude', type: 'demoClaude', position: { x, y }, data: {}, style: { width: 360 } },
-    { id: 'demo:marketing', type: 'demoGrok', position: { x: x + 470, y: y - 10 }, data: { bot: 'marketing', name: 'Marketing', color: '#18181B' }, style: { width: 380 } },
-    { id: 'demo:outreach', type: 'demoGrok', position: { x: x + 470, y: y + 600 }, data: { bot: 'outreach', name: 'Outreach', color: '#52525B' }, style: { width: 380 } },
+    { id: 'demo:marketing', type: 'demoGrok', position: { x: x + 470, y: y - 10 }, data: { bot: 'marketing', name: 'Marketing', color: '#18181B', avatar: { color: '#8B5CF6', shape: 'cloud' } }, style: { width: 380 } },
+    { id: 'demo:outreach', type: 'demoGrok', position: { x: x + 470, y: y + 600 }, data: { bot: 'outreach', name: 'Outreach', color: '#52525B', avatar: { color: '#F07A2E', shape: 'gumdrop' } }, style: { width: 380 } },
     { id: 'demo:output', type: 'demoOutput', position: { x: x + 960, y: y + 200 }, data: {}, style: { width: 340 } },
   ];
   const edges = [

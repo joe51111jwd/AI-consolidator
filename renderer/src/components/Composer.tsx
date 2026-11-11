@@ -52,11 +52,19 @@ export default function Composer({ id, placeholder, multiline = false, from, aut
 
   const unpin = (pid: string) => useStore.getState().set({ pins: useStore.getState().pins.filter((p) => p !== pid) });
 
+  const [queued, setQueued] = useState<string | null>(null);
+  useEffect(() => {
+    if (busy || !queued) return;
+    const q = queued; setQueued(null);
+    sendPrompt(id, q, { from }).then(() => onSent?.(q)).catch((e: any) => notify(e.message));
+  }, [busy, queued]);
+
   async function send() {
     const usePins = pins.filter((p) => p !== id);
     const raw = text;
     const t = raw.trim() || (attach.length || usePins.length ? 'Use the attached context.' : '');
-    if (!t || busy) return;
+    if (!t) return;
+    if (busy) { setQueued((q) => (q ? `${q}\n\n${t}` : t)); setText(''); return; }
     setText('');
     try {
       const all = [...attach, ...(await Promise.all(usePins.map(pinAttach)))];
@@ -92,11 +100,11 @@ export default function Composer({ id, placeholder, multiline = false, from, aut
       )}
       <div className="row">
         {multiline ? (
-          <textarea ref={field} rows={1} value={text} placeholder={busy ? 'Working…' : placeholder} onChange={(e) => setText(e.target.value)} onKeyDown={onKey} />
+          <textarea ref={field} rows={1} value={text} placeholder={queued ? 'Queued, sends when it finishes' : busy ? 'Working… (you can queue a message)' : placeholder} onChange={(e) => setText(e.target.value)} onKeyDown={onKey} />
         ) : (
-          <input ref={field} value={text} placeholder={busy ? 'Working…' : placeholder} onChange={(e) => setText(e.target.value)} onKeyDown={onKey} />
+          <input ref={field} value={text} placeholder={queued ? 'Queued, sends when it finishes' : busy ? 'Working… (you can queue a message)' : placeholder} onChange={(e) => setText(e.target.value)} onKeyDown={onKey} />
         )}
-        <button className="send" disabled={busy || !ready} onClick={send} title="Send (Enter)"><ArrowUp size={15} /></button>
+        <button className="send" disabled={!ready} onClick={send} title="Send (Enter)"><ArrowUp size={15} /></button>
       </div>
     </div>
   );

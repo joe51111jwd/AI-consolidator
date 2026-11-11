@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Funnel, Sparkles, Check, ChevronDown, Plus, Save, X, Loader2 } from 'lucide-react';
+import { Funnel, Sparkles, Check, ChevronDown, Plus, Save, X, Loader2, Eye } from 'lucide-react';
 import { useStore } from '../lib/store';
 import { api } from '../lib/api';
 import { AgentLogo } from './Logos';
@@ -97,7 +97,7 @@ function BoardSwitcher() {
 }
 
 // Floating board controls under the shell's top-right cluster: filter and AI grouping.
-export default function BoardTools({ busy, onSmart, off, setOff }: { busy: boolean; onSmart: () => void; off: string[]; setOff: (o: string[]) => void }) {
+export default function BoardTools({ busy, onSmart, off, setOff, overview, onOverview }: { busy: boolean; onSmart: () => void; off: string[]; setOff: (o: string[]) => void; overview: boolean; onOverview: () => void }) {
   const [open, setOpen] = useState(false);
   const toggle = (k: string) => setOff(off.includes(k) ? off.filter((x) => x !== k) : [...off, k]);
   return (
@@ -109,6 +109,9 @@ export default function BoardTools({ busy, onSmart, off, setOff }: { busy: boole
         </button>
         {open && <FilterPanel off={off} toggle={toggle} reset={() => setOff([])} onClose={() => setOpen(false)} />}
       </div>
+      <button className={`bt-btn bt-overview ${overview ? 'active' : ''}`} onClick={onOverview} title={overview ? 'Back to your layout' : 'See everything going on, grouped by client'}>
+        <Eye size={14} /><span>Overview</span>
+      </button>
       <button className={`bt-btn bt-smart ${busy ? 'busy' : ''}`} onClick={onSmart} disabled={busy} title="Let AI sort the board into groups">
         {busy ? <Loader2 size={14} className="bt-spin" /> : <Sparkles size={14} />}<span>{busy ? 'Grouping…' : 'Smart group'}</span>
       </button>

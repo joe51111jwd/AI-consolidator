@@ -10,6 +10,7 @@ import { useDemo } from '../lib/demo';
 import { demoNodeTypes } from './demo/DemoNodes';
 import FlowEdge from './FlowEdge';
 import BoardTools from './BoardTools';
+import { attentionIds, useSeen } from '../lib/attention';
 import {
   defaultVisible, suppressed, passesFilter, heuristicGroups, cleanGroups, frameLayout, placeNew, fitFrame, estH, unoverlap, GroupSpec, GAP, PAD, HEAD,
 } from '../lib/layout';
@@ -76,6 +77,9 @@ export default function Board() {
   const touched = useRef(false);     // the user rearranged something, so background regrouping must not move cards
   const marquee = useRef(false);
   const down = useRef<{ x: number; y: number } | null>(null);
+  const [overview, setOverview] = useState(false);
+  const beforeOverview = useRef<Viewport | null>(null);
+  useSeen((s) => s.seen); // opening a card re-renders so __sbAttention stays current
 
   useEffect(() => { api.getSetting<{ off?: string[] }>('boardFilter', { off: [] }).then((v) => setOffState(Array.isArray(v?.off) ? v.off : [])).catch(() => {}); }, []);
   const setOff = (o: string[]) => { setOffState(o); api.setSetting('boardFilter', { off: o }); };
@@ -245,9 +249,9 @@ export default function Board() {
   const onConnect = useCallback(async (c: Connection) => {
     if (!c.source || !c.target || c.source === c.target || isDemo(c.source) || isDemo(c.target)) return;
     if (c.source.startsWith('nt:') && PROMPTABLE(c.target)) {
-      await api.saveEdge({ source: c.source, target: c.target, kind: 'link', data: { instruction: true, label: 'Instruction' } });
+      await api.saveEdge({ source: c.source, target: c.target, kind: 'link', data: { mode: 'linked', instruction: false } });
       await refreshBoard();
-      notify('This note now goes with every prompt to that agent. Use its clock to repeat it instead.');
+      notify('Linked. On the note, pick Instruction to add it to every prompt, or Send once.');
       return;
     }
     await api.saveEdge({ source: c.source, target: c.target, kind: 'link', data: { autoForward: true } });
@@ -391,6 +395,8 @@ export default function Board() {
 
   useEffect(() => {
     (window as any).__sbRegroup = () => smartGroup();
+    (window as any).__sbHide = (ids: string[]) => hide(ids);
+    (window as any).__sbAttention = attentionIds(board.filter((r) => !r.hidden && !isGroup(r.id)).map((r) => r.id));
     // Used by the palette and the end-to-end tests to bring a card into view.
     (window as any).__sbCenter = (id: string, zoom = 0.9) => {
       const n = rf.getInternalNode(id); if (!n) return false;
@@ -399,13 +405,29 @@ export default function Board() {
     };
   });
 
+  // Overview: group by client/project, fit every frame, and let what's running stand out.
+  const toggleOverview = async () => {
+    if (overview) {
+      setOverview(false);
+      if (beforeOverview.current) rf.setViewport(beforeOverview.current, { duration: 400 });
+      return;
+    }
+    beforeOverview.current = rf.getViewport();
+    setOverview(true);
+    await smartGroup();
+    setTimeout(() => {
+      const frames = rf.getNodes().filter((n) => n.type === 'group');
+      rf.fitView({ nodes: frames.length ? frames : undefined, padding: 0.08, duration: 500 });
+    }, 500);
+  };
+
   const viewport = useMemo<Viewport | undefined>(() => { try { return JSON.parse(localStorage.getItem('sb.viewport') || ''); } catch { return undefined; } }, []);
   const edgeRow = menu?.kind === 'edge' ? edgeRows.find((e) => e.id === menu.id) : null;
   const close = () => setMenu(null);
   const mini = (n: Node) => (n.type === 'group' ? 'rgba(24,24,27,.04)' : isDemo(n.id) ? '#18181B' : colorOf(byId[n.id], useStore.getState().accounts));
 
   return (
-    <div className="board" onDragOver={onDragOver} onDrop={onDrop} onClick={close}
+    <div className={`board ${overview ? 'overview' : ''}`} onDragOver={onDragOver} onDrop={onDrop} onClick={close}
       onPointerDownCapture={(e) => { down.current = { x: e.clientX, y: e.clientY }; }}
       onDoubleClick={(e) => { if ((e.target as HTMLElement).classList.contains('react-flow__pane')) addNote(rf.screenToFlowPosition({ x: e.clientX, y: e.clientY })); }}>
       <ReactFlow
@@ -435,7 +457,7 @@ export default function Board() {
           bgColor="#FFFFFF" maskColor="rgba(24,24,27,.07)" maskStrokeColor="rgba(24,24,27,.35)" maskStrokeWidth={1} style={{ width: 200, height: 130 }} />
       </ReactFlow>
 
-      <BoardTools busy={busy} onSmart={() => smartGroup()} off={off} setOff={setOff} />
+      <BoardTools busy={busy} onSmart={() => smartGroup()} off={off} setOff={setOff} overview={overview} onOverview={toggleOverview} />
 
       {menu && (
         <div className="menu board-menu" style={{ left: menu.x, top: menu.y, position: 'fixed' }} onClick={(e) => e.stopPropagation()}>
@@ -457,7 +479,7 @@ export default function Board() {
               {!isGroup(menu.id) && <button onClick={() => { set({ chiefOpen: true, chiefMin: false, selected: [menu.id!] }); close(); }}><Sparkles size={14} />Ask the overall agent</button>}
               {isGroup(menu.id) && <button onClick={() => { ungroup(menu.id!); close(); }}><Ungroup size={14} />Ungroup</button>}
               <div className="sep" />
-              <button onClick={() => { hide([menu.id!]); close(); }}>{menu.id.startsWith('out:') || menu.id.startsWith('nt:') ? <><Trash2 size={14} />Delete</> : <><EyeOff size={14} />Hide from board</>}</button>
+              <button onClick={() => { hide([menu.id!]); close(); }}>{menu.id.startsWith('out:') || menu.id.startsWith('nt:') ? <><Trash2 size={14} />Delete</> : <><EyeOff size={14} />{byId[menu.id]?.source === 'grok-bot' ? 'Hide bot' : 'Hide from board'}</>}</button>
             </>);
           })()}
           {menu.kind === 'pane' && menu.at && (<>

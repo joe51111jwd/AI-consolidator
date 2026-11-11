@@ -155,8 +155,8 @@ function Actions({ onDone }: { onDone: () => void }) {
   );
 }
 
-// The overall agent: opened from the dock's "+", it rises above the dock as a centered panel with
-// quick actions, "Needs you" and the conversation.
+// The overall agent: opened from the dock's "+", it slides in on the right like an open card,
+// with quick actions, "Needs you" and the conversation.
 export default function Chief() {
   const open = useStore((s) => s.chiefOpen);
   const selected = useStore((s) => s.selected);
@@ -249,9 +249,13 @@ export default function Chief() {
       onKeyDown={(e) => { if (e.key === 'Escape' && open) close(); }}>
       <div className="chief-panel">
         <div className="cf-head">
+          <div className="cf-titlebar">
+            <ChiefGlyph size={16} working={running} />
+            <span className="cf-title">Agent</span>
+            {items.length > 0 && <span className={`cf-badge ${late ? 'hot' : ''}`} title="Needs you">{items.length}</span>}
+            <button className="icon-btn" title="Close  (Esc, ⌘J)" aria-label="Close" onClick={close}><ChevronRight size={16} /></button>
+          </div>
           <Actions onDone={close} />
-          {items.length > 0 && <span className={`cf-badge ${late ? 'hot' : ''}`} title="Needs you">{items.length}</span>}
-          <button className="icon-btn" title="Close  (Esc, ⌘J)" aria-label="Close" onClick={close}><ChevronDown size={17} /></button>
         </div>
         <Needs items={items} onAct={act} onDismiss={dismiss} />
         <div className="cf-msgs" ref={msgs}>

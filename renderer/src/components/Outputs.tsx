@@ -7,15 +7,36 @@ import { dragOutput } from '../nodes/nodes';
 import { AgentLogo } from './Logos';
 import './panels.css';
 
-interface Item { id: string; ref: string; title: string; sub?: string; source: string; color?: string; ts: number; text: string; sourceId: string; working?: boolean }
+interface Item { id: string; ref: string; title: string; sub?: string; source: string; color?: string; ts: number; text: string; sourceId: string; working?: boolean; saved?: boolean }
 
 const firstLine = (t: string) => (t.split('\n').map((l) => l.replace(/^[#>*\-\s`]+/, '').trim()).find(Boolean) || '').slice(0, 90);
 const RUN_WINDOW = 12 * 3600000;
 interface Recent { id: string; title: string; source: string; text: string; ts: number }
 
+const URL_RE = /https?:\/\/[^\s)<>\]"'`]+/g;
+const linksIn = (t: string) => [...new Set((t.match(URL_RE) || []).map((u) => u.replace(/[.,;:!?]+$/, '')))].slice(0, 4);
+const host = (u: string) => { try { return new URL(u).hostname.replace(/^www\./, ''); } catch { return u; } };
+const dataOf = (d: any) => { if (typeof d !== 'string') return d || {}; try { return JSON.parse(d); } catch { return {}; } };
+
+function Links({ text }: { text: string }) {
+  const urls = linksIn(text);
+  if (!urls.length) return null;
+  return (
+    <span className="pn-links">
+      {urls.map((u) => (
+        <button key={u} className="pn-link" title={u} onClick={(ev) => { ev.stopPropagation(); api.openExternal(u); }}>
+          <img src={`https://www.google.com/s2/favicons?sz=32&domain=${host(u)}`} alt="" width={12} height={12} />
+          <span>{host(u)}</span>
+        </button>
+      ))}
+    </span>
+  );
+}
+
 // Right-edge drawer: everything agents have produced, as a calm list you can tick off or drag onto a card.
 export default function Outputs() {
-  const { outputsOpen, set, entities, byId, accounts, runs, inspector, open, notify } = useStore();
+  const { outputsOpen, set, entities, byId, accounts, runs, inspector, open, notify, board } = useStore();
+  const [tab, setTab] = useState<'recent' | 'saved'>('recent');
   const [wide, setWide] = useState(() => localStorage.getItem('sb.outputsWide') === '1');
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [done, setDone] = useState<string[]>([]);
@@ -57,7 +78,7 @@ export default function Outputs() {
     for (const e of entities) {
       if (e.kind !== 'output' || !(e.preview || '').trim()) continue;
       const from = e.meta?.from ? byId[e.meta.from] : undefined;
-      out.push({ id: e.id, ref: e.id, title: e.title, sub: from?.title, source: from?.source || 'output', color: colorOf(from?.id), ts: e.updatedAt, text: full[e.id] || e.preview || '', sourceId: e.id });
+      out.push({ id: e.id, ref: e.id, title: e.title, sub: from?.title, source: from?.source || 'output', color: colorOf(from?.id), ts: e.updatedAt, text: full[e.id] || e.preview || '', sourceId: e.id, saved: true });
     }
     const merged: Record<string, Run> = {};
     for (const r of past) merged[r.id] = r;
@@ -81,9 +102,23 @@ export default function Outputs() {
     return out.sort((a, b) => Number(!!b.working) - Number(!!a.working) || b.ts - a.ts);
   }, [entities, byId, accounts, runs, past, full, recent]);
 
+  const groupOf = useMemo(() => {
+    const rows: Record<string, any> = {};
+    for (const r of board) rows[r.id] = r;
+    return (ref: string) => {
+      const e = byId[ref];
+      const client = e?.meta?.client || e?.meta?.clientName;
+      if (typeof client === 'string' && client) return client;
+      const p = rows[ref]?.parent_id;
+      const label = p ? dataOf(rows[p]?.data).label : '';
+      return label ? String(label).replace(/^Example\s*·\s*/i, '') : 'Other';
+    };
+  }, [board, byId]);
+
   const doneSet = new Set(done);
-  const todo = items.filter((x) => !doneSet.has(x.id));
-  const finished = items.filter((x) => doneSet.has(x.id));
+  const saved = items.filter((x) => x.saved);
+  const todo = items.filter((x) => !x.saved && !doneSet.has(x.id));
+  const finished = items.filter((x) => !x.saved && doneSet.has(x.id));
   const count = todo.filter((x) => !x.working).length;
   const busy = todo.some((x) => x.working);
 
@@ -94,6 +129,11 @@ export default function Outputs() {
     need.forEach((x) => api.transcript(x.id).then((t) => setFull((f) => ({ ...f, [x.id]: t[0]?.text || '' }))).catch(() => {}));
   }, [outputsOpen, todo.length]);
 
+  const groups = (xs: Item[]) => {
+    const m = new Map<string, Item[]>();
+    for (const x of xs) { const g = groupOf(x.ref); if (!m.has(g)) m.set(g, []); m.get(g)!.push(x); }
+    return [...m.entries()].sort((a, b) => Number(a[0] === 'Other') - Number(b[0] === 'Other'));
+  };
   const toggle = (id: string) => {
     const next = doneSet.has(id) ? done.filter((d) => d !== id) : [...done, id].slice(-500);
     setDone(next); api.setSetting('outputsDone', next);
@@ -119,6 +159,7 @@ export default function Outputs() {
           <div className={`pn-out-prev md ${expanded[x.id] ? '' : 'clamp'}`} onClick={() => flip(x.id)} title={expanded[x.id] ? 'Collapse' : 'Expand'}
             dangerouslySetInnerHTML={{ __html: md(x.text) }} />
         )}
+        {!x.working && <Links text={x.text} />}
         {!x.working && x.text.trim() && (
           <span className="pn-out-acts">
             <button onClick={() => flip(x.id)}>{expanded[x.id] ? 'Less' : 'More'}</button>
@@ -139,15 +180,23 @@ export default function Outputs() {
       </button>
       <div className="pn-out-panel" aria-hidden={!outputsOpen}>
         <div className="pn-out-head">
-          <span>Outputs</span>
-          {count > 0 && <span className="n">{count}</span>}
+          <span className="pn-tabs">
+            <button className={tab === 'recent' ? 'on' : ''} onClick={() => setTab('recent')}>Recent{count > 0 && <em>{count}</em>}</button>
+            <button className={tab === 'saved' ? 'on' : ''} onClick={() => setTab('saved')}>Saved{saved.length > 0 && <em>{saved.length}</em>}</button>
+          </span>
           <button className="icon-btn" onClick={() => setWide(!wide)} title={wide ? 'Narrow' : 'Expand'}>{wide ? <Minimize2 size={14} /> : <Maximize2 size={14} />}</button>
           <button className="icon-btn" onClick={() => set({ outputsOpen: false })} title="Close"><ChevronRight size={15} /></button>
         </div>
         <div className="pn-out-list">
-          {todo.length === 0 && <div className="pn-none">No replies in the last 3 days</div>}
-          {todo.map(row)}
-          {finished.length > 0 && (
+          {tab === 'saved' && (saved.length ? saved.map(row) : <div className="pn-none">Save a reply to keep it here</div>)}
+          {tab === 'recent' && todo.length === 0 && <div className="pn-none">Nothing new</div>}
+          {tab === 'recent' && groups(todo).map(([g, xs]) => (
+            <div key={g} className="pn-group">
+              {g !== 'Other' || todo.length !== xs.length ? <div className="pn-group-h">{g}</div> : null}
+              {xs.map(row)}
+            </div>
+          ))}
+          {tab === 'recent' && finished.length > 0 && (
             <>
               <button className="pn-out-done" onClick={() => setShowDone(!showDone)}>
                 <ChevronDown size={12} style={{ transform: showDone ? 'none' : 'rotate(-90deg)' }} />Done<span>{finished.length}</span>

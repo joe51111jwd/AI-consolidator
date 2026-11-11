@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { Handle, Position, NodeProps } from '@xyflow/react';
 import { Check, FileOutput, Globe, MessageSquare, Plug, Bot, Bell, Zap, X } from 'lucide-react';
-import { ClaudeLogo, GrokLogo } from '../Logos';
+import { ClaudeLogo } from '../Logos';
+import { GrokAvatar } from '../GrokAvatar';
 import { useDemo, CLAUDE_TEXT, OUTPUT_LINES, DemoAction } from '../../lib/demo';
 import './demo.css';
 
@@ -99,13 +100,13 @@ const KIND_ICON: Record<DemoAction['kind'], React.ComponentType<any>> = {
 };
 
 function DemoGrok({ data }: NodeProps) {
-  const d = data as { bot: 'marketing' | 'outreach'; name: string; color: string };
+  const d = data as { bot: 'marketing' | 'outreach'; name: string; color: string; avatar?: { color: string; shape: string } };
   const bot = useDemo((s) => s.sim[d.bot]);
   const working = !!bot.actions.length || d.bot === 'marketing';
   return (
     <div className="card dm-card">
       <Handles />
-      <Top logo={<GrokLogo size={14} working={working} />} name="Grok Bot" status={working ? 'running' : 'done'} />
+      <Top logo={<GrokAvatar color={d.avatar?.color} shape={d.avatar?.shape} size={20} working={working} attention={d.bot === 'outreach' && !working} />} name="Grok Bot" status={working ? 'running' : 'done'} />
       <div className="dm-title"><span className="dm-dot" style={{ background: d.color }} />{d.name}</div>
       <div className="dm-activity shimmer">{bot.activity}{bot.tool && <em>{bot.tool}</em>}</div>
       {d.bot === 'marketing' && <ComputerPreview name={d.name} color={d.color} live />}

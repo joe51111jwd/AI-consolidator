@@ -10,6 +10,8 @@ const blank = (e: Entity) => !(e.preview || '').trim();
 // Which cards show up on the board without the user placing them.
 export function defaultVisible(e: Entity, now = Date.now()) {
   if (isNoise(e)) return false;
+  // Grok bots you haven't touched in three weeks stay off the board until you add them back.
+  if (e.source === 'grok-bot' && e.kind === 'session') return now - (e.meta?.lastActivityAt || e.updatedAt) < 21 * DAY;
   switch (e.kind) {
     case 'account': case 'client': case 'note': case 'error': return true;
     case 'output': return !blank(e) || now - e.updatedAt < 120000;

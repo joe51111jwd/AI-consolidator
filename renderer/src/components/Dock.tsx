@@ -67,6 +67,19 @@ export default function Dock() {
     return s;
   }, [entities, live, byId]);
 
+  const runningCount = useMemo(() => {
+    const ids = new Set<string>();
+    for (const e of entities) if (e.status === 'running' && e.kind !== 'output') ids.add(e.id);
+    for (const [id, r] of Object.entries(live)) if (r.status === 'running' && id !== 'chief') ids.add(id);
+    return ids.size;
+  }, [entities, live]);
+  const attention = useMemo(() => {
+    const flag = (window as any).__sbAttention;
+    const v = typeof flag === 'function' ? flag() : flag;
+    if (v != null) return Array.isArray(v) ? v.length > 0 : typeof v === 'object' ? Object.keys(v).length > 0 : !!v;
+    return entities.some((e) => e.status === 'waiting');
+  }, [entities, live]);
+
   const pct = useMemo(() => {
     const m: Record<string, number> = {};
     for (const a of accounts) { const r = rows.find((x) => x.id === a.id); if (r) m[a.id] = Math.round(weeklyPct(r, accounts, budgets)); }
@@ -153,9 +166,11 @@ export default function Dock() {
           </span>
         );
       })}
-      <button className={`dock-b add ${chiefOpen ? 'on' : ''} ${chiefRunning ? 'working' : ''}`} data-tip={chiefOpen ? undefined : 'Agent  ⌘J'} aria-label="Agent" aria-expanded={chiefOpen} data-testid="dock-plus"
+      <button className={`dock-b add ${chiefOpen ? 'on' : ''} ${chiefRunning ? 'working' : ''}`} data-tip={chiefOpen ? undefined : runningCount ? `Agent · ${runningCount} working  ⌘J` : 'Agent  ⌘J'} aria-label="Agent" aria-expanded={chiefOpen} data-testid="dock-plus"
         onClick={() => { setPick(null); set({ chiefOpen: !chiefOpen }); }}>
         <Plus size={18} strokeWidth={2.2} />
+        {runningCount > 0 && <span className="dock-run" title={`${runningCount} working now`}>{runningCount}</span>}
+        {attention && <i className="dock-attn" title="Something needs you" />}
       </button>
       <div className="dock-in" aria-hidden={!target}>
         {pins.length > 0 && (

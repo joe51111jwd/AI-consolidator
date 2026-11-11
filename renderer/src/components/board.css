@@ -245,3 +245,27 @@
 .board .grok-screen-toggle:hover { background: #E4E4E7; }
 .board .grok-screen-toggle.on { background: #18181B; color: #FFFFFF; }
 .board .grok-screen { flex: none; border-radius: 10px; overflow: hidden; }
+
+/* ---------- attention: blue dot + soft ring when a card needs you ---------- */
+.board .card.needs-you { box-shadow: 0 0 0 1.5px rgba(37, 99, 235, .55), 0 0 0 5px rgba(37, 99, 235, .10), 0 8px 22px -14px rgba(24, 24, 27, .25); }
+.board .attn-dot { position: absolute; top: -4px; right: -4px; width: 10px; height: 10px; border-radius: 50%; background: #2563EB; box-shadow: 0 0 0 2px #fff; z-index: 3; animation: attn-pulse 2.4s ease-in-out infinite; }
+@keyframes attn-pulse { 0%, 100% { box-shadow: 0 0 0 2px #fff, 0 0 0 2px rgba(37, 99, 235, .35); } 50% { box-shadow: 0 0 0 2px #fff, 0 0 0 6px rgba(37, 99, 235, 0); } }
+.board .frame-attn { min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px; background: #2563EB; color: #fff; font-size: 10px; font-weight: 600; display: inline-flex; align-items: center; justify-content: center; flex: none; }
+
+/* ---------- overview: running cards pop, idle ones recede ---------- */
+.board.overview .react-flow__node:not(.react-flow__node-group) > .card { transition: opacity .25s ease; }
+.board.overview .react-flow__node > .card:not(.is-running):not(.needs-you) { opacity: .55; }
+.board.overview .card.is-running .activity, .board.overview .card.is-running .act-now { font-size: 13px; font-weight: 500; color: #18181B; }
+.board.overview .card.is-running .act-prompt { display: none; }
+.bt-overview { padding: 0 12px 0 10px; }
+
+/* ---------- notes: link mode + start chat ---------- */
+.board .note-link { display: inline-flex; align-items: center; gap: 2px; margin-left: auto; }
+.board .note-link select, .board .note-chat { border: 1px solid rgba(24, 24, 27, .12); border-radius: 6px; background: #fff; font: inherit; font-size: 11px; color: #3F3F46; padding: 1px 4px; height: 20px; cursor: pointer; }
+.board .note-link button { border: 0; background: transparent; color: #52525B; padding: 2px; cursor: pointer; display: inline-flex; }
+.board .note-link button:hover { color: #18181B; }
+
+/* ---------- grok: hide bot ---------- */
+.board .grok-hide { border: 0; background: transparent; color: #A1A1AA; padding: 2px; cursor: pointer; opacity: 0; display: inline-flex; transition: opacity .15s; }
+.board .grok-card:hover .grok-hide { opacity: 1; }
+.board .grok-hide:hover { color: #18181B; }

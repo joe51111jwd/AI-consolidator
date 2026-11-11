@@ -209,7 +209,11 @@ export default function Board() {
       const stale = placed.filter((id) => ['session', 'meeting', 'thread'].includes(byId[id]?.kind) && !defaultVisible(byId[id]) && !keep.has(id));
       const rowIds = new Set(board.map((r) => r.id));
       const fresh = entities.filter((e) => !rowIds.has(e.id) && !deleted.has(e.id) && defaultVisible(e)).map((e) => e.id);
-      const ids = [...placed.filter((id) => !stale.includes(id)), ...fresh];
+      // This week's work that an earlier blank board hid comes back (cards you deleted stay gone).
+      const inTopics = new Set(topics.flatMap((t) => t.ids));
+      const revived = board.filter((r) => r.hidden && r.data?.viewHidden != null && !deleted.has(r.id) && byId[r.id]
+        && (inTopics.has(r.id) || defaultVisible(byId[r.id]))).map((r) => r.id);
+      const ids = [...new Set([...placed.filter((id) => !stale.includes(id)), ...fresh, ...revived])];
       if (!ids.length) { if (!auto) notify('Nothing from this week yet'); return; }
       const attn = new Set(attentionIds(ids));
       const groups = weekGroups(ids, topics, byId, { attn: (id) => attn.has(id), running: isRunning });
@@ -264,6 +268,8 @@ export default function Board() {
     weekState.current = 'running';
     (async () => {
       arranged.current = !!(await api.getSetting<boolean>(ARRANGED_KEY, false).catch(() => false));
+      // The first time this version opens, lay out the week once even over an older hand-made layout.
+      if (!(await api.getSetting<boolean>('weekBoardFirstRun', false).catch(() => true))) { arranged.current = false; api.setSetting('weekBoardFirstRun', true); }
       if (!arranged.current) await weekBoard(true);
       weekState.current = 'done';
       setWeekReady(true);

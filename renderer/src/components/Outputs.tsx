@@ -103,7 +103,7 @@ export default function Outputs() {
     Object.assign(merged, runs);
     for (const r of Object.values(merged)) {
       if (r.entityId === 'chief' || Date.now() - r.startedAt > RUN_WINDOW) continue;
-      if (r.status === 'error' || (r.status === 'done' && (!r.text?.trim() || /^Copied to your clipboard/.test(r.text)))) continue;
+      if (r.status === 'error' || r.status === 'stopped' || (r.status === 'done' && (!r.text?.trim() || /^Copied to your clipboard/.test(r.text)))) continue;
       const ref = r.result?.entityId && byId[r.result.entityId] ? r.result.entityId : r.entityId;
       const card = byId[ref] || byId[r.entityId];
       const working = r.status === 'running';

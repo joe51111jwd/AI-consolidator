@@ -116,7 +116,22 @@ function run(cmd, args, { cwd, env, input, onLine, signal } = {}) {
       if (buf.trim() && onLine) onLine(buf);
       resolve({ code, stdout, stderr });
     });
-    if (signal) signal.addEventListener('abort', () => child.kill('SIGTERM'));
+    // Aborting stops the process: SIGTERM first so it can save its work, SIGKILL if it hangs on.
+    // Once it has exited, a stray grandchild still holding its output open doesn't keep the run going.
+    let aborted = false;
+    const stop = () => {
+      aborted = true;
+      child.kill('SIGTERM');
+      const t = setTimeout(() => { if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL'); }, 5000);
+      if (t.unref) t.unref();
+    };
+    child.on('exit', () => {
+      if (!aborted) return;
+      const t = setTimeout(() => { child.stdout.destroy(); child.stderr.destroy(); }, 1000);
+      if (t.unref) t.unref();
+    });
+    if (signal) { if (signal.aborted) stop(); else signal.addEventListener('abort', stop, { once: true }); }
+    child.stdin.on('error', () => {}); // a process stopped early closes stdin before it was written
     if (input != null) child.stdin.write(input);
     child.stdin.end();
   });

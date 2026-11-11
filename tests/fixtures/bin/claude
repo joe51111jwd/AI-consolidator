@@ -37,27 +37,37 @@ if (args[0] === 'auth' && (args[1] === 'login' || args[1] === 'logout')) {
 }
 if (args[0] === 'mcp') { log({ args, configDir: process.env.CLAUDE_CONFIG_DIR || null }); console.log('Added stdio MCP server switchboard'); process.exit(0); }
 
+// A prompt with "[slow]" in it is slow mode: it streams a first message, then keeps working for
+// $SB_STUB_SLOW_MS (default 30 s) before the reply, so tests can press Stop. Being stopped (SIGTERM)
+// is logged as { event: 'stopped' } and ends it without the reply, like the real CLI.
 let input = '';
 process.stdin.on('data', (d) => { input += d; });
 process.stdin.on('end', () => {
   const resume = val('--resume');
   const id = resume || crypto.randomUUID();
   const cwd = process.cwd();
-  log({ args, cwd, configDir: process.env.CLAUDE_CONFIG_DIR || null, sessionId: id, prompt: input });
+  const slow = /\[slow\]/.test(input);
+  log({ args, cwd, configDir: process.env.CLAUDE_CONFIG_DIR || null, sessionId: id, model: val('--model'), slow, prompt: input });
   const first = input.trim().split('\n').pop().slice(0, 120);
   const reply = process.env.SB_STUB_REPLY || smartGroup(input) || topics(input) || `Done (${path.basename(dir)}): ${first}`;
   const out = (o) => process.stdout.write(JSON.stringify(o) + '\n');
-  out({ type: 'system', subtype: 'init', session_id: id, cwd, model: 'claude-sonnet-5-5' });
-  const mid = 'msg_' + crypto.randomBytes(6).toString('hex');
-  out({ type: 'assistant', session_id: id, message: { id: mid, role: 'assistant', model: 'claude-sonnet-5-5', content: [{ type: 'text', text: reply }], usage: { input_tokens: 1200, output_tokens: 300 } } });
-  out({ type: 'result', subtype: 'success', session_id: id, result: reply, usage: { input_tokens: 1200, output_tokens: 300 }, total_cost_usd: 0.01 });
   const file = path.join(dir, 'projects', cwd.replace(/[/.]/g, '-'), `${id}.jsonl`);
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  const ts = new Date().toISOString();
-  fs.appendFileSync(file, [
-    { type: 'user', sessionId: id, cwd, timestamp: ts, uuid: crypto.randomUUID(), message: { role: 'user', content: input } },
-    { type: 'assistant', sessionId: id, cwd, timestamp: ts, uuid: crypto.randomUUID(), message: { id: mid, role: 'assistant', model: 'claude-sonnet-5-5', content: [{ type: 'text', text: reply }], usage: { input_tokens: 1200, output_tokens: 300 } } },
-  ].map((r) => JSON.stringify(r)).join('\n') + '\n');
+  const save = (o) => fs.appendFileSync(file, JSON.stringify({ sessionId: id, cwd, timestamp: new Date().toISOString(), uuid: crypto.randomUUID(), ...o }) + '\n');
+  const usage = { input_tokens: 1200, output_tokens: 300 };
+  // Each assistant message goes to stdout and the session file as it is written, as the real CLI does.
+  const say = (text) => {
+    const message = { id: 'msg_' + crypto.randomBytes(6).toString('hex'), role: 'assistant', model: 'claude-sonnet-5-5', content: [{ type: 'text', text }], usage };
+    out({ type: 'assistant', session_id: id, message });
+    save({ type: 'assistant', message });
+  };
+  const finish = (text) => { say(text); out({ type: 'result', subtype: 'success', session_id: id, result: text, usage, total_cost_usd: 0.01 }); };
+  out({ type: 'system', subtype: 'init', session_id: id, cwd, model: 'claude-sonnet-5-5' });
+  save({ type: 'user', message: { role: 'user', content: input } });
+  if (!slow) return finish(reply);
+  process.on('SIGTERM', () => { log({ event: 'stopped', sessionId: id }); process.exit(143); });
+  say('Thinking it through, one step at a time…');
+  setTimeout(() => finish(`Slow reply finished: ${first}`), Number(process.env.SB_STUB_SLOW_MS) || 30000);
 });
 
 // The real item lines ("12. [kind] Title | folder: x | client: y | ..."), not the indented examples.

@@ -37,6 +37,7 @@ const S = {
   waiting: 'cc:a_claude2:0a1b2c3d-2222-4aaa-8bbb-00000000000a',
   old: 'cc:a_claude1:0a1b2c3d-1111-4aaa-8bbb-00000000000b',
   plan: 'cc:a_claude2:0a1b2c3d-2222-4aaa-8bbb-00000000000c',
+  ctl: 'cc:a_claude1:0a1b2c3d-1111-4aaa-8bbb-0000000000c1', // written by the chat controls checks
 };
 // A Claude Code session file as the CLI writes it. `mtime` (ms) backdates the file. A turn's content
 // is text, or a list of blocks (tool_use, tool_result) for plans, steps and recaps.
@@ -1600,11 +1601,114 @@ async function main() {
     await page.locator('.modal .icon-btn').click();
   });
 
+  await chatControls();
+
   await quit();
   mock.close();
   const failed = results.filter((r) => !r.ok);
   console.log(`\n${results.length - failed.length} passed, ${failed.length} failed in ${Math.round((Date.now() - T0) / 1000)}s`);
   if (failed.length) { for (const f of failed) console.log(`  ✗ ${f.name}: ${f.err.split('\n')[0]}`); process.exit(1); }
+}
+
+// Stop and the model picker in the open chat, on a chat of its own so nothing else depends on it.
+// The stand-in CLI logs --model, and a prompt with "[slow]" keeps it working until it is stopped.
+async function chatControls() {
+  console.log('\nChat controls: Stop and model');
+  const sid = S.ctl.split(':')[2];
+  const box = page.locator('.inspector .composer textarea');
+  const pick = page.locator('.inspector [data-testid="model-pick"]');
+  const stopBtn = page.locator('.inspector [data-testid="stop-run"]');
+  const say = async (text) => { await box.fill(text); await box.press('Enter'); };
+  const sent = (re) => until(() => promptCalls().find((c) => re.test(c.prompt)), `Claude Code got ${re}`);
+  const settled = (id) => until(async () => { const rs = (await api('runs')).filter((r) => r.entityId === id); return rs.length > 0 && rs.every((r) => r.status !== 'running'); }, 'the reply finished');
+  async function openChat(query, title) {
+    await page.keyboard.press('Escape');
+    await view('Board');
+    await page.locator('.inspector .insp-head button[title="Close"]').click({ timeout: 1000 }).catch(() => {});
+    await page.keyboard.press(mod('k'));
+    await page.locator('.palette input').fill(query);
+    await sleep(300); await page.keyboard.press('Enter');
+    await until(async () => (await page.locator('.inspector .title').count()) === 1 && title.test(await page.locator('.inspector .title').innerText()), `opened the chat ${title}`);
+  }
+
+  writeSession('.claude', path.join(HOME, 'code', 'harbor-coffee-site'), sid,
+    [['user', 'Plan the gift cards for Harbor Coffee'], ['assistant', 'Gift card plan: three amounts, a paper sleeve, and a QR code to check the balance.']]);
+  await until(async () => (await api('entities', { force: true })).some((e) => e.id === S.ctl), 'the chat is listed');
+  await page.evaluate(() => window.__sbRefresh());
+
+  await check('the model picker sends --model with each message and is remembered per chat', async () => {
+    await openChat('gift cards harbor', /gift cards/i);
+    assert((await pick.inputValue()) === '', `starts on the default model (got ${await pick.inputValue()})`);
+    await say('What do they cost to print?');
+    const plain = await sent(/What do they cost to print/);
+    assert(plain.model === null && !plain.args.includes('--model'), `the default sends no --model (${plain.args.join(' ')})`);
+    await settled(S.ctl);
+    await pick.selectOption('opus');
+    await say('Write the sleeve copy');
+    const opus = await sent(/Write the sleeve copy/);
+    assert(opus.model === 'opus' && opus.args[opus.args.indexOf('--resume') + 1] === sid, `resumed the chat with --model opus (${opus.args.join(' ')})`);
+    await settled(S.ctl);
+    assert((await page.evaluate((id) => localStorage.getItem(`sb.model.${id}`), S.ctl)) === 'opus', 'the choice is saved for this chat');
+    await openChat('gift cards harbor', /gift cards/i);
+    assert((await pick.inputValue()) === 'opus', 'reopened, the chat is still on Opus');
+    await openChat('menu page', /menu page/i);
+    assert((await pick.inputValue()) === '', 'another chat keeps its own (default) model');
+  });
+
+  await check('an unknown model is refused before anything runs', async () => {
+    const err = await api('prompt', S.ctl, 'Try a made-up model', { model: 'gpt-9' }).then(() => null, (e) => e.message);
+    assert(/Unknown model/.test(err || ''), `refused (got ${err})`);
+    const injected = await api('prompt', S.ctl, 'Try a sneaky model', { model: 'opus --dangerously-skip-permissions' }).then(() => null, (e) => e.message);
+    assert(/Unknown model/.test(injected || ''), `refused (got ${injected})`);
+    await sleep(500);
+    assert(!promptCalls().some((c) => /made-up model|sneaky model/.test(c.prompt)), 'Claude Code was never called');
+  });
+
+  await check('a chat from New chat starts on the picked model, and keeps it for the next message', async () => {
+    await page.keyboard.press('Escape');
+    await view('Board');
+    await page.evaluate(() => window.dispatchEvent(new Event('sb:new-chat')));
+    await until(async () => (await page.getByTestId('new-chat').count()) === 1, 'the New chat sheet opened');
+    await page.locator('[data-testid="new-chat"] .nc-seg button[data-model="haiku"]').click();
+    await page.getByTestId('new-chat-input').fill('Name the gift card tiers');
+    await page.getByTestId('new-chat-input').press('Enter');
+    const start = await sent(/Name the gift card tiers/);
+    assert(start.model === 'haiku' && !start.args.includes('--resume'), `a new chat on Haiku (${start.args.join(' ')})`);
+    await until(async () => (await page.locator('.inspector .title').count()) === 1 && /gift card tiers/i.test(await page.locator('.inspector .title').innerText()), 'the new chat opened');
+    await until(async () => (await pick.inputValue()) === 'haiku', 'the new chat shows Haiku');
+    await say('Make the names rhyme');
+    const next = await sent(/Make the names rhyme/);
+    assert(next.model === 'haiku' && next.args[next.args.indexOf('--resume') + 1] === start.sessionId, `the follow-up resumed on Haiku (${next.args.join(' ')})`);
+  });
+
+  await check('Stop ends a running reply: the CLI is stopped, the chat says so and takes the next message', async () => {
+    await openChat('gift cards harbor', /gift cards/i);
+    assert((await stopBtn.count()) === 0, 'no Stop button while nothing runs');
+    await say('Draft the whole launch plan [slow]');
+    await sent(/Draft the whole launch plan \[slow\]/);
+    await until(() => stopBtn.isVisible(), 'Stop shows while it works');
+    await until(async () => /Thinking it through/.test(await page.locator('.inspector .msgs').innerText()), 'the first part streamed in');
+    // A message typed while it works is queued; Stop hands it back instead of sending it.
+    await say('And a budget');
+    await until(async () => (await box.inputValue()) === '', 'queued');
+    await stopBtn.click();
+    await until(() => calls().some((c) => c.event === 'stopped' && c.sessionId === sid), 'the claude process was told to stop (SIGTERM)');
+    await until(async () => (await api('runs')).some((r) => r.entityId === S.ctl && r.status === 'stopped' && /Thinking it through/.test(r.text)), 'the run is marked stopped and keeps what it said');
+    await until(async () => (await stopBtn.count()) === 0, 'the Stop button goes away');
+    await until(async () => (await page.getByTestId('run-stopped').count()) === 1, 'the chat says Stopped');
+    assert((await box.inputValue()) === 'And a budget', `the queued message is back in the box (got "${await box.inputValue()}")`);
+    await sleep(1000);
+    assert(!promptCalls().some((c) => /And a budget/.test(c.prompt)), 'the queued message was not sent');
+    assert(!/Slow reply finished/.test(await page.locator('.inspector .msgs').innerText()), 'no reply after Stop');
+    const nothing = await api('run:stop', S.ctl);
+    assert(nothing.stopped === 0, `Stop with nothing running stops nothing (${JSON.stringify(nothing)})`);
+    await box.press('Enter');
+    await sent(/And a budget/);
+    await settled(S.ctl);
+    await until(async () => /Done \(\.claude\): And a budget/.test(await page.locator('.inspector .msgs').innerText()), 'the next message gets its reply');
+    await until(async () => (await page.getByTestId('run-stopped').count()) === 0, 'Stopped clears once the chat moves on');
+  });
+  await page.locator('.inspector .insp-head button[title="Close"]').click({ timeout: 1000 }).catch(() => {});
 }
 
 main().catch(async (e) => { console.error(`\nStopped during "${current}":`, e); await quit(); if (mock) mock.close(); process.exit(1); });

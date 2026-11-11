@@ -1,8 +1,9 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { ArrowUp, Paperclip, X, Image as ImageIcon } from 'lucide-react';
+import { ArrowUp, Paperclip, X, Image as ImageIcon, Square } from 'lucide-react';
 import { api, Attach } from '../lib/api';
 import { useStore } from '../lib/store';
 import { sendPrompt } from '../lib/send';
+import { MODELS, savedModel, saveModel, takesModel, onModelChange } from '../lib/models';
 import { AgentLogo } from './Logos';
 import './panels.css';
 
@@ -88,12 +89,30 @@ export default function Composer({ id, placeholder, multiline = false, from, aut
     ev.preventDefault(); ev.stopPropagation(); setDragging(true);
   };
 
+  // The Claude model for this card's messages, remembered per card. Cards that don't run Claude Code
+  // (Codex, API chats, Grok bots…) have no picker and send without one.
+  const accounts = useStore((s) => s.accounts);
+  const pickModel = takesModel(id, accounts);
+  const [model, setModelState] = useState(() => savedModel(id));
+  useEffect(() => { setModelState(savedModel(id)); return onModelChange((cid, m) => { if (cid === id) setModelState(m); }); }, [id]);
+  const withModel = pickModel && model ? { model } : {};
+
   const [queued, setQueued] = useState<string | null>(null);
   useEffect(() => {
     if (busy || !queued) return;
     const q = queued; setQueued(null);
-    sendPrompt(id, q, { from }).then(() => onSent?.(q)).catch((e: any) => notify(e.message));
+    sendPrompt(id, q, { from, ...withModel }).then(() => onSent?.(q)).catch((e: any) => notify(e.message));
   }, [busy, queued]);
+
+  // Stop ends the running reply. Anything queued comes back into the box instead of being sent.
+  const [stopping, setStopping] = useState(false);
+  useEffect(() => { if (!busy) setStopping(false); }, [busy]);
+  const stop = async () => {
+    if (stopping) return;
+    setStopping(true);
+    if (queued) { const q = queued; setQueued(null); setText((t) => (t.trim() ? `${q}\n\n${t}` : q)); }
+    try { await api.stopRun(id); } catch (e: any) { setStopping(false); notify(e.message || 'Could not stop it'); }
+  };
 
   async function send() {
     const usePins = pins.filter((p) => p !== id);
@@ -110,7 +129,7 @@ export default function Composer({ id, placeholder, multiline = false, from, aut
     try {
       const all = [...attach, ...fileAtt, ...(await Promise.all(usePins.map(pinAttach)))];
       const src = all.find((a) => a.sourceId)?.sourceId || from;
-      await sendPrompt(id, t, { attach: all, from: src });
+      await sendPrompt(id, t, { attach: all, from: src, ...withModel });
       clearAttach(id);
       if (usePins.length) useStore.getState().set({ pins: [] });
       onSent?.(t);
@@ -159,8 +178,19 @@ export default function Composer({ id, placeholder, multiline = false, from, aut
         ) : (
           <input ref={field} value={text} placeholder={queued ? 'Queued, sends when it finishes' : busy ? 'Working… (you can queue a message)' : placeholder} onChange={(e) => setText(e.target.value)} onKeyDown={onKey} />
         )}
-        {/* TODO: Stop button once the hub exposes a 'run:stop' handler (none in electron/main.cjs yet). */}
-        <button className="send" disabled={!ready} onClick={send} title="Send (Enter)"><ArrowUp size={15} /></button>
+        {multiline && pickModel && (
+          <select className="model" value={model} onChange={(e) => { setModelState(e.target.value); saveModel(id, e.target.value); }}
+            onKeyDown={(e) => { if (!e.metaKey && !e.ctrlKey && e.key !== 'Escape') e.stopPropagation(); }}
+            title="Model for this chat" aria-label="Model" data-testid="model-pick">
+            {MODELS.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
+          </select>
+        )}
+        {busy && (
+          <button className="stop" onClick={stop} disabled={stopping} title="Stop" aria-label="Stop" data-testid="stop-run">
+            <Square size={multiline ? 11 : 9} fill="currentColor" strokeWidth={0} />
+          </button>
+        )}
+        <button className="send" disabled={!ready} onClick={send} title={busy ? 'Queue (Enter)' : 'Send (Enter)'}><ArrowUp size={15} /></button>
       </div>
     </div>
   );

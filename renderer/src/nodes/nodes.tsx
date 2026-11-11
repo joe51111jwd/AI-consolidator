@@ -95,7 +95,7 @@ function LiveOrPreview({ id, preview, title }: { id: string; preview?: string; t
     if (live.status === 'error') return <div className="well err">{live.error}</div>;
     return (
       <div className={`well clamp ${live.status === 'running' ? 'live' : ''}`}>
-        {live.text ? live.text.slice(-400) : 'Working…'}
+        {live.text ? live.text.slice(-400) : live.status === 'stopped' ? 'Stopped' : 'Working…'}
         {live.text && <span className="grip nodrag" draggable onDragStart={(ev) => dragOutput(ev, { text: live.text, title: `Reply from ${title}`, sourceId: id })} title="Drag onto another card"><GripVertical size={13} /></span>}
       </div>
     );
@@ -143,6 +143,7 @@ function useLatest(id: string, preview?: string): { text: string; live: boolean;
   const live = useStore((s) => s.liveByEntity[id]);
   if (live && (live.status === 'running' || Date.now() - live.startedAt < RECENT)) {
     if (live.status === 'error') return { text: '', live: false, error: live.error || 'Failed' };
+    if (live.status === 'stopped' && !live.text) return { text: preview || '', live: false };
     return { text: live.text || '', live: live.status === 'running' };
   }
   return { text: preview || '', live: false };

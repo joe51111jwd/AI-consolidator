@@ -3,7 +3,7 @@
 One place on your Mac to manage the AI chats you already have: every Claude Code session (across all your Claude accounts), Codex session, Grok Bot, Granola meeting, Gmail thread and Cursor cloud agent. See what each one is doing, answer the ones that need you, and then automate them.
 
 - **Chats home (⌘2).** All your chats in one list, grouped into topics by what they're doing. Each topic shows how many are working and how many need you; a blue dot marks a chat waiting on you. Filter and search the list at the top.
-- **Open and reply.** Click a chat to open it and talk. Hover a row to send a quick reply without opening it.
+- **Open and reply.** Click a chat to open it and talk. Hover a row to send a quick reply without opening it. Pick the model (Opus, Sonnet or Haiku) for a Claude chat next to the message box; each chat remembers its choice. **Stop** (the square button) ends a reply that's still running.
 - **Import chats.** Bring any older chat from any Claude account into the app.
 - **Dock.** The account bubbles at the bottom start a new chat; each shows its usage this week so you can spread work across accounts. Hover one to see what it's working on.
 - **Main agent (⌘J).** The **+** in the dock opens an agent that sees everything: ask "what needs me?", get a daily recap, or ask any question across your chats. It also starts chats, notes and boards, and runs the Showcase.

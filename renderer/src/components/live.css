@@ -102,3 +102,14 @@
 .lv-todo-dot.late { border-color: #DC2626; background: #FEE2E2; }
 .lv-todo-t { flex: 1; min-width: 0; font-weight: 550; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .lv-todo-m { flex: none; color: var(--ink-3); font-size: 12px; }
+.lv-todo-add input { width: 100%; height: 34px; border-radius: 10px; border: 1px solid var(--line); padding: 0 12px; font: inherit; font-size: 13px; outline: none; margin: 2px 0 6px; background: #fff; }
+.lv-todo-add input:focus { border-color: var(--ink); }
+.lv-todo-row.mine { cursor: default; }
+.lv-todo-row.done .lv-todo-t { color: var(--ink-3); text-decoration: line-through; }
+.lv-todo-check { width: 15px; height: 15px; border-radius: 5px; border: 1.5px solid var(--ink-3); display: grid; place-items: center; flex: none; color: #fff; }
+.lv-todo-check.on { background: var(--ink); border-color: var(--ink); }
+.lv-todo-x { color: var(--ink-3); opacity: 0; padding: 2px; }
+.lv-todo-row:hover .lv-todo-x { opacity: 1; }
+.lv-todo-dot.attn { border-color: #2563EB; background: #DBEAFE; }
+.lv-todo-dot.run { border-color: var(--ink); background: var(--ink); animation: pn-pulse 1.4s ease-in-out infinite; }
+@keyframes pn-pulse { 50% { opacity: .45; } }

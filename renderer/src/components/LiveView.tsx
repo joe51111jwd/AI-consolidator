@@ -1,9 +1,10 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useReactFlow } from '@xyflow/react';
-import { Download, RotateCw, Search, X } from 'lucide-react';
+import { Check, Download, RotateCw, Search, X } from 'lucide-react';
 import { useStore } from '../lib/store';
 import { useImport } from './ImportChats';
 import { dueLabel } from '../lib/format';
+import { api } from '../lib/api';
 import { DAY, groupItems, Item, Section, useItems } from './home/items';
 import { placeInTopics, useTopics } from './home/topics';
 import TopicSection from './home/TopicSection';
@@ -38,24 +39,57 @@ function useOpenOnBoard(onMode?: (m: 'board' | 'live') => void) {
   };
 }
 
-// What you owe people: replies, follow-ups and client next steps (the same list as "what's due").
-function ToDo() {
+interface Todo { id: string; text: string; done: boolean; ts: number; ref?: string }
+
+// One list of everything to keep track of: your own to-dos, chats that need you, chats still
+// working, and what you owe people (replies, follow-ups, client next steps).
+function ToDo({ items }: { items: Item[] }) {
   const due = useStore((s) => s.due);
   const open = useStore((s) => s.open);
+  const [todos, setTodos] = useState<Todo[]>([]);
+  const [text, setText] = useState('');
   const [all, setAll] = useState(false);
-  if (!due.length) return null;
-  const list = all ? due : due.slice(0, 5);
+  useEffect(() => { api.getSetting<Todo[]>('todos', []).then((t) => setTodos(Array.isArray(t) ? t : [])); }, []);
+  const save = (next: Todo[]) => { setTodos(next); api.setSetting('todos', next); };
+  const add = () => { const t = text.trim(); if (!t) return; save([{ id: `td${Date.now().toString(36)}`, text: t, done: false, ts: Date.now() }, ...todos]); setText(''); };
+  const toggle = (t: Todo) => save(todos.map((x) => (x.id === t.id ? { ...x, done: !x.done } : x)));
+  const remove = (t: Todo) => save(todos.filter((x) => x.id !== t.id));
+  const needs = items.filter((i) => i.attn);
+  const working = items.filter((i) => i.running && !i.attn);
+  const mine = todos.filter((t) => !t.done || all);
+  const total = todos.filter((t) => !t.done).length + needs.length + working.length + due.length;
   return (
     <section className="lv-section flat lv-todo" data-testid="home-todo">
-      <h3 className="lv-h">To do<span>{due.length}</span></h3>
-      {list.map((d) => (
+      <h3 className="lv-h">To do<span>{total}</span></h3>
+      <div className="lv-todo-add">
+        <input value={text} placeholder="Add a to-do…" data-testid="todo-input" onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => { e.stopPropagation(); if (e.key === 'Enter') add(); }} />
+      </div>
+      {mine.map((t) => (
+        <div key={t.id} className={`lv-todo-row mine ${t.done ? 'done' : ''}`} data-testid="todo-mine">
+          <button className={`lv-todo-check ${t.done ? 'on' : ''}`} onClick={() => toggle(t)} title={t.done ? 'Mark not done' : 'Mark done'}>{t.done ? <Check size={10} strokeWidth={3} /> : null}</button>
+          <span className="lv-todo-t" onClick={() => t.ref && open(t.ref)}>{t.text}</span>
+          <button className="lv-todo-x" onClick={() => remove(t)} title="Remove"><X size={12} /></button>
+        </div>
+      ))}
+      {needs.map((i) => (
+        <button key={`n:${i.e.id}`} className="lv-todo-row" onClick={() => open(i.e.id)} data-testid="todo-row">
+          <i className="lv-todo-dot attn" /><span className="lv-todo-t">Reply to {i.e.title}</span><span className="lv-todo-m">needs you</span>
+        </button>
+      ))}
+      {working.map((i) => (
+        <button key={`w:${i.e.id}`} className="lv-todo-row" onClick={() => open(i.e.id)} data-testid="todo-row">
+          <i className="lv-todo-dot run" /><span className="lv-todo-t">{i.e.title}</span><span className="lv-todo-m">working</span>
+        </button>
+      ))}
+      {(all ? due : due.slice(0, 5)).map((d) => (
         <button key={d.id} className="lv-todo-row" onClick={() => open(d.ref)} data-testid="todo-row">
           <i className={`lv-todo-dot ${d.overdue ? 'late' : ''}`} />
           <span className="lv-todo-t">{d.title}</span>
           <span className="lv-todo-m">{[d.client, d.due ? dueLabel(d.due) : ''].filter(Boolean).join(' · ')}</span>
         </button>
       ))}
-      {due.length > 5 && <button className="lv-more" onClick={() => setAll(!all)}>{all ? 'Show less' : `Show all ${due.length}`}</button>}
+      {(due.length > 5 || todos.some((t) => t.done)) && <button className="lv-more" onClick={() => setAll(!all)}>{all ? 'Show less' : 'Show all, including done'}</button>}
     </section>
   );
 }
@@ -154,7 +188,7 @@ export default function LiveView({ onMode }: { onMode?: (m: 'board' | 'live') =>
         {none && <div className="lv-empty" data-testid="live-empty">{q || filter !== 'all' ? 'Nothing matches.' : 'All quiet. Nothing in the past week.'}</div>}
 
         <Section title="Needs you" items={sections.needs} testId="live-needs" flat tour="home-row" />
-        {!q && filter === 'all' && <ToDo />}
+        {!q && filter === 'all' && <ToDo items={all} />}
 
         {groupBy === 'topic' && topicGroups.map((g, i) => (
           <TopicSection key={g.id} g={g} first={i === 0} rowTour={i === 0 && !sections.needs.length} onBoard={openOnBoard} />

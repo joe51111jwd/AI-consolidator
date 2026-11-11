@@ -46,6 +46,32 @@ function commandVerb(cmd) {
   if (/^\s*(ls|cat|head|tail|find|grep|rg|sed -n|wc)\b/.test(c)) return 'Looking through files';
   return 'Running a command';
 }
+// The plan as the Claude app shows it: TodoWrite lists, or update_plan items with advance/done/start.
+function applyPlan(plan, b) {
+  const i = b.input || {};
+  if (b.name === 'TodoWrite' && Array.isArray(i.todos)) return i.todos.map((t) => ({ content: String(t.content || t.activeForm || ''), status: t.status || 'pending' }));
+  if (!/update_plan$/.test(b.name || '')) return null;
+  if (Array.isArray(i.items)) return i.items.map((t) => ({ content: String(t.content || ''), status: t.status || 'pending' }));
+  if (!plan) return null;
+  const next = plan.map((t) => ({ ...t }));
+  const cur = next.findIndex((t) => t.status === 'in_progress');
+  if (i.advance) {
+    if (cur >= 0) next[cur].status = 'completed';
+    const after = next.findIndex((t, k) => k > cur && t.status === 'pending');
+    if (after >= 0) next[after].status = 'in_progress';
+  }
+  for (const n of Array.isArray(i.done) ? i.done : []) if (next[n - 1]) next[n - 1].status = 'completed';
+  if (i.start && next[i.start - 1]) { next.forEach((t) => { if (t.status === 'in_progress') t.status = 'pending'; }); next[i.start - 1].status = 'in_progress'; }
+  return next;
+}
+function planText(plan) { return plan.map((t) => `${t.status === 'completed' ? '✓' : t.status === 'in_progress' ? '▸' : '○'} ${t.content}`).join('\n'); }
+// One short detail after the step label: the file, command, query or URL it worked on.
+function toolDetail(b) {
+  const i = b.input || {};
+  const d = i.description && i.command ? i.command : i.file_path || i.notebook_path || i.pattern || i.query || i.url || (i.prompt && b.name !== 'Task' && b.name !== 'Agent' ? i.prompt : '') || '';
+  return d ? ` · ${truncate(String(d).replace(/\s+/g, ' '), 140)}` : '';
+}
+
 function toolLabel(b) {
   const i = b.input || {};
   const file = i.file_path || i.notebook_path ? base(i.file_path || i.notebook_path) : '';
@@ -73,6 +99,7 @@ function parseSession(file) {
   const seenUsage = new Set();
   let cwd = null, summary = null, gitBranch = null, sessionId = path.basename(file, '.jsonl');
   const act = { prompt: '', tool: '', text: '', last: null, textAt: 0 };
+  let plan = null; // [{ content, status }] — the latest plan, as the Claude app shows it
   for (const l of lines) {
     if (l.type === 'summary' && l.summary) summary = l.summary;
     if (l.cwd) cwd = l.cwd;
@@ -98,13 +125,25 @@ function parseSession(file) {
         }
       } else if (text) { act.text = truncate(plain(text), 200); act.last = 'text'; act.textAt = ts; }
       const isTool = l.type === 'assistant' && Array.isArray(m.content) && m.content.every((b) => b.type !== 'text');
-      messages.push({ id: l.uuid || `${messages.length}`, role: m.role || l.type, text, ts, kind: isTool ? 'tool' : undefined });
+      if (isTool) {
+        // Plan steps and end-of-turn recaps read like the Claude app shows them, not as raw tool calls.
+        for (const b of m.content) {
+          if (b.type !== 'tool_use') continue;
+          const step = applyPlan(plan, b);
+          if (step) { plan = step; messages.push({ id: `${l.uuid || messages.length}:plan:${b.id || ''}`, role: 'assistant', text: planText(plan), ts, kind: 'plan', plan }); continue; }
+          const recap = /wrap_up$/.test(b.name || '') && b.input && b.input.recap;
+          if (recap) { messages.push({ id: `${l.uuid || messages.length}:recap`, role: 'assistant', text: String(recap), ts, kind: 'recap' }); continue; }
+          messages.push({ id: `${l.uuid || messages.length}:${b.id || messages.length}`, role: 'assistant', text: `⟢ ${toolLabel(b)}${toolDetail(b)}`, ts, kind: 'tool' });
+        }
+        continue;
+      }
+      messages.push({ id: l.uuid || `${messages.length}`, role: m.role || l.type, text, ts });
     }
   }
   const firstUser = messages.find((m) => m.role === 'user' && !isWrapper(m.text));
-  const lastText = [...messages].reverse().find((m) => m.kind !== 'tool');
+  const lastText = [...messages].reverse().find((m) => !m.kind || m.kind === 'recap');
   // The card shows the newest reply, not the user's own prompt or an old summary.
-  const lastReply = [...messages].reverse().find((m) => m.kind !== 'tool' && m.role === 'assistant');
+  const lastReply = [...messages].reverse().find((m) => (!m.kind || m.kind === 'recap') && m.role === 'assistant');
   const shown = lastReply || lastText;
   const parsed = {
     sessionId, cwd, gitBranch, messages, usage,
@@ -114,6 +153,7 @@ function parseSession(file) {
     lastRole: lastText ? lastText.role : null,
     updatedAt: st.mtimeMs,
     act,
+    plan,
   };
   cache.set(file, { mtimeMs: st.mtimeMs, size: st.size, parsed });
   return parsed;

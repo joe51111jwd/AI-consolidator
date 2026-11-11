@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Plus, ArrowUp, StickyNote, X, Zap } from 'lucide-react';
+import { Plus, ArrowUp, X } from 'lucide-react';
 import { useStore } from '../lib/store';
-import { api, Account } from '../lib/api';
+import { api, Account, Entity } from '../lib/api';
 import { AgentLogo } from './Logos';
 import { useUsage, weeklyPct } from './UsagePill';
 import './shell.css';
@@ -14,24 +14,47 @@ function placeholder(a: Account, auto: boolean) {
   return `New session on ${a.label}`;
 }
 
-// Bottom-center quick start: pick an account bubble, type, Enter.
+function oneLine(s?: string, n = 70) {
+  const t = (s || '').replace(/[#*`_>|[\]]/g, '').replace(/\s+/g, ' ').trim();
+  return t.length > n ? '…' + t.slice(-n) : t;
+}
+
+// Bottom-center: account bubbles (click to start a chat, hover to see what they are working on)
+// and the "+" that opens the overall agent.
 export default function Dock() {
   const accounts = useStore((s) => s.accounts);
   const entities = useStore((s) => s.entities);
   const byId = useStore((s) => s.byId);
   const live = useStore((s) => s.liveByEntity);
   const pins = useStore((s) => s.pins);
+  const chiefOpen = useStore((s) => s.chiefOpen);
+  const chiefRunning = useStore((s) => s.liveByEntity['chief']?.status === 'running');
   const { set, notify } = useStore();
   const { rows, budgets } = useUsage();
   const [pick, setPick] = useState<string | null>(null);
-  const [menu, setMenu] = useState(false);
+  const [hover, setHover] = useState<string | null>(null);
   const [text, setText] = useState('');
   const wrap = useRef<HTMLDivElement>(null);
   const input = useRef<HTMLInputElement>(null);
+  const hoverT = useRef<any>(null);
 
   const claude = accounts.filter((a) => a.kind === 'claude-code');
   const others = accounts.filter((a) => a.kind === 'grok-bot' || a.kind === 'codex');
   const bubbles = [...claude, ...others];
+
+  const sessionsBy = useMemo(() => {
+    const m: Record<string, Entity[]> = {};
+    const runningIds = new Set(Object.entries(live).filter(([, r]) => r.status === 'running').map(([id]) => id));
+    for (const e of entities) {
+      if (e.kind !== 'session' || !e.accountId) continue;
+      (m[e.accountId] ||= []).push(e);
+    }
+    const isRun = (e: Entity) => e.status === 'running' || runningIds.has(e.id);
+    for (const k of Object.keys(m)) {
+      m[k] = m[k].sort((x, y) => Number(isRun(y)) - Number(isRun(x)) || y.updatedAt - x.updatedAt).slice(0, 6);
+    }
+    return m;
+  }, [entities, live]);
 
   const busy = useMemo(() => {
     const s = new Set<string>();
@@ -60,15 +83,24 @@ export default function Dock() {
 
   useEffect(() => { if (pick) requestAnimationFrame(() => input.current?.focus()); }, [pick]);
   useEffect(() => {
-    if (!pick && !menu) return;
-    const away = (e: MouseEvent) => { if (!wrap.current?.contains(e.target as Node)) { setPick(null); setMenu(false); } };
+    if (!pick) return;
+    const away = (e: MouseEvent) => { if (!wrap.current?.contains(e.target as Node)) setPick(null); };
     document.addEventListener('mousedown', away);
     return () => document.removeEventListener('mousedown', away);
-  }, [pick, menu]);
+  }, [pick]);
   useEffect(() => { if (pick && pick !== AUTO && !accounts.some((a) => a.id === pick)) setPick(null); }, [accounts]);
+  useEffect(() => {
+    const on = (e: Event) => setPick(String((e as CustomEvent).detail));
+    window.addEventListener('sb:dock-pick', on);
+    return () => window.removeEventListener('sb:dock-pick', on);
+  }, []);
+  useEffect(() => () => clearTimeout(hoverT.current), []);
 
-  const choose = (id: string) => { setMenu(false); setPick(pick === id ? null : id); };
-  const tip = (a: Account, off: boolean) => off ? `${a.label} · not signed in` : pct[a.id] != null ? `${a.label} · ${pct[a.id]}% this week` : a.label;
+  const enter = (id: string) => { clearTimeout(hoverT.current); setHover(id); };
+  const leave = () => { clearTimeout(hoverT.current); hoverT.current = setTimeout(() => setHover(null), 220); };
+  const choose = (id: string) => { set({ chiefOpen: false }); setPick(pick === id ? null : id); };
+  const label = (a: Account, off: boolean) => off ? `${a.label} · not signed in` : pct[a.id] != null ? `${a.label} · ${pct[a.id]}% this week` : a.label;
+  const activity = (e: Entity) => oneLine(e.meta?.activity) || (live[e.id]?.status === 'running' ? oneLine(live[e.id]?.text) : '') || oneLine(e.preview) || '—';
   const send = async () => {
     const t = text.trim();
     if (!t || !target) return;
@@ -80,11 +112,10 @@ export default function Dock() {
       notify(target.kind === 'grok-bot' ? 'Sent to Grok Bot' : `Started on ${target.label}`);
     } catch (e: any) { notify(e.message); }
   };
-  const addNote = async () => {
-    setMenu(false);
-    await api.saveNote({ text: '' });
-    await useStore.getState().refresh(true); await useStore.getState().refreshBoard();
-    notify('Note added');
+  const openSession = (id: string) => {
+    setHover(null); setPick(null);
+    useStore.getState().open(id);
+    setTimeout(() => (window as any).__sbCenter?.(id), 60);
   };
 
   return (
@@ -92,36 +123,40 @@ export default function Dock() {
       {bubbles.map((a) => {
         const auth = a.config?.auth;
         const off = a.kind === 'claude-code' && auth && auth.loggedIn === false;
+        const list = sessionsBy[a.id] || [];
+        const working = busy.has(a.id);
+        const pop = hover === a.id && !target && (working || list.length > 0);
         return (
-          <button key={a.id} className={`dock-b ${pick === a.id ? 'on' : ''} ${off ? 'off' : ''}`} style={{ '--ring': a.color } as React.CSSProperties}
-            data-tip={tip(a, !!off)} aria-label={a.label} data-testid={`dock-${a.id}`} onClick={() => choose(a.id)}>
-            <AgentLogo source={a.kind} size={18} color={a.kind === 'claude-code' ? undefined : '#18181B'} working={busy.has(a.id)} />
-            {off && <i className="warn" />}
-          </button>
+          <span key={a.id} className="dock-slot" onMouseEnter={() => enter(a.id)} onMouseLeave={leave}>
+            <button className={`dock-b ${pick === a.id ? 'on' : ''} ${off ? 'off' : ''} ${working ? 'busy' : ''}`}
+              data-tip={pop ? undefined : label(a, !!off)} aria-label={a.label} data-testid={`dock-${a.id}`} onClick={() => choose(a.id)}>
+              <AgentLogo source={a.kind} size={18} working={working} />
+              {off && <i className="warn" />}
+            </button>
+            {pop && (
+              <div className="dock-pop" onMouseEnter={() => enter(a.id)} onMouseLeave={leave}>
+                <div className="dp-head"><span>{a.label}</span>{pct[a.id] != null && <em>{pct[a.id]}% this week</em>}</div>
+                {list.map((e) => {
+                  const run = e.status === 'running' || live[e.id]?.status === 'running';
+                  return (
+                    <button key={e.id} className={`dp-row ${run ? 'run' : ''}`} onClick={() => openSession(e.id)}>
+                      <i className="dp-dot" />
+                      <span className="dp-txt"><span className="dp-t">{e.title}</span><span className="dp-d">{activity(e)}</span></span>
+                    </button>
+                  );
+                })}
+                {working && !list.some((e) => e.status === 'running' || live[e.id]?.status === 'running') && (
+                  <div className="dp-row run"><i className="dp-dot" /><span className="dp-txt"><span className="dp-t">New session</span><span className="dp-d">{oneLine(live[`ac:${a.id}`]?.text) || 'Starting…'}</span></span></div>
+                )}
+              </div>
+            )}
+          </span>
         );
       })}
-      <button className={`dock-b add ${menu ? 'on' : ''}`} data-tip={menu ? undefined : 'New…'} aria-label="New" aria-expanded={menu} data-testid="dock-plus"
-        onClick={() => { setPick(null); setMenu(!menu); }}>
+      <button className={`dock-b add ${chiefOpen ? 'on' : ''} ${chiefRunning ? 'working' : ''}`} data-tip={chiefOpen ? undefined : 'Agent  ⌘J'} aria-label="Agent" aria-expanded={chiefOpen} data-testid="dock-plus"
+        onClick={() => { setPick(null); set({ chiefOpen: !chiefOpen }); }}>
         <Plus size={18} strokeWidth={2.2} />
       </button>
-      {menu && (
-        <div className="dock-menu" role="menu">
-          <button role="menuitem" onClick={addNote}><StickyNote size={14} /><span>New note</span></button>
-          <div className="dm-label">New chat on…</div>
-          {claude.map((a) => (
-            <button key={a.id} role="menuitem" onClick={() => choose(a.id)}>
-              <AgentLogo source={a.kind} size={14} /><span>{a.label}</span><em>{pct[a.id] != null ? `${pct[a.id]}%` : ''}</em>
-            </button>
-          ))}
-          {!claude.length && <button role="menuitem" onClick={() => { setMenu(false); set({ settingsTab: 'accounts' }); }}><Plus size={14} /><span>Add a Claude account</span></button>}
-          {least && (
-            <>
-              <div className="dm-sep" />
-              <button role="menuitem" data-testid="dock-new" onClick={() => choose(AUTO)}><Zap size={14} /><span>Least-used account</span><em>{least.label}</em></button>
-            </>
-          )}
-        </div>
-      )}
       <div className="dock-in" aria-hidden={!target}>
         {pins.length > 0 && (
           <button className="chip" title="Clear tagged context" onClick={() => set({ pins: [] })}>{pins.length} tagged<X size={11} /></button>

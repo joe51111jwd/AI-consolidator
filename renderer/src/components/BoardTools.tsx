@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Funnel, Sparkles, Check, ChevronDown, Plus, Save, X } from 'lucide-react';
+import { Funnel, Sparkles, Check, ChevronDown, Plus, Save, X, Loader2 } from 'lucide-react';
 import { useStore } from '../lib/store';
 import { api } from '../lib/api';
 import { AgentLogo } from './Logos';
@@ -110,7 +110,7 @@ export default function BoardTools({ busy, onSmart, off, setOff }: { busy: boole
         {open && <FilterPanel off={off} toggle={toggle} reset={() => setOff([])} onClose={() => setOpen(false)} />}
       </div>
       <button className={`bt-btn bt-smart ${busy ? 'busy' : ''}`} onClick={onSmart} disabled={busy} title="Let AI sort the board into groups">
-        <Sparkles size={14} /><span>{busy ? 'Grouping…' : 'Smart group'}</span>
+        {busy ? <Loader2 size={14} className="bt-spin" /> : <Sparkles size={14} />}<span>{busy ? 'Grouping…' : 'Smart group'}</span>
       </button>
     </div>
   );

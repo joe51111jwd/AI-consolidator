@@ -73,7 +73,7 @@ export default function Composer({ id, placeholder, multiline = false, from, aut
   };
   const ready = !!text.trim() || attach.length > 0 || (showPins && pins.some((p) => p !== id));
   return (
-    <div className={`composer pn-composer nodrag nowheel ${multiline ? 'multi' : ''}`} onDoubleClick={(e) => e.stopPropagation()}
+    <div className={`composer pn-composer nodrag ${multiline ? 'multi' : ''}`} onDoubleClick={(e) => e.stopPropagation()}
       onFocus={() => setFocused(true)} onBlur={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setFocused(false); }}>
       {(attach.length > 0 || showPins) && (
         <div className="att">

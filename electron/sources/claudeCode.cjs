@@ -30,6 +30,13 @@ function isNoise(text) {
   return !text || /^<(command-|local-command|system-reminder|user-memory)/.test(text.trim()) || text.startsWith('Caveat:');
 }
 
+const base = (f) => String(f || '').split(/[\\/]/).pop();
+function toolLabel(b) {
+  const i = b.input || {};
+  const target = i.file_path ? base(i.file_path) : i.command ? truncate(i.command, 50) : i.pattern || i.description || i.url || i.query || i.skill || (i.prompt ? truncate(i.prompt, 50) : '');
+  return truncate(`${b.name}${target ? ' ' + target : ''}`, 80);
+}
+
 function parseSession(file) {
   const st = fs.statSync(file);
   const hit = cache.get(file);
@@ -39,6 +46,7 @@ function parseSession(file) {
   const usage = []; // {ts, model, input, output}
   const seenUsage = new Set();
   let cwd = null, summary = null, gitBranch = null, sessionId = path.basename(file, '.jsonl');
+  const act = { prompt: '', tool: '', text: '', last: null };
   for (const l of lines) {
     if (l.type === 'summary' && l.summary) summary = l.summary;
     if (l.cwd) cwd = l.cwd;
@@ -53,9 +61,16 @@ function parseSession(file) {
         usage.push({ ts, model: m.model, input: (u.input_tokens || 0) + (u.cache_creation_input_tokens || 0), cacheRead: u.cache_read_input_tokens || 0, output: u.output_tokens || 0 });
       }
       // Skip tool results (user turns that only carry tool output).
-      if (l.type === 'user' && Array.isArray(m.content) && m.content.every((b) => b.type === 'tool_result')) continue;
+      if (l.type === 'user' && Array.isArray(m.content) && m.content.every((b) => b.type === 'tool_result')) { act.last = 'result'; continue; }
       const text = textOf(m.content);
       if (l.isMeta || isNoise(text)) continue;
+      if (l.type === 'user') { if (!/^\s*</.test(text)) act.prompt = truncate(text, 160); act.tool = ''; act.last = 'prompt'; }
+      else if (Array.isArray(m.content)) {
+        for (const b of m.content) {
+          if (b.type === 'tool_use') { act.tool = toolLabel(b); act.last = 'tool'; }
+          else if (b.type === 'text' && b.text && b.text.trim()) { act.text = truncate(b.text, 200); act.last = 'text'; }
+        }
+      } else if (text) { act.text = truncate(text, 200); act.last = 'text'; }
       const isTool = l.type === 'assistant' && Array.isArray(m.content) && m.content.every((b) => b.type !== 'text');
       messages.push({ id: l.uuid || `${messages.length}`, role: m.role || l.type, text, ts, kind: isTool ? 'tool' : undefined });
     }
@@ -72,16 +87,81 @@ function parseSession(file) {
     previewAt: shown ? shown.ts : null,
     lastRole: lastText ? lastText.role : null,
     updatedAt: st.mtimeMs,
+    act,
   };
   cache.set(file, { mtimeMs: st.mtimeMs, size: st.size, parsed });
   return parsed;
+}
+
+// What the session is doing right now. Recomputed on every read since "running" depends on the clock.
+function activityOf(s) {
+  const a = s.act || {};
+  const running = !!a.last && a.last !== 'text' && Date.now() - s.updatedAt < 90000;
+  return { prompt: a.prompt || '', tool: a.last === 'tool' || a.last === 'result' ? a.tool : '', text: a.text || '', running };
+}
+
+// Read only the start or end of a big file, as JSONL lines (a cut first/last line is dropped).
+function readSlice(file, bytes, fromEnd) {
+  let fd;
+  try {
+    fd = fs.openSync(file, 'r');
+    const size = fs.fstatSync(fd).size;
+    const len = Math.min(size, bytes);
+    const buf = Buffer.alloc(len);
+    fs.readSync(fd, buf, 0, len, fromEnd ? size - len : 0);
+    let lines = buf.toString('utf8').split('\n');
+    if (fromEnd && len < size) lines = lines.slice(1);
+    if (!fromEnd && len < size) lines = lines.slice(0, -1);
+    const out = [];
+    for (const line of lines) { if (line.trim()) { try { out.push(JSON.parse(line)); } catch {} } }
+    return out;
+  } catch { return []; } finally { if (fd != null) try { fs.closeSync(fd); } catch {} }
+}
+
+const subCache = new Map(); // file -> { mtimeMs, size, info }
+function subagentInfo(file, st) {
+  const hit = subCache.get(file);
+  if (hit && hit.mtimeMs === st.mtimeMs && hit.size === st.size) return hit.info;
+  const head = readSlice(file, 16384, false);
+  const first = head.find((l) => l.type === 'user' && l.message);
+  let title = '';
+  try { title = JSON.parse(fs.readFileSync(file.replace(/\.jsonl$/, '.meta.json'), 'utf8')).description || ''; } catch {}
+  if (!title && first) title = textOf(first.message.content);
+  let lastText = '';
+  const tail = readSlice(file, 65536, true);
+  for (let i = tail.length - 1; i >= 0 && !lastText; i--) {
+    const l = tail[i];
+    if (l.type !== 'assistant' || !l.message) continue;
+    const c = l.message.content;
+    const t = typeof c === 'string' ? c : Array.isArray(c) ? c.filter((b) => b.type === 'text').map((b) => b.text).join('\n') : '';
+    if (t.trim()) lastText = truncate(t, 200);
+  }
+  const info = { id: path.basename(file, '.jsonl'), title: truncate(title || 'Subagent', 80), lastText, parent: (head.find((l) => l.sessionId) || {}).sessionId || null };
+  subCache.set(file, { mtimeMs: st.mtimeMs, size: st.size, info });
+  return info;
+}
+
+// Subagents of one session: <project>/<sessionId>/subagents/*.jsonl, plus the older layout of
+// agent-*.jsonl sidechain files next to the session that name it as their sessionId.
+function subagentsFor(file, sessionId) {
+  const out = [];
+  const add = (f, filter) => {
+    let st; try { st = fs.statSync(f); } catch { return; }
+    const info = subagentInfo(f, st);
+    if (filter && info.parent !== sessionId) return;
+    out.push({ id: info.id, title: info.title, lastText: info.lastText, updatedAt: st.mtimeMs, status: Date.now() - st.mtimeMs < 60000 ? 'running' : 'done' });
+  };
+  const subDir = path.join(path.dirname(file), sessionId, 'subagents');
+  try { for (const n of fs.readdirSync(subDir)) if (n.endsWith('.jsonl')) add(path.join(subDir, n)); } catch {}
+  try { for (const n of fs.readdirSync(path.dirname(file))) if (/^agent-.*\.jsonl$/.test(n)) add(path.join(path.dirname(file), n), true); } catch {}
+  return out.sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 20);
 }
 
 // Subagent and workflow side-threads are never cards, so skip them before parsing.
 const SIDE = /[/\\](subagents|workflows)[/\\]/;
 function sessionFiles(account, days = 21) {
   const dir = path.join(configDir(account), 'projects');
-  return walk(dir, (n) => n.endsWith('.jsonl'), days == null ? 0 : Date.now() - days * DAY).filter((f) => !SIDE.test(f.path));
+  return walk(dir, (n) => n.endsWith('.jsonl') && !n.startsWith('agent-'), days == null ? 0 : Date.now() - days * DAY).filter((f) => !SIDE.test(f.path));
 }
 
 // One session file as a card, or null when it has nothing to show.
@@ -92,12 +172,15 @@ function entityFor(account, file) {
   // The overall agent runs Claude Code inside ~/.switchboard; those runs are not cards of their own.
   if (s.cwd && realDir(s.cwd) === realDir(APP_DIR)) return null;
   const app = claudeDesktop.titleFor(s.sessionId);
+  const activity = activityOf(s);
+  const subagents = subagentsFor(file, s.sessionId);
+  const running = activity.running || subagents.some((a) => a.status === 'running');
   return {
     id: `cc:${account.id}:${s.sessionId}`,
     kind: 'session', source: 'claude-code', accountId: account.id,
     title: (app && app.title) || s.title, preview: s.preview, updatedAt: s.updatedAt,
-    status: Date.now() - s.updatedAt < 45000 ? 'running' : (s.lastRole === 'assistant' ? 'idle' : 'waiting'),
-    meta: { cwd: s.cwd, gitBranch: s.gitBranch, file, sessionId: s.sessionId, messages: s.messages.length, category: classify.category(s.cwd, s.gitBranch), noise: classify.isNoise(s.cwd), archived: !!(app && app.archived), previewAt: s.previewAt },
+    status: running ? 'running' : (s.lastRole === 'assistant' ? 'idle' : 'waiting'),
+    meta: { cwd: s.cwd, gitBranch: s.gitBranch, file, sessionId: s.sessionId, messages: s.messages.length, category: classify.category(s.cwd, s.gitBranch), noise: classify.isNoise(s.cwd), archived: !!(app && app.archived), previewAt: s.previewAt, activity, subagents },
   };
 }
 
@@ -111,11 +194,12 @@ function desktopEntity(d) {
   if (!d.file) return null;
   let s; try { s = parseSession(d.file); } catch { return null; }
   if (!s.messages.length) return null;
+  const activity = activityOf(s);
   return {
     id: d.id, kind: 'session', source: 'claude-app', accountId: null,
     title: d.title || s.title || truncate(d.initialMessage, 80) || 'Claude app session', preview: s.preview, updatedAt: d.updatedAt || s.updatedAt,
-    status: Date.now() - s.updatedAt < 45000 ? 'running' : 'idle',
-    meta: { cwd: d.cwd || s.cwd, file: d.file, sessionId: s.sessionId, messages: s.messages.length, category: classify.category(d.cwd || s.cwd, null), noise: false, archived: d.archived, readOnly: true, appAccount: `${d.acct.slice(0, 8)}/${d.org.slice(0, 8)}` },
+    status: activity.running ? 'running' : 'idle',
+    meta: { activity, cwd: d.cwd || s.cwd, file: d.file, sessionId: s.sessionId, messages: s.messages.length, category: classify.category(d.cwd || s.cwd, null), noise: false, archived: d.archived, readOnly: true, appAccount: `${d.acct.slice(0, 8)}/${d.org.slice(0, 8)}` },
   };
 }
 function desktopList({ days = 21 } = {}) {

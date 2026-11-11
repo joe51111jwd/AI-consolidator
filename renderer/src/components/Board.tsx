@@ -98,16 +98,29 @@ export default function Board() {
   };
 
   const smartGroup = async (auto = false) => {
+    const notify = useStore.getState().notify;
+    if (busy) { if (!auto) notify('Already grouping…'); return; }
     const ids = cardIds();
-    if (!ids.length || busy) return;
+    if (!ids.length) { if (!auto) notify('Nothing on the board to group'); return; }
     if (!auto) touched.current = true;
     setBusy(true);
     try {
       let groups: GroupSpec[] | null = null;
-      try { const r = await api.call<{ groups: GroupSpec[] }>('smartgroup:run', ids); if (r?.groups?.length) groups = r.groups; } catch {}
+      if (ids.length >= 2) {
+        try {
+          const timeout = new Promise<never>((_, rej) => setTimeout(() => rej(new Error('timed out')), 45000));
+          const r = await Promise.race([api.call<{ groups: GroupSpec[] }>('smartgroup:run', ids), timeout]);
+          if (r?.groups?.length) groups = r.groups;
+          else if (!auto) notify('AI grouping returned nothing — used a quick layout');
+        } catch (err: any) {
+          if (!auto) notify(`AI grouping failed (${err?.message || 'unknown error'}) — used a quick layout`);
+        }
+      }
       if (auto && (touched.current || !groups)) return;
       if (!groups) { const { byId } = useStore.getState(); groups = heuristicGroups(ids.map((id) => byId[id]).filter(Boolean), byId); }
       await applyGroups(groups);
+    } catch (err: any) {
+      notify(`Couldn't group the board: ${err?.message || err}`);
     } finally { setBusy(false); }
   };
 

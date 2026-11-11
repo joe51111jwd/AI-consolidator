@@ -199,3 +199,23 @@
 .bt-name input:focus { border-color: #18181B; }
 .bt-mini { height: 28px; padding: 0 10px; border-radius: 8px; background: #18181B; color: #FFFFFF; font-size: 12px; font-weight: 550; }
 .bt-mini:disabled { opacity: .4; }
+
+/* live activity + subagents on session cards */
+.board .card .activity { display: flex; flex-direction: column; gap: 2px; font-size: 11.5px; line-height: 1.4; min-width: 0; }
+.board .card .act-prompt { color: var(--ink-3, #8A8A93); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.board .card .act-now { color: var(--ink, #18181B); font-weight: 550; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.board .card .shimmer { background: linear-gradient(90deg, #18181B 0%, #18181B 40%, #A1A1AA 50%, #18181B 60%, #18181B 100%); background-size: 250% 100%; -webkit-background-clip: text; background-clip: text; color: transparent; animation: board-shimmer 1.8s linear infinite; }
+@keyframes board-shimmer { from { background-position: 120% 0; } to { background-position: -120% 0; } }
+.board .card .subagents { display: flex; flex-direction: column; gap: 1px; padding-left: 8px; border-left: 1px solid #E4E4E7; }
+.board .card .sub-row, .board .card .sub-more { display: flex; align-items: center; gap: 6px; width: 100%; min-width: 0; padding: 2px 4px; border: 0; border-radius: 6px; background: transparent; font: inherit; font-size: 11.5px; color: var(--ink-2, #52525B); text-align: left; cursor: pointer; }
+.board .card .sub-row:hover, .board .card .sub-more:hover { background: #F4F4F5; }
+.board .card .sub-more { color: var(--ink-3, #8A8A93); }
+.board .card .sub-dot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: #D4D4D8; }
+.board .card .sub-dot.running { background: #18181B; animation: board-live 1.4s infinite; }
+.board .card .sub-t { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.board .card .sub-age { flex: none; font-size: 10.5px; color: var(--ink-3, #8A8A93); }
+.board .frame-acc-add { display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; padding: 0; border: 0; border-radius: 50%; background: transparent; color: inherit; opacity: .55; cursor: pointer; }
+.board .frame-acc-add:hover { opacity: 1; background: #F4F4F5; }
+.board .note-badge { max-width: 140px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bt-spin { animation: bt-spin 0.9s linear infinite; }
+@keyframes bt-spin { to { transform: rotate(360deg); } }

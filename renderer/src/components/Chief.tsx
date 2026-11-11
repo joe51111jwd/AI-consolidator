@@ -1,9 +1,10 @@
-import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { ArrowUp, ChevronDown, ChevronRight, X, GripVertical, Copy, FileOutput } from 'lucide-react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { ArrowUp, ChevronDown, ChevronRight, X, GripVertical, Copy, FileOutput, MessageSquarePlus, StickyNote, LayoutTemplate, Sparkles, Zap } from 'lucide-react';
 import { useStore } from '../lib/store';
 import { api, Message } from '../lib/api';
 import { md } from '../lib/format';
 import { AgentLogo } from './Logos';
+import { useUsage, weeklyPct } from './UsagePill';
 import './chief.css';
 
 export interface Nudge {
@@ -12,7 +13,6 @@ export interface Nudge {
 }
 
 const SHOWN = 3;
-const OPEN_W = 420;
 
 // The Switchboard agent mark: a hub with three lines out. Orbits while it works.
 export function ChiefGlyph({ size = 18, working }: { size?: number; working?: boolean }) {
@@ -26,13 +26,6 @@ export function ChiefGlyph({ size = 18, working }: { size?: number; working?: bo
       <circle className="cg-core" cx="12" cy="12" r="3.3" fill="currentColor" />
     </svg>
   );
-}
-
-function tail(text: string) {
-  const t = text.replace(/[#*`_>|[\]]/g, '').replace(/\s+/g, ' ').trim();
-  if (t.length <= 44) return t;
-  const cut = t.slice(-44);
-  return '…' + cut.slice(cut.indexOf(' ') + 1);
 }
 
 function useNudges() {
@@ -49,31 +42,6 @@ function useNudges() {
   }, []);
   const dismiss = (id: string) => { setItems((xs) => xs.filter((x) => x.id !== id)); api.call('proactive:dismiss', id).catch(() => {}); };
   return { items, dismiss };
-}
-
-const panelHeight = (vh: number) => Math.max(340, Math.min(600, Math.round(vh * 0.8)));
-
-// Keeps the corner agent clear of right-docked panels (open card, outputs drawer, anything marked
-// data-dock="right") that reach down into the space it needs: the small tab or the open panel.
-function useRightInset(open: boolean, deps: any[]) {
-  const [inset, setInset] = useState(18);
-  const [vh, setVh] = useState(window.innerHeight);
-  useEffect(() => {
-    const measure = () => {
-      const top = window.innerHeight - 18 - (open ? panelHeight(window.innerHeight) : 44);
-      let r = 18;
-      document.querySelectorAll<HTMLElement>('.inspector, .pn-outputs.open, [data-dock="right"]').forEach((el) => {
-        const b = el.getBoundingClientRect();
-        if (b.width > 0 && b.left < window.innerWidth && b.bottom > top) r = Math.max(r, window.innerWidth - b.left + 14);
-      });
-      setInset(r); setVh(window.innerHeight);
-    };
-    measure();
-    const ts = [setTimeout(measure, 90), setTimeout(measure, 480)];
-    window.addEventListener('resize', measure);
-    return () => { ts.forEach(clearTimeout); window.removeEventListener('resize', measure); };
-  }, [open, ...deps]);
-  return { inset, vh };
 }
 
 function NudgeIcon({ n }: { n: Nudge }) {
@@ -131,68 +99,91 @@ function ChiefMsg({ m }: { m: Message }) {
   );
 }
 
-// The overall agent: lives in the bottom-right corner. Minimized it is a small tab that shows what
-// it is doing and how many things need you; open it morphs into a panel with "Needs you" and the chat.
+function reloadAll() {
+  const st = useStore.getState();
+  return st.refresh(true).then(() => st.refreshBoard());
+}
+
+// Quick actions across the top of the agent panel.
+function Actions({ onDone }: { onDone: () => void }) {
+  const accounts = useStore((s) => s.accounts);
+  const notify = useStore((s) => s.notify);
+  const { rows, budgets } = useUsage();
+  const [picker, setPicker] = useState(false);
+  const list = accounts.filter((a) => a.kind === 'claude-code' || a.kind === 'grok-bot' || a.kind === 'codex');
+  const pct = useMemo(() => {
+    const m: Record<string, number> = {};
+    for (const a of accounts) { const r = rows.find((x) => x.id === a.id); if (r) m[a.id] = Math.round(weeklyPct(r, accounts, budgets)); }
+    return m;
+  }, [accounts, rows, budgets]);
+  const chat = (id: string) => { setPicker(false); onDone(); window.dispatchEvent(new CustomEvent('sb:dock-pick', { detail: id })); };
+  const run = (label: string, fn: () => Promise<any>) => async () => {
+    try { await fn(); await reloadAll(); notify(label); } catch (e: any) { notify(e.message || 'Something went wrong'); }
+  };
+  return (
+    <div className="cf-actions">
+      <div className="cf-act-wrap">
+        <button className={`cf-act ${picker ? 'on' : ''}`} onClick={() => setPicker(!picker)}><MessageSquarePlus size={14} />New chat</button>
+        {picker && (
+          <div className="cf-pick" role="menu">
+            {list.map((a) => (
+              <button key={a.id} role="menuitem" onClick={() => chat(a.id)}>
+                <AgentLogo source={a.kind} size={14} /><span>{a.label}</span><em>{pct[a.id] != null ? `${pct[a.id]}%` : ''}</em>
+              </button>
+            ))}
+            {list.some((a) => a.kind === 'claude-code') && (
+              <button role="menuitem" data-testid="dock-new" onClick={() => chat('auto')}><Zap size={14} /><span>Least-used Claude</span></button>
+            )}
+            {!list.length && <span className="cf-pick-empty">Add an account in Settings</span>}
+          </div>
+        )}
+      </div>
+      <button className="cf-act" onClick={run('Note added', () => api.saveNote({ text: '' }))}><StickyNote size={14} />New note</button>
+      <button className="cf-act" onClick={run('Blank board', () => api.call('boards:blank'))}><LayoutTemplate size={14} />New blank board</button>
+      <button className="cf-act" onClick={run('Example board added', () => api.call('examples:add'))}><Sparkles size={14} />Example board</button>
+    </div>
+  );
+}
+
+// The overall agent: opened from the dock's "+", it rises above the dock as a centered panel with
+// quick actions, "Needs you" and the conversation.
 export default function Chief() {
   const open = useStore((s) => s.chiefOpen);
   const selected = useStore((s) => s.selected);
   const byId = useStore((s) => s.byId);
-  const inspector = useStore((s) => s.inspector);
-  const outputsOpen = useStore((s) => s.outputsOpen);
   const { set, notify } = useStore.getState();
   const live = useStore((s) => s.liveByEntity['chief']);
   const running = live?.status === 'running';
   const { items, dismiss } = useNudges();
-  const { inset, vh } = useRightInset(open, [inspector, outputsOpen]);
   const [q, setQ] = useState('');
   const [hist, setHist] = useState<Message[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
   const [notes, setNotes] = useState<{ id: string; text: string; tone?: 'error' }[]>([]);
-  const [unseen, setUnseen] = useState<'done' | 'error' | null>(null);
-  const [peek, setPeek] = useState<Nudge | null>(null);
-  const [tabW, setTabW] = useState(44);
+  const root = useRef<HTMLDivElement>(null);
   const input = useRef<HTMLInputElement>(null);
   const msgs = useRef<HTMLDivElement>(null);
-  const tabIn = useRef<HTMLSpanElement>(null);
-  const seen = useRef<Set<string> | null>(null);
-  const peekT = useRef<any>(null);
-  const lastStatus = useRef(live?.status);
 
   useEffect(() => { if (open) api.chiefHistory().then(setHist).catch(() => {}); }, [open, live?.status]);
   useEffect(() => { const el = msgs.current; if (el) el.scrollTop = el.scrollHeight; }, [hist.length, live?.text, open, notes.length, busy]);
   useEffect(() => {
     if (!open) return;
-    setUnseen(null); setPeek(null);
     const t = setTimeout(() => input.current?.focus({ preventScroll: true }), 90);
     return () => clearTimeout(t);
   }, [open]);
-  useEffect(() => {
-    const was = lastStatus.current; lastStatus.current = live?.status;
-    if (was === 'running' && live && !running && !useStore.getState().chiefOpen) setUnseen(live.status === 'error' ? 'error' : 'done');
-  }, [live?.status]);
-  useEffect(() => {
-    const prev = seen.current;
-    seen.current = new Set(items.map((i) => i.id));
-    const fresh = items.find((i) => i.kind !== 'tip' && !prev?.has(i.id));
-    if (!fresh || useStore.getState().chiefOpen) return;
-    setPeek(fresh); clearTimeout(peekT.current);
-    peekT.current = setTimeout(() => setPeek(null), 7000);
-  }, [items]);
-  useEffect(() => () => clearTimeout(peekT.current), []);
   useEffect(() => { (window as any).__sbChief = (v?: boolean) => set({ chiefOpen: v ?? !useStore.getState().chiefOpen }); }, []);
-
-  const streaming = running && !!live?.text;
-  const status = running ? (live?.text ? tail(live.text) : 'Thinking…')
-    : unseen === 'done' ? 'Answer ready' : unseen === 'error' ? "Couldn't answer"
-    : !peek ? '' : peek.tone === 'error' ? `${peek.title} failed` : peek.kind === 'waiting' && peek.detail ? `${peek.detail} · ${peek.title}` : peek.title;
-  useLayoutEffect(() => { if (tabIn.current) setTabW(Math.min(240, tabIn.current.offsetWidth)); }, [streaming || status, items.length]);
 
   const close = () => { input.current?.blur(); set({ chiefOpen: false }); };
   useEffect(() => {
     if (!open) return;
     const esc = (e: KeyboardEvent) => { if (e.key === 'Escape' && !useStore.getState().settingsTab) close(); };
+    const away = (e: MouseEvent) => {
+      const t = e.target as Element;
+      if (root.current?.contains(t) || t.closest?.('[data-testid="dock-plus"], .settings, .palette, .toast')) return;
+      close();
+    };
     document.addEventListener('keydown', esc);
-    return () => document.removeEventListener('keydown', esc);
+    document.addEventListener('mousedown', away);
+    return () => { document.removeEventListener('keydown', esc); document.removeEventListener('mousedown', away); };
   }, [open]);
   const note = (text: string, tone?: 'error') => setNotes((n) => [...n.slice(-4), { id: 'n' + Date.now(), text, tone }]);
   const ask = async (text: string) => {
@@ -242,28 +233,19 @@ export default function Chief() {
 
   const busyLabel = busy === 'recap' ? 'Writing your daily recap' : busy === 'organize' ? 'Organizing the board' : '';
   const late = items.some((i) => i.tone === 'error');
-  const panelH = panelHeight(vh);
-  const empty = !hist.length && !live && !items.length && !notes.length && !busy;
+  const empty = !hist.length && !live && !notes.length && !busy;
   return (
-    <div className={`sb-chief ${open ? 'open' : ''} ${running ? 'working' : ''}`} style={{ right: inset, width: open ? OPEN_W : tabW, height: open ? panelH : 44 }}
+    <div ref={root} className={`sb-chief ${open ? 'open' : ''} ${running ? 'working' : ''}`} aria-hidden={!open}
       onKeyDown={(e) => { if (e.key === 'Escape' && open) close(); }}>
-      <button className="chief-tab" onClick={() => set({ chiefOpen: true })} tabIndex={open ? -1 : 0} aria-hidden={open} title="Agent  ⌘J">
-        <span className="cf-tabin" ref={tabIn}>
-          <ChiefGlyph size={18} working={running} />
-          {status && <span className={`cf-status ${running ? 'live' : ''} ${streaming ? 'stream' : ''}`}><span>{status}</span></span>}
-          {items.length > 0 && <span className={`cf-badge ${late ? 'hot' : ''}`}>{items.length}</span>}
-        </span>
-      </button>
-      <div className="chief-panel" style={{ height: panelH }}>
-        <div className="cf-head" onClick={(e) => { if (e.target === e.currentTarget) close(); }}>
-          <ChiefGlyph size={16} working={running || !!busy} />
-          <span className="cf-title">Agent</span>
-          <span className="cf-sub">{selected.length ? `${selected.length} card${selected.length > 1 ? 's' : ''}` : 'everything'}</span>
-          <button className="icon-btn" title="Minimize  (Esc, ⌘J)" aria-label="Minimize" onClick={close}><ChevronDown size={17} /></button>
+      <div className="chief-panel">
+        <div className="cf-head">
+          <Actions onDone={close} />
+          {items.length > 0 && <span className={`cf-badge ${late ? 'hot' : ''}`} title="Needs you">{items.length}</span>}
+          <button className="icon-btn" title="Close  (Esc, ⌘J)" aria-label="Close" onClick={close}><ChevronDown size={17} /></button>
         </div>
         <Needs items={items} onAct={act} onDismiss={dismiss} />
         <div className="cf-msgs" ref={msgs}>
-          {empty && <div className="cf-empty"><ChiefGlyph size={22} /><span>All clear.</span></div>}
+          {empty && <div className="cf-empty"><ChiefGlyph size={20} /><span>Ask across all your agents.</span></div>}
           {hist.map((m) => <ChiefMsg key={m.id} m={m} />)}
           {running && (live?.text ? <ChiefMsg m={{ id: 'live', role: 'assistant', text: live.text, ts: Date.now() }} />
             : <div className="cf-thinking"><i /><i /><i /></div>)}

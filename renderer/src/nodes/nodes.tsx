@@ -1,6 +1,6 @@
 import React, { memo, useEffect, useRef, useState } from 'react';
 import { Handle, Position, NodeResizer, NodeProps } from '@xyflow/react';
-import { GripVertical, FolderGit2, FileText, StickyNote, AlertTriangle, Target, Play, Clock } from 'lucide-react';
+import { GripVertical, FolderGit2, FileText, StickyNote, AlertTriangle, Target, Play, Clock, UserRound } from 'lucide-react';
 import { useStore } from '../lib/store';
 import { useShallow } from 'zustand/react/shallow';
 import { api, BoardRow, Entity } from '../lib/api';
@@ -28,6 +28,13 @@ export function dragOutput(ev: React.DragEvent, payload: { text: string; title?:
   ev.dataTransfer.setData('application/x-sb', JSON.stringify(payload));
   ev.dataTransfer.setData('text/plain', payload.text);
   ev.dataTransfer.effectAllowed = 'copy';
+}
+
+// Textareas only keep the wheel (block board panning) while being edited and actually scrollable.
+function useEditWheel() {
+  const [cls, setCls] = useState('');
+  const check = (el: HTMLTextAreaElement | null) => setCls(el && document.activeElement === el && el.scrollHeight > el.clientHeight + 1 ? 'nowheel' : '');
+  return { cls, check, clear: () => setCls('') };
 }
 
 // A note the board just created by double-click focuses itself once it renders.
@@ -97,6 +104,39 @@ function LiveOrPreview({ id, preview, title }: { id: string; preview?: string; t
   );
 }
 
+type Activity = { prompt?: string; tool?: string; text?: string; running?: boolean };
+type Sub = { id: string; title: string; status: 'running' | 'done'; updatedAt?: number; lastText?: string };
+
+function ActivityLine({ e }: { e: Entity }) {
+  const running = useRunning(e);
+  const a: Activity | undefined = e.meta?.activity;
+  if (!a || !(running || a.running)) return null;
+  const now = a.tool || a.text?.split('\n').filter(Boolean).pop() || 'Thinking';
+  return (
+    <div className="activity">
+      {a.prompt && <div className="act-prompt" title={a.prompt}>{a.prompt}</div>}
+      <div className="act-now" title={now}>▸ <span className="shimmer">{now}</span></div>
+    </div>
+  );
+}
+
+function Subagents({ e }: { e: Entity }) {
+  const subs: Sub[] = Array.isArray(e.meta?.subagents) ? e.meta.subagents : [];
+  if (!subs.length) return null;
+  const sorted = [...subs].sort((a, b) => (a.status === b.status ? (b.updatedAt || 0) - (a.updatedAt || 0) : a.status === 'running' ? -1 : 1));
+  const open = (ev: React.MouseEvent) => { ev.stopPropagation(); useStore.getState().open(e.id); };
+  return (
+    <div className="subagents">
+      {sorted.slice(0, 4).map((s) => (
+        <button key={s.id} className="sub-row nodrag" onClick={open} title={s.lastText || s.title}>
+          <i className={`sub-dot ${s.status}`} /><span className="sub-t">{s.title}</span><span className="sub-age">{ago(s.updatedAt)}</span>
+        </button>
+      ))}
+      {sorted.length > 4 && <button className="sub-more nodrag" onClick={open}>{sorted.length - 4} more</button>}
+    </div>
+  );
+}
+
 export const SessionNode = memo(({ id, selected }: NodeProps) => {
   const e = useEntity(id); if (!e) return <Gone />;
   const cat = categoryOf(e);
@@ -112,7 +152,9 @@ export const SessionNode = memo(({ id, selected }: NodeProps) => {
           {folder && <span className="mono" title={e.meta?.cwd}>{folder}{branch && <em> · {branch}</em>}</span>}
         </div>
       )}
+      <ActivityLine e={e} />
       <LiveOrPreview id={id} preview={e.preview} title={e.title} />
+      <Subagents e={e} />
       <Composer id={id} placeholder="Reply…" />
     </Card>
   );
@@ -233,7 +275,7 @@ async function fillOutput(id: string, text: string) {
 }
 
 export const OutputNode = memo(({ id, selected }: NodeProps) => {
-  const e = useEntity(id); const [full, setFull] = useState(''); const [draft, setDraft] = useState('');
+  const e = useEntity(id); const [full, setFull] = useState(''); const [draft, setDraft] = useState(''); const wheel = useEditWheel();
   useEffect(() => { api.transcript(id).then((t) => setFull(t[0]?.text || '')).catch(() => {}); }, [id, e?.updatedAt]);
   if (!e) return <Gone />;
   const text = full || e.preview || '';
@@ -241,9 +283,9 @@ export const OutputNode = memo(({ id, selected }: NodeProps) => {
     return (
       <Card id={id} selected={selected} className="output-card empty" stripe={SOURCE.output.color}>
         <Top e={e} icon={<FileText size={13} />} label="Output" />
-        <textarea className="nodrag nowheel" rows={3} value={draft} placeholder="Write something…"
-          onChange={(ev) => setDraft(ev.target.value)} onKeyDown={(ev) => { if (!ev.metaKey && !ev.ctrlKey) ev.stopPropagation(); }}
-          onBlur={() => { if (draft.trim()) fillOutput(id, draft.trim()); }} />
+        <textarea className={`nodrag ${wheel.cls}`} rows={3} value={draft} placeholder="Write something…"
+          onFocus={(ev) => wheel.check(ev.currentTarget)} onChange={(ev) => { setDraft(ev.target.value); wheel.check(ev.currentTarget); }} onKeyDown={(ev) => { if (!ev.metaKey && !ev.ctrlKey) ev.stopPropagation(); }}
+          onBlur={() => { wheel.clear(); if (draft.trim()) fillOutput(id, draft.trim()); }} />
       </Card>
     );
   }
@@ -268,7 +310,9 @@ export const NoteNode = memo(({ id, selected }: NodeProps) => {
   const ref = useRef<HTMLTextAreaElement>(null);
   const focused = useRef(false); const saved = useRef(e?.preview || ''); const timer = useRef<any>(null);
   const [sched, setSched] = useState<Sched | null>(null);
-  const linked = useStore((s) => s.edges.some((ed) => ed.source === id && PROMPTABLE(ed.target) && ed.data?.instruction !== false));
+  const target = useStore((s) => { const ed = s.edges.find((x) => x.source === id && PROMPTABLE(x.target) && x.data?.instruction !== false); return ed ? (s.byId[ed.target]?.title || 'agent') : ''; });
+  const linked = !!target;
+  const wheel = useEditWheel();
   useEffect(() => { if (!focused.current && e && e.preview !== saved.current) { saved.current = e.preview || ''; setText(saved.current); } }, [e?.preview]);
   useEffect(() => { if (focusNext === id && ref.current) { focusNext = null; ref.current.focus(); } });
   useEffect(() => {
@@ -289,16 +333,16 @@ export const NoteNode = memo(({ id, selected }: NodeProps) => {
     <Card id={id} selected={selected} className="note-card" minW={180} minH={100}>
       <div className="card-top">
         <span className="src"><StickyNote size={13} /><span className="src-name">Note</span></span>
-        {repeating ? <span className="note-badge">Repeats</span> : linked ? <span className="note-badge" title="Sent with every prompt to the agent this note points at">Instruction</span> : null}
+        {repeating ? <span className="note-badge">Repeats</span> : linked ? <span className="note-badge" title={`Added to every prompt sent to ${target}`}>Instruction → {target}</span> : null}
         <button className={`note-clock nodrag ${repeating ? 'on' : ''}`} onClick={cycle}
           title={repeating ? `${REPEAT_LABEL[sched!.every]} — click to change` : 'Repeat: send this note to the connected agent on a schedule'}>
           <Clock size={12} />{repeating && <span>{REPEAT_LABEL[sched!.every]}</span>}
         </button>
       </div>
-      <textarea ref={ref} className="nodrag nowheel" value={text} placeholder="Write something…"
-        onFocus={() => { focused.current = true; }}
-        onChange={(ev) => { const v = ev.target.value; setText(v); clearTimeout(timer.current); timer.current = setTimeout(() => save(v), 500); }}
-        onBlur={() => { focused.current = false; save(text); }}
+      <textarea ref={ref} className={`nodrag ${wheel.cls}`} value={text} placeholder="Write something…"
+        onFocus={(ev) => { focused.current = true; wheel.check(ev.currentTarget); }}
+        onChange={(ev) => { const v = ev.target.value; setText(v); wheel.check(ev.currentTarget); clearTimeout(timer.current); timer.current = setTimeout(() => save(v), 500); }}
+        onBlur={() => { focused.current = false; wheel.clear(); save(text); }}
         onKeyDown={(ev) => { if (ev.key === 'Escape') ev.currentTarget.blur(); if (!ev.metaKey && !ev.ctrlKey) ev.stopPropagation(); }} />
       {repeating && sched!.next && <div className="note-next">{linked ? `Next run ${clock(sched!.next)}` : 'Draw a line to an agent to run it'}</div>}
     </Card>
@@ -327,6 +371,7 @@ export const GroupNode = memo(({ id, data, selected }: NodeProps) => {
   const [editGoal, setEditGoal] = useState(false);
   const input = useRef<HTMLInputElement>(null);
   const cancel = useRef(false);
+  const [pickAcc, setPickAcc] = useState(false);
   const claude = useStore(useShallow((s) => s.accounts.filter((a) => a.kind === 'claude-code').map((a) => `${a.id}\t${a.label}`)));
   useEffect(() => { if (!editing) setLabel(d.label || 'Group'); }, [d.label]);
   useEffect(() => { if (!editGoal) setGoal(d.goal || ''); }, [d.goal]);
@@ -365,13 +410,15 @@ export const GroupNode = memo(({ id, data, selected }: NodeProps) => {
         {editing ? (
           <input ref={input} className="nodrag" value={label} size={Math.max(4, label.length + 1)} onChange={(ev) => setLabel(ev.target.value)} onBlur={commit} onKeyDown={keys} />
         ) : <span className="name">{label}</span>}
-        {claude.length > 0 && (
-          <select className="frame-acc nodrag" value={d.accountId || ''} title="Which Claude account this group's agents run on"
-            onChange={(ev) => saveGroup(id, {}, { accountId: ev.target.value || null })} onClick={(ev) => ev.stopPropagation()}>
-            <option value="">Any account</option>
-            {claude.map((c) => { const [aid, l] = c.split('\t'); return <option key={aid} value={aid}>Runs on {l}</option>; })}
+        {claude.length > 0 && (d.accountId || pickAcc ? (
+          <select className="frame-acc nodrag" value={d.accountId || ''} title="Agents in this frame run on this account" autoFocus={pickAcc && !d.accountId}
+            onChange={(ev) => { setPickAcc(false); saveGroup(id, {}, { accountId: ev.target.value || null }); }} onBlur={() => setPickAcc(false)} onClick={(ev) => ev.stopPropagation()}>
+            <option value="">No account</option>
+            {claude.map((c) => { const [aid, l] = c.split('\t'); return <option key={aid} value={aid}>{l}</option>; })}
           </select>
-        )}
+        ) : (
+          <button className="frame-acc-add nodrag" title="Dedicate this frame to an account" onClick={(ev) => { ev.stopPropagation(); setPickAcc(true); }}><UserRound size={11} /></button>
+        ))}
       </div>
       <div className="frame-goal nodrag">
         {editGoal ? (

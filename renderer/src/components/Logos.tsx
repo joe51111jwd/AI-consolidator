@@ -7,7 +7,7 @@ import grokPng from '../assets/logos/grok.png';
 import granolaPng from '../assets/logos/granola.png';
 import './logos.css';
 
-// Real brand marks. `working` adds that agent's own motion so you can tell at a glance who is busy.
+// Real brand marks, always in the brand's own colour (no rings or backgrounds). `working` adds that agent's own motion so you can tell at a glance who is busy.
 type P = { size?: number; color?: string; working?: boolean };
 
 const prep = (raw: string) => raw.replace(/<title>.*?<\/title>/, '').replace('<svg ', '<svg fill="currentColor" width="100%" height="100%" aria-hidden="true" ');
@@ -27,10 +27,10 @@ function Img({ name, label, src, size = 14, working }: P & { name: string; label
   );
 }
 
-export const ClaudeLogo = (p: P) => <Svg name="claude" label="Claude" {...p} color={p.color || '#D97757'} />;
-export const CodexLogo = (p: P) => <Svg name="openai" label="Codex" {...p} color={p.color || '#000'} />;
-export const CursorLogo = (p: P) => <Svg name="cursor" label="Cursor" {...p} color={p.color || '#000'} />;
-export const MailLogo = (p: P) => <Svg name="gmail" label="Gmail" {...p} color={p.color || '#EA4335'} />;
+export const ClaudeLogo = (p: P) => <Svg name="claude" label="Claude" {...p} color="#D97757" />;
+export const CodexLogo = (p: P) => <Svg name="openai" label="Codex" {...p} color="#000000" />;
+export const CursorLogo = (p: P) => <Svg name="cursor" label="Cursor" {...p} color="#000" />;
+export const MailLogo = (p: P) => <Svg name="gmail" label="Gmail" {...p} color="#EA4335" />;
 export const GrokLogo = (p: P) => <Img name="grok" label="Grok Bot" src={grokPng} {...p} />;
 export const GranolaLogo = (p: P) => <Img name="granola" label="Granola" src={granolaPng} {...p} />;
 export function DotLogo({ size = 14, color = '#888', working }: P) {

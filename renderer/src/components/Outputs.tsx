@@ -11,6 +11,7 @@ interface Item { id: string; ref: string; title: string; sub?: string; source: s
 
 const firstLine = (t: string) => (t.split('\n').map((l) => l.replace(/^[#>*\-\s`]+/, '').trim()).find(Boolean) || '').slice(0, 90);
 const RUN_WINDOW = 12 * 3600000;
+interface Recent { id: string; title: string; source: string; text: string; ts: number }
 
 // Right-edge drawer: everything agents have produced, as a calm list you can tick off or drag onto a card.
 export default function Outputs() {
@@ -21,11 +22,17 @@ export default function Outputs() {
   const [past, setPast] = useState<Run[]>([]);
   const [full, setFull] = useState<Record<string, string>>({});
   const [showDone, setShowDone] = useState(false);
+  const [recent, setRecent] = useState<Recent[]>([]);
 
   useEffect(() => {
     api.getSetting<string[]>('outputsDone', []).then((d) => setDone(Array.isArray(d) ? d : [])).catch(() => {});
     api.runs().then(setPast).catch(() => {});
   }, []);
+  useEffect(() => {
+    if (!outputsOpen) return;
+    const t = setTimeout(() => api.call<Recent[]>('outputs:recent', 40).then((r) => setRecent(Array.isArray(r) ? r : [])).catch(() => {}), 300);
+    return () => clearTimeout(t);
+  }, [outputsOpen, entities]);
   useEffect(() => {
     localStorage.setItem('sb.outputsWide', wide ? '1' : '0');
     document.documentElement.style.setProperty('--out-w', wide ? '70vw' : '420px');
@@ -66,8 +73,13 @@ export default function Outputs() {
         source: card?.source || 'output', color: colorOf(card?.id), ts: r.startedAt, text: r.text || '', sourceId: ref, working,
       });
     }
+    const seen = new Set(out.map((x) => `${x.ref}:${x.text.trim().slice(0, 80)}`));
+    for (const r of recent) {
+      if (seen.has(`${r.id}:${r.text.trim().slice(0, 80)}`)) continue;
+      out.push({ id: `rc:${r.id}:${r.ts}`, ref: r.id, title: firstLine(r.text) || 'Reply', sub: r.title, source: r.source, color: colorOf(r.id), ts: r.ts, text: r.text, sourceId: r.id });
+    }
     return out.sort((a, b) => Number(!!b.working) - Number(!!a.working) || b.ts - a.ts);
-  }, [entities, byId, accounts, runs, past, full]);
+  }, [entities, byId, accounts, runs, past, full, recent]);
 
   const doneSet = new Set(done);
   const todo = items.filter((x) => !doneSet.has(x.id));
@@ -133,7 +145,7 @@ export default function Outputs() {
           <button className="icon-btn" onClick={() => set({ outputsOpen: false })} title="Close"><ChevronRight size={15} /></button>
         </div>
         <div className="pn-out-list">
-          {todo.length === 0 && <div className="pn-none">All clear</div>}
+          {todo.length === 0 && <div className="pn-none">No replies in the last 3 days</div>}
           {todo.map(row)}
           {finished.length > 0 && (
             <>

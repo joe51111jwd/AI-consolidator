@@ -15,13 +15,14 @@ import UsagePill from './components/UsagePill';
 import Settings, { SettingsTab } from './components/Settings';
 import BrandMark from './components/BrandMark';
 import LiveView from './components/LiveView';
+import { BoardToDo } from './components/home/ToDo';
 import './components/shell.css';
 
 const TABS = ['accounts', 'clients', 'brain'];
 type Mode = 'board' | 'live';
 const MODE_KEY = 'sb.mode';
-// Chats (the live home) is the default; Board only once you've picked it.
-const savedMode = (): Mode => (localStorage.getItem(MODE_KEY) === 'board' ? 'board' : 'live');
+// The board (this week's work, laid out) is the home; the list only once you've picked it.
+const savedMode = (): Mode => (localStorage.getItem(MODE_KEY) === 'live' ? 'live' : 'board');
 
 export default function App() {
   const { view, toast, set, refresh, refreshBoard, refreshDue, inspector, settingsTab } = useStore();
@@ -40,7 +41,7 @@ export default function App() {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); set({ paletteOpen: !useStore.getState().paletteOpen }); }
       if ((e.metaKey || e.ctrlKey) && e.key === 'j') { e.preventDefault(); set({ chiefOpen: !useStore.getState().chiefOpen }); }
       if ((e.metaKey || e.ctrlKey) && e.key === ',') { e.preventDefault(); set({ settingsTab: useStore.getState().settingsTab ? null : 'accounts' }); }
-      if ((e.metaKey || e.ctrlKey) && (e.key === '1' || e.key === '2')) { e.preventDefault(); setMode(e.key === '1' ? 'live' : 'board'); }
+      if ((e.metaKey || e.ctrlKey) && (e.key === '1' || e.key === '2')) { e.preventDefault(); setMode(e.key === '1' ? 'board' : 'live'); }
       if (e.key === 'Escape') set({ paletteOpen: false });
     };
     window.addEventListener('keydown', key);
@@ -48,7 +49,7 @@ export default function App() {
     (window as any).__sbRefresh = async () => { await useStore.getState().refresh(true); await useStore.getState().refreshBoard(); };
     // Used by the end-to-end tests: 'board' closes the settings panel, anything else opens that tab.
     (window as any).__sbView = (name: string) => set({ settingsTab: TABS.includes(name) ? (name as SettingsTab) : null });
-    // Used by the end-to-end tests: 'live' shows the chats home, anything else the board.
+    // Used by the end-to-end tests: 'live' shows the list, anything else the board.
     (window as any).__sbMode = (name: string) => setMode(name === 'live' ? 'live' : 'board');
     // Used by the screenshot mode in main.cjs to step through screens.
     (window as any).__sbScene = (i: number) => {
@@ -73,6 +74,7 @@ export default function App() {
       <ReactFlowProvider>
         <main className={`main ${mode === 'live' ? 'is-hidden' : ''}`} aria-hidden={mode === 'live'}><Board /></main>
         {mode === 'live' && <LiveView onMode={setMode} />}
+        {mode === 'board' && <BoardToDo />}
         <div className="drag-strip" />
         <div className="float tl">
           <div className="tl-pill">
@@ -81,8 +83,8 @@ export default function App() {
             <button className="search-btn" data-testid="search" data-tour="search" onClick={() => set({ paletteOpen: true })}><Search size={14} />Search<kbd>⌘K</kbd></button>
           </div>
           <div className="mode-seg" role="tablist" aria-label="View" data-tour="mode">
-            <button role="tab" aria-selected={mode === 'live'} className={mode === 'live' ? 'on' : ''} data-testid="mode-live" title="Chats (⌘1)" onClick={() => setMode('live')}>Chats</button>
-            <button role="tab" aria-selected={mode === 'board'} className={mode === 'board' ? 'on' : ''} data-testid="mode-board" title="Board (⌘2)" onClick={() => setMode('board')}>Board</button>
+            <button role="tab" aria-selected={mode === 'board'} className={mode === 'board' ? 'on' : ''} data-testid="mode-board" title="Board (⌘1)" onClick={() => setMode('board')}>Board</button>
+            <button role="tab" aria-selected={mode === 'live'} className={mode === 'live' ? 'on' : ''} data-testid="mode-live" title="List (⌘2)" onClick={() => setMode('live')}>List</button>
           </div>
         </div>
         <div className="float tr">

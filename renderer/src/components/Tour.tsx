@@ -18,23 +18,25 @@ interface Step {
 
 // Each target lists the preferred data-tour hook first, then older hooks that already exist.
 const STEPS: Step[] = [
-  { target: ['[data-tour=home]', '[data-testid=live-view]'], mode: 'live',
-    title: 'Your chats', body: 'All your chats in one place, grouped by what they\'re doing.' },
-  { target: ['[data-tour=home-topic]'], mode: 'live',
-    title: 'Topics', body: 'What\'s happening in each area, with how many are working and how many need you.' },
-  { target: ['[data-tour=home-row]', '[data-testid=live-row]'], mode: 'live',
-    title: 'A chat', body: 'Click to open and talk. Hover to reply fast. A blue dot means it needs you.' },
-  { target: ['[data-tour=import]', '[data-testid=live-import]'], mode: 'live',
-    title: 'Import chats', body: 'Bring in any older chat from any Claude account.' },
+  { target: ['.react-flow__node-group', '[data-testid=week-board]'], mode: 'board',
+    title: 'Your week', body: 'Everything from this week, grouped by what it\'s about. Running work shimmers; a blue dot means it needs you.' },
+  { target: ['[data-tour=board-todo]', '[data-testid=board-todo]'], mode: 'board',
+    title: 'To do', body: 'Your own to-dos, chats that need you, everything still working, and replies you owe.' },
+  { target: ['.react-flow__node-session', '.react-flow__node'], mode: 'board',
+    title: 'A chat', body: 'Click to open it: the plan, steps and recaps, live. Faint lines link meetings and email to the chat they belong with.' },
+  { target: ['[data-testid=week-board]'], mode: 'board',
+    title: 'This week', body: 'Lays the board out again from this week\'s work. Move things anywhere and it stays how you left it.' },
   { target: ['[data-tour=dock]', '[data-testid=dock]'],
     title: 'Start a chat', body: 'Pick an account to start something new. The % shows its usage, so you can spread work around.' },
   { target: ['[data-tour=agent-panel]', '.sb-chief.open .chief-panel'], chief: true,
     title: 'Main agent', body: 'Ask across everything: "what needs me?", a daily recap, or any question about your chats.' },
   { target: ['[data-tour=search]', '[data-testid=search]'],
     title: 'Search  ⌘K', body: 'Find any chat or meeting. ⌘T tags it as context for your next prompt.' },
-  { target: ['[data-tour=mode]', '.mode-seg'], mode: 'board',
-    title: 'Board', body: 'Lay chats out and draw lines so one chat\'s output feeds the next. Notes are standing instructions; frames hold goals. This is where you automate.' },
-  { target: ['[data-tour=usage]', '[data-testid=usage-pill]'],
+  { target: ['[data-tour=mode]', '.mode-seg'], mode: 'live',
+    title: 'List', body: 'The same chats as a list, sorted into topics. Switch back to Board any time.' },
+  { target: ['[data-tour=import]', '[data-testid=live-import]'], mode: 'live',
+    title: 'Import chats', body: 'Bring in any older chat from any Claude account.' },
+  { target: ['[data-tour=usage]', '[data-testid=usage-pill]'], mode: 'board',
     title: 'Usage', body: 'Weekly usage for each account. Click for the details.' },
   { target: ['[data-tour=settings]', '[data-testid=settings-btn]'],
     title: 'Settings', body: 'Accounts, clients, the shared brain, and connecting Grok Bot.' },
@@ -110,7 +112,7 @@ export default function Tour() {
   useEffect(() => {
     if (!open) return;
     setI(0); setBox(null);
-    startMode.current = localStorage.getItem('sb.mode') === 'board' ? 'board' : 'live';
+    startMode.current = localStorage.getItem('sb.mode') === 'live' ? 'live' : 'board';
   }, [open]);
 
   // Put the app in the right state for the step, then keep the spotlight on the target as things move.

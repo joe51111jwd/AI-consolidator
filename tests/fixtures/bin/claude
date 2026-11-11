@@ -73,15 +73,21 @@ function smartGroup(text) {
   return JSON.stringify({ groups: [...groups].map(([label, items]) => ({ label, items })) });
 }
 
-// The chats home asks for topics as JSON: one per client, else per project folder.
+// The home asks for topics as JSON: one per client, else per project folder. Meetings, emails and
+// outputs (lines tagged "[meeting]" etc.) with no client join a folder topic named in their title.
 function topics(text) {
   if (!/Sort them into 2 to 8 topics/.test(text)) return null;
-  const groups = new Map();
+  const rows = [];
   for (const line of text.split('\n')) {
-    const m = line.match(/^(\d+)\. .*?\(([^)]*)\)/); if (!m) continue;
-    const client = m[2].match(/client ([^,]+)/), folder = m[2].match(/folder ([^,]+)/);
-    const label = client ? client[1].trim() : folder ? folder[1].trim() : 'Everything else';
-    groups.set(label, [...(groups.get(label) || []), Number(m[1])]);
+    const m = line.match(/^(\d+)\. (\[[^\]]+\] )?(.*?) \(([^)]*)\)/); if (!m) continue;
+    const client = m[4].match(/client ([^,]+)/), folder = m[4].match(/folder ([^,]+)/);
+    rows.push({ n: Number(m[1]), title: m[3].toLowerCase(), label: client ? client[1].trim() : folder ? folder[1].trim() : null });
   }
-  return JSON.stringify({ topics: [...groups].map(([label, items]) => ({ label, summary: `${items.length} chats`, items })) });
+  const folders = [...new Set(rows.map((r) => r.label).filter(Boolean))];
+  const groups = new Map();
+  for (const r of rows) {
+    const label = r.label || folders.find((f) => r.title.includes(f.toLowerCase())) || 'Everything else';
+    groups.set(label, [...(groups.get(label) || []), r.n]);
+  }
+  return JSON.stringify({ topics: [...groups].map(([label, items]) => ({ label, summary: `${items.length} items`, items })) });
 }

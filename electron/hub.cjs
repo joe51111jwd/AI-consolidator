@@ -846,7 +846,7 @@ module.exports = {
   events, accounts, publicAccount, account, saveAccount, deleteAccount, firstRunSetup,
   claudeStatus, claudeLogin, claudeLoginCancel, claudeLogout,
   entities, invalidate, transcriptFor, find, label,
-  prompt, runs, sentReplies, recordFlow, flowsFor, edges, saveEdge, deleteEdge, forwardFinished, makeBoard, quickAsk,
+  prompt, runs, sentReplies, recordFlow, flowsFor, edges, saveEdge, deleteEdge, forwardFinished, makeBoard, quickAsk, internalArgs,
   brain, setBrain, appendBrain, saveOutput, saveNote, deleteEntity,
   board, saveBoard, deleteBoardNodes,
   clients, saveClient, due, suggestions, usageSummary, chief, chiefHistory, pickAccount, addFinder, addExtraEntities, requestRegroup,

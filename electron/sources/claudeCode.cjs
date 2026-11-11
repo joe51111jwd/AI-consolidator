@@ -243,10 +243,10 @@ function sessionFiles(account, days = 21) {
   return walk(dir, (n) => n.endsWith('.jsonl') && !n.startsWith('agent-'), days == null ? 0 : Date.now() - days * DAY).filter((f) => !SIDE.test(f.path));
 }
 
-// Switchboard's own runs (the overall agent, smart group) are not cards of their own. They run in
+// Switchboard's own runs (the overall agent, smart group, topics) are not cards of their own. They run in
 // ~/.switchboard, and older ones are known by how their prompt starts. Their ids are kept so the
 // board can drop rows it saved for them.
-const INTERNAL_PROMPT = /^(You are the overall agent inside Switchboard|Group these cards from my work whiteboard)/;
+const INTERNAL_PROMPT = /^(You are the overall agent inside Switchboard|Group these cards from my work whiteboard|These are my (current )?AI chats)/;
 const internal = new Set();
 const internalSessions = () => internal;
 function isInternal(s) {

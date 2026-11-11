@@ -84,6 +84,17 @@ function status() {
   };
 }
 
+// The cache's times are usually epoch ms, but read seconds, Apple reference-date seconds and ISO
+// strings too, so a bot's last activity always lands on the right day.
+const APPLE_EPOCH = 978307200000;
+function toMs(v) {
+  if (typeof v === 'string') { const n = Number(v); if (!Number.isFinite(n)) return Date.parse(v) || 0; v = n; }
+  if (typeof v !== 'number' || !Number.isFinite(v) || v <= 0) return 0;
+  if (v > 1e11) return v;
+  const unix = v * 1000, apple = APPLE_EPOCH + v * 1000;
+  return Math.abs(Date.now() - apple) < Math.abs(Date.now() - unix) ? apple : unix;
+}
+
 function bots() {
   const roster = readKey(/\.roster\.last-roster$/);
   const rows = roster && Array.isArray(roster.rows) ? roster.rows : [];
@@ -92,7 +103,7 @@ function bots() {
     lastText: r.lastEntry && typeof r.lastEntry.text === 'string' ? r.lastEntry.text : '',
     lastKind: r.lastEntry ? r.lastEntry.kind : null,
     unread: r.unreadCount || 0, awaiting: !!r.awaitingUserResponse, hidden: !!r.isHiddenFromSidebar,
-    lastActivityAt: r.lastActivityAt || 0, createdAt: r.createdAt || r.localActivityAt || 0,
+    lastActivityAt: toMs(r.lastActivityAt) || toMs(r.localActivityAt), createdAt: toMs(r.createdAt) || toMs(r.localActivityAt),
     isGroup: !!r.isGroup, memberIds: Array.isArray(r.memberIds) ? r.memberIds.filter((m) => typeof m === 'string') : [],
   }));
 }
@@ -340,22 +351,24 @@ function list(account) {
     const mine = subs.get(b.id) || [];
     // A Claude CLI run or Cursor agent the bot started counts as the bot working, as it does for
     // Claude Code sessions with live subagents.
+    // Last activity: the roster's time, or the newest transcript entry if that is later.
+    const lastAt = entries.reduce((t, e) => Math.max(t, toMs(e && e.timestampMs)), b.lastActivityAt || 0);
     const running = !b.awaiting && ((now - (b.lastActivityAt || 0) < 60000 && b.lastKind !== 'message') || mine.some((x) => x.status === 'running'));
     // Never used, or nothing recorded since: no activity time. Kept off the board and Live (the
     // cache gives these updatedAt 0, which would show as Jan 1).
-    const unused = !b.lastActivityAt;
+    const unused = !lastAt;
     const av = avatarOf(b);
     const group = b.isGroup ? groupInfo(b, byId) : null;
     const live = !b.awaiting && mine.find((x) => x.status === 'running');
     const act = live ? { text: truncate(`${live.kind === 'claude-cli' ? 'Running Claude Code' : 'Cursor agent'} · ${live.title}`, 140), tool: live.kind, running: true } : activity(b, entries, running);
     return {
       id: `gb:${account.id}:${b.id}`, kind: 'session', source: 'grok-bot', accountId: account.id,
-      title: group ? group.title : b.name, preview: truncate(plain(b.lastText || b.description), 220), updatedAt: b.lastActivityAt || b.createdAt || 0,
+      title: group ? group.title : b.name, preview: truncate(plain(b.lastText || b.description), 220), updatedAt: lastAt || b.createdAt || 0,
       status: b.awaiting ? 'waiting' : running ? 'running' : 'idle',
       meta: {
         agentId: b.id, description: b.description, unread: b.unread, color: b.color, category: 'chat',
         avatarColor: av.color, avatarShape: av.shape, avatarDerived: !hexColor(b.color) || !b.shape,
-        lastActivityAt: b.lastActivityAt || 0, createdAt: b.createdAt || 0,
+        lastActivityAt: lastAt, createdAt: b.createdAt || 0, activeThisWeek: now - lastAt < 7 * 86400000 || running,
         ...(unused ? { unused: true, noise: true } : {}),
         ...(group ? { isGroup: true, members: group.members } : {}),
         activity: act, actions: actions(entries), subagents: mine,

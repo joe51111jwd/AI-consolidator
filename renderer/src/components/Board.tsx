@@ -13,10 +13,11 @@ import FlowEdge from './FlowEdge';
 import BoardTools from './BoardTools';
 import { attentionIds, useSeen } from '../lib/attention';
 import {
-  defaultVisible, suppressed, passesFilter, heuristicGroups, cleanGroups, frameLayout, placeNew, fitFrame, estH, unoverlap, GroupSpec, GAP, PAD, HEAD, CARD_W,
+  defaultVisible, suppressed, passesFilter, heuristicGroups, cleanGroups, frameLayout, placeNew, fitFrame, estH, unoverlap, weekGroups,
+  GroupSpec, WeekTopic, ARRANGED_KEY, GROK_TOPIC, GAP, PAD, HEAD, CARD_W,
 } from '../lib/layout';
 import { PROMPTABLE, colorOf } from '../lib/format';
-import { EyeOff, Maximize2, Sparkles, Trash2, Zap, Unlink, Group, Ungroup, StickyNote } from 'lucide-react';
+import { CalendarDays, EyeOff, Maximize2, Sparkles, Trash2, Zap, Unlink, Group, Ungroup, StickyNote } from 'lucide-react';
 import './board.css';
 
 const edgeTypes = { flow: FlowEdge };
@@ -61,6 +62,60 @@ function toNodes(rows: BoardRow[], byId: Record<string, Entity>, show: (e: Entit
   return [...frames, ...cards];
 }
 
+// Meetings, threads and clients get a faint line to the latest chat in their frame, like the Showcase.
+// Drawn here only: never saved as edges, so nothing ever sends along them.
+const RELATED_KINDS = new Set(['meeting', 'thread', 'client']);
+function relatedEdges(nodes: Node[], byId: Record<string, Entity>, real: Set<string>): Edge[] {
+  const frames = new Map<string, Entity[]>();
+  for (const n of nodes) {
+    const e = byId[n.id];
+    if (!n.parentId || n.parentId.startsWith('grp:ai:') || !e) continue;
+    frames.set(n.parentId, [...(frames.get(n.parentId) || []), e]);
+  }
+  const out: Edge[] = [];
+  for (const list of frames.values()) {
+    const chat = list.filter((e) => e.kind === 'session').sort((a, b) => b.updatedAt - a.updatedAt)[0];
+    if (!chat) continue;
+    for (const e of list) {
+      if (!RELATED_KINDS.has(e.kind) || real.has(`${e.id}|${chat.id}`) || real.has(`${chat.id}|${e.id}`)) continue;
+      out.push({ id: `rel:${e.id}:${chat.id}`, source: e.id, target: chat.id, type: 'flow', data: { related: true }, selectable: false, focusable: false, deletable: false });
+    }
+  }
+  return out;
+}
+
+const isRunning = (id: string) => {
+  const { byId, liveByEntity } = useStore.getState();
+  const e = byId[id];
+  return !!e && (e.status === 'running' || liveByEntity[id]?.status === 'running' || !!e.meta?.activity?.running
+    || (Array.isArray(e.meta?.subagents) && e.meta.subagents.some((x: any) => x?.status === 'running')));
+};
+
+async function loadTopics(): Promise<WeekTopic[]> {
+  try {
+    const r = await api.call<{ topics: WeekTopic[] }>('topics:get');
+    return Array.isArray(r?.topics) ? r.topics.filter((t) => t && typeof t.id === 'string' && Array.isArray(t.ids)) : [];
+  } catch { return []; }
+}
+
+// The frame a new card joins: its topic's frame (or the Grok bots frame), if that frame is on the board.
+function topicFrame(topics: WeekTopic[], board: BoardRow[]) {
+  const frames = board.filter((r) => isGroup(r.id) && !r.hidden && !r.id.startsWith('grp:ai:'));
+  const byTopic = new Map<string, string>();
+  for (const f of frames) {
+    if (f.data?.topic) byTopic.set(String(f.data.topic), f.id);
+    if (f.data?.label) byTopic.set(`label:${String(f.data.label).toLowerCase()}`, f.id);
+  }
+  const of = new Map<string, WeekTopic>();
+  for (const t of topics) for (const id of t.ids) if (!of.has(id)) of.set(id, t);
+  return (e: Entity) => {
+    const t = of.get(e.id);
+    const hit = t && (byTopic.get(t.id) || byTopic.get(`label:${t.label.toLowerCase()}`));
+    if (hit) return hit;
+    return e.source === 'grok-bot' && e.kind === 'session' ? byTopic.get(GROK_TOPIC) : undefined;
+  };
+}
+
 const same = (a: Node, b: Node) => a.type === b.type && a.parentId === b.parentId && a.position.x === b.position.x && a.position.y === b.position.y
   && (a.style?.width ?? null) === (b.style?.width ?? null) && (a.style?.height ?? null) === (b.style?.height ?? null)
   && (a.width == null || a.width === b.style?.width) && JSON.stringify(a.data) === JSON.stringify(b.data);
@@ -72,7 +127,6 @@ export default function Board() {
   const demoNodes = useDemo((d) => d.nodes);
   const demoEdges = useDemo((d) => d.edges);
   const allNodes = useMemo(() => (demoNodes.length ? [...nodes, ...demoNodes] : nodes), [nodes, demoNodes]);
-  const allEdges = useMemo(() => (demoEdges.length ? [...edges, ...demoEdges] : edges), [edges, demoEdges]);
   const [menu, setMenu] = useState<{ x: number; y: number; kind: 'node' | 'edge' | 'pane'; id?: string; ids?: string[]; at?: { x: number; y: number } } | null>(null);
   const [off, setOffState] = useState<string[]>([]);
   const [busy, setBusyState] = useState(false);
@@ -80,7 +134,11 @@ export default function Board() {
   const setBusy = (v: boolean) => { busyRef.current = v; setBusyState(v); };
   const rf = useReactFlow();
   const placing = useRef(false);
-  const touched = useRef(false);     // the user rearranged something, so background regrouping must not move cards
+  // The user arranged the board by hand since the last automatic layout; opening the app then leaves it alone.
+  const arranged = useRef(false);
+  const setArranged = (v: boolean) => { arranged.current = v; api.setSetting(ARRANGED_KEY, v).catch(() => {}); };
+  const weekState = useRef<'pending' | 'running' | 'done'>('pending');
+  const [weekReady, setWeekReady] = useState(false);
   const marquee = useRef(false);
   const down = useRef<{ x: number; y: number } | null>(null);
   const [overview, setOverview] = useState(false);
@@ -118,9 +176,8 @@ export default function Board() {
     return board.filter((r) => !isGroup(r.id) && !r.hidden && !(r.parent_id && ai.has(r.parent_id)) && byId[r.id] && !suppressed(byId[r.id])).map((r) => r.id);
   };
 
-  const applyGroups = async (groups: GroupSpec[]) => {
+  const applyGroups = async (groups: GroupSpec[], ids = cardIds(), extra: BoardRow[] = []) => {
     const { board, byId } = useStore.getState();
-    const ids = cardIds();
     const clean = cleanGroups(groups, ids);
     const goals = new Map(board.filter((r) => isGroup(r.id) && r.data?.goal).map((r) => [String(r.data.label).toLowerCase(), r.data.goal]));
     const { rows, bottom } = frameLayout(clean, (id) => rf.getNode(id)?.measured?.height || estH(byId[id]));
@@ -129,17 +186,45 @@ export default function Board() {
     let x = 0;
     for (const f of board.filter((r) => r.id.startsWith('grp:ai:') && !r.hidden)) { rows.push({ ...f, x, y: bottom + GAP }); x += (f.w || 600) + GAP; }
     await api.deleteBoard(board.filter((r) => isGroup(r.id) && !r.id.startsWith('grp:ai:')).map((r) => r.id));
-    await api.saveBoard(rows);
+    await api.saveBoard(guard([...extra, ...rows]));
     await refreshBoard();
     setTimeout(() => home(400), 60);
   };
 
-  const smartGroup = async (auto = false, rule?: string) => {
+  // This week's work, laid out like the Showcase: one frame per topic, what needs you first.
+  // Cards older than the week leave the board the way a blank board hides them (they come back on new work).
+  const weekBoard = async (auto: boolean) => {
+    if (busyRef.current) { if (!auto) notify('Already arranging…'); return; }
+    setBusy(true);
+    try {
+      const [topics, imported] = await Promise.all([loadTopics(), api.getSetting<string[]>('importedChats', []).catch(() => [] as string[])]);
+      if (auto && arranged.current) return;
+      const { board, byId, entities } = useStore.getState();
+      const keep = new Set(Array.isArray(imported) ? imported : []);
+      const placed = cardIds();
+      const stale = placed.filter((id) => ['session', 'meeting', 'thread'].includes(byId[id]?.kind) && !defaultVisible(byId[id]) && !keep.has(id));
+      const rowIds = new Set(board.map((r) => r.id));
+      const fresh = entities.filter((e) => !rowIds.has(e.id) && !deleted.has(e.id) && defaultVisible(e)).map((e) => e.id);
+      const ids = [...placed.filter((id) => !stale.includes(id)), ...fresh];
+      if (!ids.length) { if (!auto) notify('Nothing from this week yet'); return; }
+      const attn = new Set(attentionIds(ids));
+      const groups = weekGroups(ids, topics, byId, { attn: (id) => attn.has(id), running: isRunning });
+      const at = Date.now();
+      const hideRows = board.filter((r) => stale.includes(r.id)).map((r) => ({ ...r, hidden: 1, data: { ...(r.data || {}), viewHidden: at } }));
+      await applyGroups(groups, ids, hideRows);
+      setArranged(false);
+      if (!auto) notify('Laid out this week');
+    } catch (err: any) {
+      notify(`Couldn't lay out the week: ${err?.message || err}`);
+    } finally { setBusy(false); }
+  };
+
+  const smartGroup = async (rule?: string) => {
     const notify = useStore.getState().notify;
-    if (busy) { if (!auto) notify('Already grouping…'); return; }
+    if (busy) { notify('Already grouping…'); return; }
     const ids = cardIds();
-    if (!ids.length) { if (!auto) notify('Nothing on the board to group'); return; }
-    if (!auto) touched.current = true;
+    if (!ids.length) { notify('Nothing on the board to group'); return; }
+    setArranged(true);
     setBusy(true);
     try {
       let groups: GroupSpec[] | null = null;
@@ -148,12 +233,11 @@ export default function Board() {
           const timeout = new Promise<never>((_, rej) => setTimeout(() => rej(new Error('timed out')), 45000));
           const r = await Promise.race([api.call<{ groups: GroupSpec[] }>('smartgroup:run', ids, rule ? { instruction: rule } : {}), timeout]);
           if (r?.groups?.length) groups = r.groups;
-          else if (!auto) notify('AI grouping returned nothing — used a quick layout');
+          else notify('AI grouping returned nothing — used a quick layout');
         } catch (err: any) {
-          if (!auto) notify(`AI grouping failed (${err?.message || 'unknown error'}) — used a quick layout`);
+          notify(`AI grouping failed (${err?.message || 'unknown error'}) — used a quick layout`);
         }
       }
-      if (auto && (touched.current || !groups)) return;
       if (!groups) { const { byId } = useStore.getState(); groups = heuristicGroups(ids.map((id) => byId[id]).filter(Boolean), byId); }
       await applyGroups(groups);
     } catch (err: any) {
@@ -167,26 +251,42 @@ export default function Board() {
   useEffect(() => api.onEvent((e) => {
     if (e.type !== 'regroup') return;
     (window as any).__sbMode?.('board');
-    smartRef.current(false, e.instruction || undefined);
+    smartRef.current(e.instruction || undefined);
   }), []);
 
-  // Make sure every visible entity has a place on the board.
+  // On open: lay out this week, unless you've arranged the board by hand since the last time.
   useEffect(() => {
-    // Wait for the saved board, or a fresh layout would overwrite where you put things.
-    if (!boardLoaded || !entities.length || placing.current) return;
+    if (!boardLoaded || !entities.length || weekState.current !== 'pending') return;
+    weekState.current = 'running';
+    (async () => {
+      arranged.current = !!(await api.getSetting<boolean>(ARRANGED_KEY, false).catch(() => false));
+      if (!arranged.current) await weekBoard(true);
+      weekState.current = 'done';
+      setWeekReady(true);
+    })();
+  }, [boardLoaded, entities.length]);
+
+  // Make sure every visible entity has a place on the board: in its topic's frame when there is one.
+  useEffect(() => {
+    // Wait for the saved board and the week layout, or a fresh layout would overwrite where you put things.
+    if (!boardLoaded || !weekReady || !entities.length || placing.current) return;
     const rowIds = new Set(board.map((r) => r.id));
     const fresh = entities.filter((e) => !rowIds.has(e.id) && !deleted.has(e.id) && defaultVisible(e));
     if (!fresh.length) return;
     placing.current = true;
     const first = board.length === 0;
     (async () => {
-      const rows = first ? frameLayout(heuristicGroups(fresh, byId), (id) => estH(byId[id])).rows : placeNew(fresh.map((e) => e.id), board, byId);
-      await api.saveBoard(guard(rows));
-      await refreshBoard();
-      placing.current = false;
-      if (first) { setTimeout(() => home(300), 80); smartGroup(true); }
+      try {
+        const topics = first ? [] : await loadTopics();
+        const { board, byId } = useStore.getState();
+        const rows = first ? frameLayout(heuristicGroups(fresh, byId), (id) => estH(byId[id])).rows
+          : placeNew(fresh.map((e) => e.id), board, byId, topicFrame(topics, board));
+        await api.saveBoard(guard(rows));
+        await refreshBoard();
+        if (first) setTimeout(() => home(300), 80);
+      } finally { placing.current = false; }
     })();
-  }, [entities, board, boardLoaded]);
+  }, [entities, board, boardLoaded, weekReady]);
 
   // Rebuild nodes from the saved board, keeping selection, measurements and any drag in progress
   // (agents refresh the entities often, and a refresh mustn't yank a card out from under the cursor).
@@ -204,12 +304,18 @@ export default function Board() {
   }); }, [board, byId, offSet]);
 
   const nodeKey = nodes.map((n) => n.id).join('|');
+  const relKey = nodes.map((n) => `${n.id}>${n.parentId || ''}`).join('|');
+  const related = useMemo(() => relatedEdges(nodes, byId, new Set(edgeRows.map((e) => `${e.source}|${e.target}`))), [relKey, byId, edgeRows]);
+  const relIds = related.map((e) => e.id).join('|');
+  const relatedStable = useMemo(() => related, [relIds]);
   useEffect(() => {
     const ids = new Set(nodes.map((n) => n.id));
     setEdges(edgeRows.filter((e) => ids.has(e.source) && ids.has(e.target)).map((e) => ({
       id: e.id, source: e.source, target: e.target, type: 'flow', data: { ...e.data, kind: e.kind, auto: !!e.data?.autoForward },
     })));
   }, [edgeRows, nodeKey]);
+
+  const allEdges = useMemo(() => [...edges, ...relatedStable, ...demoEdges], [edges, relatedStable, demoEdges]);
 
   // Cards grow after they're laid out; keep them from covering each other.
   const heights = nodes.map((n) => `${n.id}:${Math.round(n.measured?.height || 0)}`).join('|');
@@ -246,9 +352,9 @@ export default function Board() {
 
   // Save positions after drags, reparent into frames (growing them to fit), and send outputs dropped onto cards.
   const onNodeDragStop = useCallback(async (_: any, node: Node, dragged: Node[]) => {
-    touched.current = true;
     const moved = (dragged.length ? dragged : [node]).filter((n) => !isDemo(n.id));
     if (!moved.length) return;
+    setArranged(true);
     const rows: BoardRow[] = [];
     if (moved.length === 1 && !isDemo(node.id) && (node.type === 'output' || node.type === 'note')) {
       const hit = rf.getIntersectingNodes(node).find((n) => n.type !== 'group' && PROMPTABLE(n.id));
@@ -375,7 +481,7 @@ export default function Board() {
   const hide = async (all: string[]) => {
     const ids = all.filter((id) => !isDemo(id));
     if (!ids.length) return;
-    touched.current = true;
+    setArranged(true);
     const rows: BoardRow[] = [];
     for (const id of ids) {
       if (isGroup(id)) { await ungroup(id); continue; }
@@ -395,7 +501,7 @@ export default function Board() {
   const groupSelected = async (ids?: string[]) => {
     const sel = ids ? rf.getNodes().filter((n) => ids.includes(n.id) && n.type !== 'group' && !isDemo(n.id)) : rf.getNodes().filter((n) => n.selected && n.type !== 'group' && !isDemo(n.id));
     if (sel.length < 2) { notify('Select two or more cards to group them'); return; }
-    touched.current = true;
+    setArranged(true);
     const pts = sel.map((n) => ({ n, p: absPos(n), ...sizeOf(n) }));
     const x0 = Math.min(...pts.map((q) => q.p.x)) - PAD, y0 = Math.min(...pts.map((q) => q.p.y)) - HEAD;
     const x1 = Math.max(...pts.map((q) => q.p.x + q.w)) + PAD, y1 = Math.max(...pts.map((q) => q.p.y + q.h)) + PAD;
@@ -407,7 +513,7 @@ export default function Board() {
   };
 
   const ungroup = async (gid: string) => {
-    touched.current = true;
+    setArranged(true);
     const { board } = useStore.getState();
     const g = board.find((b) => b.id === gid); if (!g) return;
     const kids = board.filter((b) => b.parent_id === gid);
@@ -441,8 +547,10 @@ export default function Board() {
   });
 
   useEffect(() => {
-    (window as any).__sbRegroup = (rule?: unknown) => smartGroup(false, typeof rule === 'string' && rule.length > 12 ? rule : undefined);
-    (window as any).__sbRegroupRule = (rule: string) => smartGroup(false, rule);
+    (window as any).__sbRegroup = (rule?: unknown) => smartGroup(typeof rule === 'string' && rule.length > 12 ? rule : undefined);
+    (window as any).__sbRegroupRule = (rule: string) => smartGroup(rule);
+    // Used by the end-to-end tests: the "This week" layout.
+    (window as any).__sbWeek = () => weekBoard(false);
     (window as any).__sbHide = (ids: string[]) => hide(ids);
     (window as any).__sbAttention = attentionIds(board.filter((r) => !r.hidden && !isGroup(r.id)).map((r) => r.id));
     // Used by the palette and the end-to-end tests to bring a card into view.
@@ -494,7 +602,7 @@ export default function Board() {
           setMenu({ x: e.clientX, y: e.clientY, kind: 'node', id: n.id, ids: sel.includes(n.id) && sel.length > 1 ? sel : [n.id] });
         }}
         onPaneContextMenu={(e) => { e.preventDefault(); setMenu({ x: e.clientX, y: e.clientY, kind: 'pane', at: rf.screenToFlowPosition({ x: e.clientX, y: e.clientY }) }); }}
-        onEdgeClick={(e, ed) => { e.stopPropagation(); if (isDemo(ed.source) || isDemo(ed.target)) return; setMenu({ x: e.clientX, y: e.clientY, kind: 'edge', id: ed.id }); }}
+        onEdgeClick={(e, ed) => { e.stopPropagation(); if (isDemo(ed.source) || isDemo(ed.target) || ed.data?.related) return; setMenu({ x: e.clientX, y: e.clientY, kind: 'edge', id: ed.id }); }}
         onMoveEnd={(_, vp) => localStorage.setItem('sb.viewport', JSON.stringify(vp))}
         defaultViewport={viewport || START_VIEW} minZoom={0.15} maxZoom={1.6}
         selectionOnDrag selectionMode={SelectionMode.Partial} panOnDrag={[1, 2]} panOnScroll zoomOnDoubleClick={false}
@@ -507,7 +615,8 @@ export default function Board() {
           bgColor="#FFFFFF" maskColor="rgba(24,24,27,.07)" maskStrokeColor="rgba(24,24,27,.35)" maskStrokeWidth={1} style={{ width: 168, height: 108 }} />
       </ReactFlow>
 
-      <BoardTools busy={busy} onSmart={(rule) => smartGroup(false, rule)} off={off} setOff={setOff} overview={overview} onOverview={toggleOverview} />
+      <BoardTools busy={busy} onSmart={(rule) => smartGroup(rule)} onWeek={() => weekBoard(false)} onArranged={() => setArranged(true)}
+        off={off} setOff={setOff} overview={overview} onOverview={toggleOverview} />
 
       {menu && (
         <div className="menu board-menu" style={{ left: menu.x, top: menu.y, position: 'fixed' }} onClick={(e) => e.stopPropagation()}>
@@ -535,6 +644,7 @@ export default function Board() {
           {menu.kind === 'pane' && menu.at && (<>
             <button onClick={() => { addNote(menu.at!); close(); }}><StickyNote size={14} />Note here</button>
             <button onClick={() => { smartGroup(); close(); }}><Sparkles size={14} />Smart group</button>
+            <button onClick={() => { weekBoard(false); close(); }}><CalendarDays size={14} />Lay out this week</button>
           </>)}
           {menu.kind === 'edge' && edgeRow && (<>
             {edgeRow.data?.last && <div className="board-edge-last">{edgeRow.data.last}</div>}

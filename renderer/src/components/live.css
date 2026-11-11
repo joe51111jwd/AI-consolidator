@@ -113,3 +113,23 @@
 .lv-todo-dot.attn { border-color: #2563EB; background: #DBEAFE; }
 .lv-todo-dot.run { border-color: var(--ink); background: var(--ink); animation: pn-pulse 1.4s ease-in-out infinite; }
 @keyframes pn-pulse { 50% { opacity: .45; } }
+
+/* ---------- To do on the board home: a small floating panel under the brand pill ---------- */
+.board-todo { position: fixed; z-index: 5; top: 52px; left: 14px; width: 268px; max-height: 40vh; display: flex; flex-direction: column; border-radius: 16px; background: var(--card, #fff); box-shadow: var(--shadow); -webkit-app-region: no-drag; overflow: hidden; font-size: 13px; }
+.shell.mac .board-todo { left: 84px; }
+.board-todo.collapsed { width: auto; }
+.bdt-head { display: flex; align-items: center; gap: 6px; height: 34px; padding: 0 10px 0 14px; flex: none; color: var(--ink); text-align: left; }
+.bdt-title { font-size: 12px; font-weight: 650; letter-spacing: -0.005em; margin-right: auto; }
+.board-todo.collapsed .bdt-title { margin-right: 4px; }
+.bdt-n { min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; display: inline-flex; align-items: center; justify-content: center; font-size: 10.5px; font-weight: 600; background: var(--well); color: var(--ink-2, #52525B); }
+.bdt-n.attn { background: #2563EB; color: #fff; }
+.bdt-n.run { background: var(--ink); color: #fff; }
+.bdt-chev { color: var(--ink-3); transition: transform .2s ease; }
+.board-todo.collapsed .bdt-chev { transform: rotate(-90deg); }
+.bdt-body { overflow-y: auto; min-height: 0; padding: 0 6px 6px; border-top: 1px solid var(--line); }
+.board-todo .lv-section.flat.bdt-list { background: transparent; margin: 0; padding: 4px 0 0; }
+.board-todo .bdt-list .lv-h { display: none; }
+.board-todo .lv-todo-add input { height: 30px; font-size: 12.5px; margin: 2px 0 4px; }
+.board-todo .lv-todo-row { padding: 6px 8px; gap: 8px; border-radius: 10px; }
+.board-todo .lv-todo-t { font-weight: 500; font-size: 12.5px; }
+.board-todo .lv-todo-m { font-size: 11px; }

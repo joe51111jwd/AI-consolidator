@@ -59,12 +59,33 @@ function load(account) {
   return out;
 }
 
-function list(account, { days = 30, max = 40 } = {}) {
-  const since = Date.now() - days * 86400000;
-  return load(account).filter((d) => d.at >= since).slice(0, max).map((d) => ({
+// Action items from the AI summary or your notes: the lines under an "Action items" / "Next steps"
+// / "To do" heading, plus any unchecked "[ ]" line.
+const ACTION_HEAD = /^\s*(#+\s*|\*\*)?(action items?|next steps?|to-?dos?|follow[- ]?ups?)\b/i;
+function actionItems(text, max = 6) {
+  const out = [];
+  let inList = false;
+  for (const raw of String(text || '').split('\n')) {
+    const line = raw.trim();
+    if (!line) continue;
+    if (ACTION_HEAD.test(line)) { inList = true; continue; }
+    if (/^(#+\s|\*\*[^*]+\*\*:?$)/.test(line)) { inList = false; continue; }
+    const box = line.match(/^[-*]?\s*\[ \]\s*(.+)/);
+    const item = box ? box[1] : inList ? (line.match(/^(?:[-*•]|\d+[.)])\s+(.+)/) || [])[1] : null;
+    if (item && !out.includes(item.trim())) out.push(truncate(item.trim(), 140));
+    if (out.length >= max) break;
+  }
+  return out;
+}
+
+// Meetings from the last month, newest 40, and always every one from the last week.
+function list(account, { days = 30, max = 40, week = 7 } = {}) {
+  const now = Date.now();
+  const since = now - days * 86400000, recent = now - week * 86400000;
+  return load(account).filter((d, i) => d.at >= since && (i < max || d.at >= recent)).map((d) => ({
     id: `gr:${account.id}:${d.id}`, kind: 'meeting', source: 'granola', accountId: account.id,
     title: d.title, preview: truncate(d.summary || d.notes, 220), updatedAt: d.at, status: 'idle',
-    meta: { docId: d.id, attendees: d.attendees, at: d.at },
+    meta: { docId: d.id, attendees: d.attendees, at: d.at, thisWeek: d.at >= recent, actionItems: actionItems(d.summary || d.notes) },
   }));
 }
 
@@ -80,4 +101,4 @@ function transcript(account, docId) {
 
 function detect() { return findCache({ config: {} }) ? ['Granola on this Mac'] : []; }
 
-module.exports = { list, transcript, load, detect };
+module.exports = { list, transcript, load, detect, actionItems };

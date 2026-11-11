@@ -10,7 +10,7 @@ import Composer from '../components/Composer';
 import { AgentLogo } from '../components/Logos';
 import { GrokAvatar, GroupAvatar, botLook } from '../components/GrokAvatar';
 import { useAttention, needsAttention, useSeen } from '../lib/attention';
-import { COMPACT_H } from '../lib/layout';
+import { ARRANGED_KEY, COMPACT_H } from '../lib/layout';
 
 const Handles = () => (
   <>
@@ -618,6 +618,8 @@ function saveGroup(id: string, patch: Partial<BoardRow>, data: Record<string, an
   const r = s.board.find((b) => b.id === id); if (!r) return;
   const row = { ...r, ...patch, data: { ...r.data, ...data } };
   useStore.setState({ board: s.board.map((b) => (b.id === id ? row : b)) });
+  // Renaming or resizing a frame is arranging the board: opening the app keeps it.
+  api.setSetting(ARRANGED_KEY, true).catch(() => {});
   return api.saveBoard([row]);
 }
 

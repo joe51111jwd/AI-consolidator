@@ -1,13 +1,12 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { useReactFlow } from '@xyflow/react';
-import { Check, Download, RotateCw, Search, X } from 'lucide-react';
+import { Download, RotateCw, Search, X } from 'lucide-react';
 import { useStore } from '../lib/store';
 import { useImport } from './ImportChats';
-import { dueLabel } from '../lib/format';
-import { api } from '../lib/api';
 import { DAY, groupItems, Item, Section, useItems } from './home/items';
 import { placeInTopics, useTopics } from './home/topics';
 import TopicSection from './home/TopicSection';
+import ToDo from './home/ToDo';
 import './live.css';
 
 export { clean, toolVerb } from './home/items';
@@ -37,61 +36,6 @@ function useOpenOnBoard(onMode?: (m: 'board' | 'live') => void) {
         .catch(() => (window as any).__sbCenter?.(on[0]));
     }, 80);
   };
-}
-
-interface Todo { id: string; text: string; done: boolean; ts: number; ref?: string }
-
-// One list of everything to keep track of: your own to-dos, chats that need you, chats still
-// working, and what you owe people (replies, follow-ups, client next steps).
-function ToDo({ items }: { items: Item[] }) {
-  const due = useStore((s) => s.due);
-  const open = useStore((s) => s.open);
-  const [todos, setTodos] = useState<Todo[]>([]);
-  const [text, setText] = useState('');
-  const [all, setAll] = useState(false);
-  useEffect(() => { api.getSetting<Todo[]>('todos', []).then((t) => setTodos(Array.isArray(t) ? t : [])); }, []);
-  const save = (next: Todo[]) => { setTodos(next); api.setSetting('todos', next); };
-  const add = () => { const t = text.trim(); if (!t) return; save([{ id: `td${Date.now().toString(36)}`, text: t, done: false, ts: Date.now() }, ...todos]); setText(''); };
-  const toggle = (t: Todo) => save(todos.map((x) => (x.id === t.id ? { ...x, done: !x.done } : x)));
-  const remove = (t: Todo) => save(todos.filter((x) => x.id !== t.id));
-  const needs = items.filter((i) => i.attn);
-  const working = items.filter((i) => i.running && !i.attn);
-  const mine = todos.filter((t) => !t.done || all);
-  const total = todos.filter((t) => !t.done).length + needs.length + working.length + due.length;
-  return (
-    <section className="lv-section flat lv-todo" data-testid="home-todo">
-      <h3 className="lv-h">To do<span>{total}</span></h3>
-      <div className="lv-todo-add">
-        <input value={text} placeholder="Add a to-do…" data-testid="todo-input" onChange={(e) => setText(e.target.value)}
-          onKeyDown={(e) => { e.stopPropagation(); if (e.key === 'Enter') add(); }} />
-      </div>
-      {mine.map((t) => (
-        <div key={t.id} className={`lv-todo-row mine ${t.done ? 'done' : ''}`} data-testid="todo-mine">
-          <button className={`lv-todo-check ${t.done ? 'on' : ''}`} onClick={() => toggle(t)} title={t.done ? 'Mark not done' : 'Mark done'}>{t.done ? <Check size={10} strokeWidth={3} /> : null}</button>
-          <span className="lv-todo-t" onClick={() => t.ref && open(t.ref)}>{t.text}</span>
-          <button className="lv-todo-x" onClick={() => remove(t)} title="Remove"><X size={12} /></button>
-        </div>
-      ))}
-      {needs.map((i) => (
-        <button key={`n:${i.e.id}`} className="lv-todo-row" onClick={() => open(i.e.id)} data-testid="todo-row">
-          <i className="lv-todo-dot attn" /><span className="lv-todo-t">Reply to {i.e.title}</span><span className="lv-todo-m">needs you</span>
-        </button>
-      ))}
-      {working.map((i) => (
-        <button key={`w:${i.e.id}`} className="lv-todo-row" onClick={() => open(i.e.id)} data-testid="todo-row">
-          <i className="lv-todo-dot run" /><span className="lv-todo-t">{i.e.title}</span><span className="lv-todo-m">working</span>
-        </button>
-      ))}
-      {(all ? due : due.slice(0, 5)).map((d) => (
-        <button key={d.id} className="lv-todo-row" onClick={() => open(d.ref)} data-testid="todo-row">
-          <i className={`lv-todo-dot ${d.overdue ? 'late' : ''}`} />
-          <span className="lv-todo-t">{d.title}</span>
-          <span className="lv-todo-m">{[d.client, d.due ? dueLabel(d.due) : ''].filter(Boolean).join(' · ')}</span>
-        </button>
-      ))}
-      {(due.length > 5 || todos.some((t) => t.done)) && <button className="lv-more" onClick={() => setAll(!all)}>{all ? 'Show less' : 'Show all, including done'}</button>}
-    </section>
-  );
 }
 
 // The home: every current chat, sorted by what it is about, what needs you first.

@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Funnel, Sparkles, Check, ChevronDown, Plus, Save, X, Loader2, Eye } from 'lucide-react';
+import { Funnel, Sparkles, Check, ChevronDown, Plus, Save, X, Loader2, Eye, CalendarDays } from 'lucide-react';
 import { useStore } from '../lib/store';
 import { api } from '../lib/api';
 import { AgentLogo } from './Logos';
@@ -54,7 +54,7 @@ function useAway(ref: React.RefObject<HTMLDivElement | null>, onClose: () => voi
 }
 
 // Saved boards: snapshot the layout under a name, switch between them, or start blank.
-function BoardSwitcher() {
+function BoardSwitcher({ onArranged }: { onArranged: () => void }) {
   const [open, setOpen] = useState(false);
   const [list, setList] = useState<Saved[]>([]);
   const [current, setCurrent] = useState<string | null>(null);
@@ -65,7 +65,8 @@ function BoardSwitcher() {
   const load = () => api.call<{ boards: Saved[]; current: string | null }>('boards:list').then((r) => { setList(r?.boards || []); setCurrent(r?.current || null); }).catch(() => {});
   useEffect(() => { load(); }, []);
   useAway(ref, () => { setOpen(false); setNaming(false); }, '.bt-boards');
-  const after = async (msg: string) => { await load(); const s = useStore.getState(); await s.refreshBoard(); await s.refresh(true); notify(msg); setOpen(false); setNaming(false); };
+  // A saved or blank board is your arrangement: opening the app keeps it instead of laying out the week.
+  const after = async (msg: string) => { onArranged(); await load(); const s = useStore.getState(); await s.refreshBoard(); await s.refresh(true); notify(msg); setOpen(false); setNaming(false); };
   const save = async () => { const n = name.trim(); if (!n) return; await api.call('boards:save', n); await after(`Saved “${n}”`); setName(''); };
   return (
     <div className="bt-wrap">
@@ -113,13 +114,19 @@ function GroupByPanel({ onPick, onClose }: { onPick: (rule: string) => void; onC
   );
 }
 
-export default function BoardTools({ busy, onSmart, off, setOff, overview, onOverview }: { busy: boolean; onSmart: (rule?: string) => void; off: string[]; setOff: (o: string[]) => void; overview: boolean; onOverview: () => void }) {
+export default function BoardTools({ busy, onSmart, onWeek, onArranged, off, setOff, overview, onOverview }: {
+  busy: boolean; onSmart: (rule?: string) => void; onWeek: () => void; onArranged: () => void;
+  off: string[]; setOff: (o: string[]) => void; overview: boolean; onOverview: () => void;
+}) {
   const [open, setOpen] = useState(false);
   const [groupBy, setGroupBy] = useState(false);
   const toggle = (k: string) => setOff(off.includes(k) ? off.filter((x) => x !== k) : [...off, k]);
   return (
     <div className="board-tools" onClick={(e) => e.stopPropagation()}>
-      <BoardSwitcher />
+      <BoardSwitcher onArranged={onArranged} />
+      <button className="bt-btn bt-week" data-testid="week-board" onClick={onWeek} disabled={busy} title="Lay out everything from this week, by what it's about">
+        <CalendarDays size={14} /><span>This week</span>
+      </button>
       <div className="bt-wrap">
         <button className={`bt-btn bt-filter ${off.length ? 'active' : ''}`} title="Filter the board" onClick={() => setOpen(!open)}>
           <Funnel size={14} />{off.length > 0 && <i className="bt-dot" />}

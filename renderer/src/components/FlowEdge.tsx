@@ -6,7 +6,18 @@ import { colorOf } from '../lib/format';
 
 // A line between two cards. Auto-forwarding lines carry a slow drifting dash; when a message
 // travels, the line takes the sender's colour and a dot runs along it.
+// Related lines (a meeting or thread to the latest chat in its frame) are drawn faint and do nothing.
 export default function FlowEdge(p: EdgeProps) {
+  if ((p.data as any)?.related) return <RelatedEdge {...p} />;
+  return <LinkEdge {...p} />;
+}
+
+function RelatedEdge(p: EdgeProps) {
+  const [path] = getBezierPath(p);
+  return <BaseEdge id={p.id} path={path} className="edge-related" interactionWidth={0} />;
+}
+
+function LinkEdge(p: EdgeProps) {
   const [path, lx, ly] = getBezierPath(p);
   const live = useStore((s) => s.activeEdges[p.id]);
   const color = useStore((s) => colorOf(s.byId[p.source], s.accounts));

@@ -431,7 +431,11 @@ async function notificationChecks() {
 
   await check('a Grok bot posting something new notifies; so does a bot waiting on you', async () => {
     await center(GB.cal, 0.8);
-    await nt({ front: false, reset: true });
+    // The to-do is looked at once a minute; let what earlier parts added to it (Rosa's new next step)
+    // be noticed now, so it doesn't land in the same batch as the bot's post.
+    await nt({ front: false, check: true });
+    await quiet();
+    await nt({ reset: true });
     let n0 = notes().length;
     const now = Date.now();
     const said = 'Moved the Harbor call to Friday 3pm';
@@ -605,12 +609,17 @@ async function main() {
     assert(harbor && harbor.data.tree.projects.some((p) => p.ids.includes(S.seo)) && !harbor.data.tree.projects.some((p) => p.ids.includes(S.crew)),
       `the Harbor chats share a frame apart from Fieldline (${harbor && harbor.data.label})`);
     assert((await boardRow(S.menu)).parent_id === harbor.id, 'the chat card sits in that frame');
-    await until(async () => (await page.locator(`.react-flow__node[data-id="pill:${harbor.id}:c"]`).innerText()).trim() === harbor.data.label, 'the frame starts with a client pill');
+    await until(async () => (await page.locator(`.react-flow__node[data-id="pill:${harbor.id}:c"]`).innerText()).trim() === harbor.data.label, 'the frame starts with the client name');
     const projects = harbor.data.tree.projects.length;
-    await until(async () => (await page.locator(`.react-flow__node-project-pill[data-id^="pill:${harbor.id}:"]`).count()) === 1 + projects, 'and a pill per project');
-    // Tree lines: client pill to each project pill, project pill to each of its chats.
-    const lines = harbor.data.tree.projects.reduce((n, p) => n + 1 + p.ids.length, 0);
-    await until(async () => (await page.locator(`.react-flow__edge-tree[data-testid*="pill:${harbor.id}:"]`).count()) >= lines, 'tree lines join the pills and chats');
+    await until(async () => (await page.locator(`.react-flow__node-project-pill[data-id^="pill:${harbor.id}:"]`).count()) === 1 + projects, 'and a name per project');
+    // Client and project names are plain headings (no pill, no border, nothing to connect to), and
+    // nothing is drawn between them and the chats: a board for seeing work, not a flowchart (v3.14).
+    const looks = await page.locator(`.react-flow__node-project-pill[data-id^="pill:${harbor.id}:"]`).evaluateAll((els) => els.map((el) => {
+      const s = getComputedStyle(el.querySelector('.project-pill'));
+      return { bg: s.backgroundColor, border: s.borderTopWidth, round: s.borderTopLeftRadius, handles: el.querySelectorAll('.react-flow__handle').length };
+    }));
+    assert(looks.every((l) => l.bg === 'rgba(0, 0, 0, 0)' && l.border === '0px' && l.round === '0px' && !l.handles), `names are headings, not pills: ${JSON.stringify(looks)}`);
+    assert((await page.locator('.react-flow__edge').count()) === 0, 'no lines on the board');
     assert((await page.locator('.react-flow__node-account, .react-flow__node-client').count()) === 0, 'account and client cards stay off the week board');
   });
   await check('topics:get sorts every current chat into a named topic', async () => {
@@ -664,15 +673,17 @@ async function main() {
   await page.evaluate(() => window.__sbMode('board'));
 
   await section('Board');
-  await check('this week from every source is on the board: chats, Grok bots, Codex, meetings, notes, outputs', async () => {
-    for (const id of [S.menu, S.seo, S.crew, S.news, S.codex, S.desktop, S.plan, GB.mkt, GB.cal, 'out:o1', 'nt:n1']) {
+  await check('this week from every source is on the board: chats, Grok bots, Codex, meetings, outputs; notes stay off it', async () => {
+    for (const id of [S.menu, S.seo, S.crew, S.news, S.codex, S.desktop, S.plan, GB.mkt, GB.cal, 'out:o1']) {
       await until(async () => (await node(id).count()) === 1, `card ${id}`);
     }
     await until(async () => (await page.locator('.react-flow__node-meeting').count()) >= 2, 'two Granola meeting cards');
-    // Accounts and clients are reached from the dock, New chat and Settings instead.
+    // Accounts and clients are reached from the dock, New chat and Settings instead; notes are kept
+    // (agents write them, ⌘K finds them) but are not shown on the board (v3.14).
     const ents = await api('entities', {});
-    assert(['ac:a_claude1', 'ac:a_grok', 'cl:c1'].every((id) => ents.some((e) => e.id === id)), 'accounts and clients are still known');
-    for (const id of ['ac:a_claude1', 'ac:a_grok', 'cl:c1']) assert((await node(id).count()) === 0, `no ${id} card`);
+    assert(['ac:a_claude1', 'ac:a_grok', 'cl:c1', 'nt:n1'].every((id) => ents.some((e) => e.id === id)), 'accounts, clients and notes are still known');
+    for (const id of ['ac:a_claude1', 'ac:a_grok', 'cl:c1', 'nt:n1']) assert((await node(id).count()) === 0, `no ${id} card`);
+    assert((await page.locator('.react-flow__node-note').count()) === 0, 'no note cards at all');
   });
   await check('no meaningless cards: project folders and scratch sessions stay off the board', async () => {
     const ents = await api('entities', {});
@@ -700,23 +711,29 @@ async function main() {
     const v = await api('app:version');
     assert(await page.evaluate((k) => localStorage.getItem(k), `sb.permLater.${v}`), 'remembered for this version');
   });
-  await check('the seeded lines between cards are drawn, apart from the tree lines', async () => {
-    // e2: the SEO chat made the output; e3: the output auto-sends to the newsletter chat.
-    for (const id of ['e2', 'e3']) await until(async () => (await page.locator(`.react-flow__edge-flow[data-testid="rf__edge-${id}"]`).count()) === 1, `line ${id}`);
-    await until(async () => (await page.locator('[data-testid="rf__edge-e3"] path.edge-auto').count()) >= 1, 'the auto-send line looks like one');
-    // e1 starts at the Grok Bot account, which is not a card on the week board.
-    assert((await page.locator('[data-testid="rf__edge-e1"]').count()) === 0, 'no line to a card that is not there');
+  await check('connections between cards are kept, but no line is drawn and cards have nothing to drag a line from', async () => {
+    // e2: the SEO chat made the output; e3: the output auto-sends to the newsletter chat. Both cards
+    // are on the board, so before v3.14 these were drawn.
+    const stored = await api('edges');
+    assert(stored.some((e) => e.id === 'e2') && stored.find((e) => e.id === 'e3').data.autoForward, 'the seeded connections are still stored');
+    for (const id of [S.seo, 'out:o1', S.news]) await until(async () => (await node(id).count()) === 1, `card ${id}`);
+    await frame();
+    assert((await page.locator('.react-flow__edge').count()) === 0, 'no lines on the board');
+    const handles = await page.locator('.react-flow__handle').evaluateAll((els) => els.filter((el) => getComputedStyle(el).display !== 'none').length);
+    assert(handles === 0, `${handles} connection handles showing`);
   });
 
   let movedTo;
   await check('dragging a card moves it and saves where it was dropped', async () => {
-    await center('nt:n1', 0.6);
-    const before = await boardRow('nt:n1');
+    // A chat card (notes are no longer on the board).
+    await center(S.desktop, 0.6);
+    const before = await boardRow(S.desktop);
     const spot = await emptySpot();
-    const grip = await node('nt:n1').locator('.card-top .src').boundingBox();
-    await dragNode('nt:n1', spot.sx - (grip.x + grip.width / 2), spot.sy - 60 - (grip.y + grip.height / 2));
-    const after = await until(async () => { const r = await boardRow('nt:n1'); return r && (Math.abs(r.x - before.x) > 40 || Math.abs(r.y - before.y) > 40 || r.parent_id !== before.parent_id) ? r : false; }, 'saved position changed');
+    const grip = await node(S.desktop).locator('.card-title').boundingBox();
+    await dragNode(S.desktop, spot.sx - (grip.x + grip.width / 2), spot.sy - 60 - (grip.y + grip.height / 2));
+    const after = await until(async () => { const r = await boardRow(S.desktop); return r && (Math.abs(r.x - before.x) > 40 || Math.abs(r.y - before.y) > 40 || r.parent_id !== before.parent_id) ? r : false; }, 'saved position changed');
     movedTo = { x: after.x, y: after.y, parent: after.parent_id };
+    assert((await page.locator('.inspector').count()) === 0, 'dragging did not open the chat');
   });
   await check('one click opens a card with the cursor in its message box; Escape closes it', async () => {
     await center(S.menu, 0.7);
@@ -758,19 +775,24 @@ async function main() {
     assert(!r.parent_id, 'card left the group');
   });
   let diagram;
-  await check('an agent draws its own diagram on the board (sb board)', async () => {
+  await check('an agent\'s diagram (sb board) is saved as a titled frame of notes and arrows, and stays off the board', async () => {
     const spec = { nodes: [{ id: 'a', text: 'Menu page live' }, { id: 'b', text: 'Local SEO pages' }, { id: 'c', text: 'Newsletter feature' }], edges: [{ from: 'a', to: 'b', label: 'then' }, { from: 'b', to: 'c' }] };
     const out = sb('board', 'Harbor launch plan', '--json', JSON.stringify(spec));
     diagram = out.split('\t')[0].trim();
     assert(diagram.startsWith('grp:ai:'), `sb printed the frame id (${out})`);
-    await until(async () => (await node(diagram).count()) === 1, 'the diagram frame is drawn');
+    const frameRow = await until(() => boardRow(diagram), 'the frame is saved');
+    assert(frameRow.data.label === 'Harbor launch plan', `frame titled (${frameRow.data.label})`);
     const kids = (await api('board')).filter((r) => r.parent_id === diagram);
-    assert(kids.length === 3, `${kids.length} notes in the frame`);
-    for (const k of kids) await until(async () => (await node(k.id).count()) === 1, `note ${k.id} drawn`);
+    assert(kids.length === 3 && kids.every((k) => k.id.startsWith('nt:')), `${kids.length} notes in the frame (${kids.map((k) => k.id).join(', ')})`);
+    const texts = (await api('entities', { force: true })).filter((e) => kids.some((k) => k.id === e.id)).map((e) => e.preview);
+    assert(['Menu page live', 'Local SEO pages', 'Newsletter feature'].every((t) => texts.some((x) => x.includes(t))), `the notes say what the agent wrote (${texts.join(' | ')})`);
     const arrows = (await api('edges')).filter((e) => e.data.diagram === diagram);
-    assert(arrows.length === 2, `${arrows.length} arrows`);
-    await until(async () => (await page.locator('.edge-text', { hasText: 'then' }).count()) === 1, 'arrow label shown');
-    assert(/Harbor launch plan/.test(await node(diagram).locator('.frame-tab').innerText()), 'frame titled');
+    assert(arrows.length === 2 && arrows.some((e) => e.data.label === 'then'), `${arrows.length} arrows (${JSON.stringify(arrows.map((e) => e.data))})`);
+    // Notes and lines are not shown on the board (v3.14), so neither is a frame holding only them.
+    await page.evaluate(() => window.__sbRefresh());
+    await frame();
+    for (const id of [diagram, ...kids.map((k) => k.id)]) assert((await node(id).count()) === 0, `${id} not drawn`);
+    assert((await page.locator('.react-flow__edge').count()) === 0, 'no arrows drawn');
   });
   await check('Smart group re-sorts the board and keeps agent diagrams', async () => {
     await api('board:save', [{ id: 'grp:manual:old', x: -3000, y: -3000, w: 400, h: 300, parent_id: null, data: { label: 'Old group' } }]);
@@ -834,7 +856,7 @@ async function main() {
     assert((await page.locator('.bt-panel .bt-row', { hasText: 'Codex' }).count()) === 1, 'Codex is offered because there is a Codex account');
     await page.locator('.bt-panel .bt-row', { hasText: 'Coding sessions' }).click();
     await until(async () => (await node(S.crew).count()) === 0, 'coding sessions hidden');
-    assert((await node('nt:n1').count()) === 1, 'notes still shown');
+    assert((await node(GB.mkt).count()) === 1 && (await node(S.desktop).count()) === 1, 'Grok bots and desktop chats still shown');
     assert(((await api('settings:get', 'boardFilter', {})).off || []).includes('coding'), 'filter saved');
     await page.locator('.bt-panel .bt-reset').click();
     await until(async () => (await node(S.crew).count()) === 1, 'shown again');
@@ -901,7 +923,8 @@ async function main() {
       return hit && hit.group === 'Alpha School' && hit.client ? hit : false;
     }, 'the chat sits under Alpha School', 30000);
     const c = topicCalls().pop();
-    assert(/client Alpha School/.test(c.prompt) && /about: Gist: Draft the week 3 lesson plans/.test(c.prompt), 'the topics run read the summary, not the raw chat');
+    // The item line reads "client: Alpha School | … | asked: about: Gist: …" (the v3.10 prompt format).
+    assert(/client: Alpha School/.test(c.prompt) && /about: Gist: Draft the week 3 lesson plans/.test(c.prompt), 'the topics run read the summary, not the raw chat');
     assert(!/Week 3 is drafted/.test(c.prompt), 'and not the raw latest reply');
     assert(t.label, 'in a named project');
   });
@@ -1057,37 +1080,18 @@ async function main() {
 
   await section('Connections and messages between agents');
   let link;
-  await check('draw a line from one card to another', async () => {
+  // Lines can no longer be drawn or switched on the board (v3.14), but auto-send connections are
+  // still kept and followed by the backend.
+  await check('an auto-send connection between two chats is kept in the backend, with no line on the board', async () => {
     await center(S.menu, 0.5);
-    // Put the target in empty space near the source so both handles are on screen.
-    const spot = await emptySpot();
-    await placeCard(S.news, spot.x, spot.y);
-    await center(S.menu, 0.5);
-    const a = await node(S.menu).locator('.react-flow__handle.source').boundingBox();
-    const b = await node(S.news).locator('.react-flow__handle.target').boundingBox();
-    assert(a && b, 'handles visible');
-    await page.mouse.move(a.x + a.width / 2, a.y + a.height / 2); await page.mouse.down();
-    for (let i = 1; i <= 15; i++) await page.mouse.move(a.x + (b.x - a.x) * i / 15, a.y + (b.y - a.y) * i / 15);
-    await page.mouse.move(b.x + b.width / 2, b.y + b.height / 2); await page.mouse.up();
-    link = await until(async () => (await api('edges')).find((e) => e.source === S.menu && e.target === S.news && e.kind === 'link'), 'a saved connection');
-    assert(link.data.autoForward === true, 'a new line sends outputs automatically');
+    const id = await api('edge:save', { source: S.menu, target: S.news, kind: 'link', data: { autoForward: true } });
+    await page.evaluate(() => window.__sbRefresh());
+    link = await until(async () => (await api('edges')).find((e) => e.id === id && e.source === S.menu && e.target === S.news && e.kind === 'link'), 'a saved connection');
+    assert(link.data.autoForward === true && link.data.armedAt, `it sends outputs automatically (${JSON.stringify(link.data)})`);
+    await frame();
+    assert((await page.locator('.react-flow__edge').count()) === 0, 'no line drawn');
   });
-  await check('the line menu switches auto-send off and on', async () => {
-    await until(async () => (await page.locator(`[data-testid="rf__edge-${link.id}"]`).count()) === 1, 'the new line is drawn');
-    await until(async () => (await page.locator(`[data-testid="rf__edge-${link.id}"] path.edge-auto`).count()) >= 1, 'drawn as an auto-send line');
-    await page.evaluate((id) => {
-      const el = document.querySelector(`[data-testid="rf__edge-${id}"] .react-flow__edge-interaction`) || document.querySelector(`[data-testid="rf__edge-${id}"] path`);
-      el.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX: 500, clientY: 300 }));
-    }, link.id);
-    const row = page.locator('.menu button', { hasText: 'Sends outputs automatically' });
-    assert((await row.locator('.board-switch.on').count()) === 1, 'switch shows on');
-    await row.click();
-    await until(async () => (await api('edges')).find((e) => e.id === link.id).data.autoForward === false, 'auto-send off');
-    await row.click();
-    await until(async () => (await api('edges')).find((e) => e.id === link.id).data.autoForward === true, 'auto-send back on');
-    await page.mouse.click(5, 300);
-  });
-  await check('prompting a card replies in place and auto-sends the reply down the line', async () => {
+  await check('prompting a card replies in place and auto-sends the reply along the connection', async () => {
     await sendFromCard(S.menu, 'Add a pastry section');
     await until(async () => /Done \(\.claude\): Add a pastry section/.test(await node(S.menu).innerText()), 'reply shows on the card');
     const first = await until(() => promptCalls().find((c) => /Add a pastry section/.test(c.prompt) && c.args.includes('--resume')), 'Claude Code called with --resume');
@@ -1097,7 +1101,7 @@ async function main() {
     const fwd = await until(() => promptCalls().find((c) => c.configDir && c.configDir.endsWith('.claude-3') && /Done \(\.claude\): Add a pastry section/.test(c.prompt)), 'the reply reached the newsletter session');
     assert(fwd.args.includes(S.news.split(':')[2]), 'forwarded into the newsletter session');
   });
-  await check('a message from Grok Bot (sb send --wait) runs the target, counts on the line and answers back', async () => {
+  await check('a message from Grok Bot (sb send --wait) runs the target, is counted on the connection and answers back', async () => {
     await center(S.crew, 0.6);
     const before = (await api('edges')).find((e) => e.source === 'ac:a_grok' && e.target === S.crew);
     const out = sb('send', S.crew, 'Also handle jobs that span midnight', '--from', 'grok-bot', '--wait');
@@ -1109,12 +1113,14 @@ async function main() {
     const flows = await api('flows', S.crew);
     assert(flows.some((f) => /midnight/.test(f.content) && f.via === 'bus'), 'message logged on the card');
   });
-  await check('a live message between two cards lights the line between them on the board', async () => {
+  await check('a message between two cards (sb log) is logged on both and on their connection, with no line drawn', async () => {
     await center(S.crew, 0.5);
     sb('log', 'Marketing', S.crew, 'Ping from the Marketing bot');
-    const line = await until(async () => (await api('edges')).find((e) => e.source === GB.mkt && e.target === S.crew), 'a line from the Marketing bot card');
-    await until(async () => (await page.locator(`[data-testid="rf__edge-${line.id}"] path.edge-live`).count()) >= 1, 'the line lights up');
-    await until(async () => (await page.locator('.edge-pill.live', { hasText: 'Ping from the Marketing bot' }).count()) === 1, 'with the message on it');
+    const line = await until(async () => (await api('edges')).find((e) => e.source === GB.mkt && e.target === S.crew), 'a connection from the Marketing bot card');
+    assert(line.data.count >= 1 && /Ping from the Marketing bot/.test(line.data.last), `it carries the message (${JSON.stringify(line.data)})`);
+    for (const id of [GB.mkt, S.crew]) assert((await api('flows', id)).some((f) => /Ping from the Marketing bot/.test(f.content) && f.source === GB.mkt && f.target === S.crew), `logged on ${id}`);
+    await frame();
+    assert((await page.locator('.react-flow__edge').count()) === 0, 'no line drawn');
   });
 
   await section('Drag and drop, outputs');
@@ -1564,7 +1570,8 @@ async function main() {
     await until(() => page.evaluate(() => !!document.activeElement && document.activeElement.dataset.testid === 'dock-input'), 'the dock input has the cursor');
     const input = page.getByTestId('dock-input');
     await input.fill('Plan the spring promo'); await input.press('Enter');
-    const c = await until(() => promptCalls().find((x) => /Plan the spring promo/.test(x.prompt)), 'Claude Code called');
+    // Anchored: Smart group's prompts quote the Marketing bot's "Plan the spring promo" too.
+    const c = await until(() => promptCalls().find((x) => /^Plan the spring promo/.test(x.prompt)), 'Claude Code called');
     assert(c.configDir && c.configDir.endsWith('.claude-3') && !c.args.includes('--resume'), `new session on the third account (${c.configDir})`);
   });
   await check('⌘K tags a card as context, and the next new chat (+ → New chat) carries it', async () => {
@@ -1956,12 +1963,6 @@ async function main() {
     await until(async () => (await node(S.news).count()) === 1, 'back on the board');
     await page.locator('.inspector .insp-head button[title="Close"]').click().catch(() => {});
   });
-  await check('a note can be written on the board', async () => {
-    await center('nt:n1');
-    const ta = node('nt:n1').locator('textarea');
-    await ta.fill('Changed in the test'); await ta.blur();
-    await until(async () => /Changed in the test/.test((await api('entities', { force: true })).find((x) => x.id === 'nt:n1').preview), 'note saved');
-  });
 
   // The stand-in claude uses a tool for each "TOOL <Name> <json>" line of a prompt. Given
   // --permission-prompt-tool, it first calls that MCP tool (`sb mcp`'s approve_tool, which asks the
@@ -2098,18 +2099,18 @@ async function main() {
   await notificationChecks();
 
   await section('After a restart');
-  movedTo = await boardRow('nt:n1');
+  movedTo = await boardRow(S.desktop);
   const refreshesBefore = mock.state.tokenRequests.filter((r) => r.grant_type === 'refresh_token').length;
   const groupsBefore = (await api('board')).filter((r) => r.id.startsWith('grp:')).map((r) => r.id).sort().join();
   await quit();
   await launch();
-  await check('card positions, groups and lines are kept', async () => {
-    const r = await boardRow('nt:n1');
-    assert(r && Math.abs(r.x - movedTo.x) < 1 && Math.abs(r.y - movedTo.y) < 1 && r.parent_id === movedTo.parent_id, `note at ${r && r.x},${r && r.y} (was ${movedTo.x},${movedTo.y})`);
+  await check('card positions, groups and connections are kept', async () => {
+    const r = await boardRow(S.desktop);
+    assert(r && Math.abs(r.x - movedTo.x) < 1 && Math.abs(r.y - movedTo.y) < 1 && r.parent_id === movedTo.parent_id, `card at ${r && r.x},${r && r.y} (was ${movedTo.x},${movedTo.y})`);
     assert((await api('board')).filter((x) => x.id.startsWith('grp:')).map((x) => x.id).sort().join() === groupsBefore, `same groups (before ${groupsBefore}; after ${(await api('board')).filter((x) => x.id.startsWith('grp:')).map((x) => x.id).sort().join()})`);
-    assert((await api('edges')).find((e) => e.id === link.id && e.data.autoForward), 'auto-send line kept');
-    await center('nt:n1');
-    assert(/Changed in the test/.test(await node('nt:n1').locator('textarea').inputValue()), 'note text kept');
+    assert((await api('edges')).find((e) => e.id === link.id && e.data.autoForward), 'auto-send connection kept');
+    await center(S.desktop);
+    assert((await page.locator('.react-flow__edge').count()) === 0 && (await page.locator('.react-flow__node-note').count()) === 0, 'still no lines or notes on the board');
   });
   await check('sign-ins are kept and re-checked', async () => {
     await view('Accounts');
@@ -2239,7 +2240,13 @@ async function chatControls() {
     await page.locator('.inspector .insp-head button[title="Close"]').click({ timeout: 1000 }).catch(() => {});
     await page.keyboard.press(mod('k'));
     await page.locator('.palette input').fill(query);
-    await sleep(300); await page.keyboard.press('Enter');
+    // Enter opens the highlighted result, so wait until that is the chat.
+    await until(async () => {
+      const [q, on] = [await page.locator('.palette input').inputValue(), await page.locator('.palette .item.on').innerText().catch(() => '')];
+      if (q === query && title.test(on)) return true;
+      throw new Error(`query "${q}", highlighted "${on.replace(/\s+/g, ' ')}"`);
+    }, `⌘K highlights the chat ${title}`);
+    await page.keyboard.press('Enter');
     await until(async () => (await page.locator('.inspector .title').count()) === 1 && title.test(await page.locator('.inspector .title').innerText()), `opened the chat ${title}`);
   }
 

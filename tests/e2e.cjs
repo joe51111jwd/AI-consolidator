@@ -113,6 +113,8 @@ async function launch() {
   if (process.platform === 'linux') args.unshift('--no-sandbox', '--password-store=basic');
   if (process.platform === 'darwin') args.unshift('--use-mock-keychain');
   app = await _electron.launch({ executablePath: require('electron'), args, env, timeout: 60000 });
+  // SB_APP_LOG=<file> keeps the app's own console output (main process and renderer) for debugging.
+  if (process.env.SB_APP_LOG) { const w = fs.createWriteStream(process.env.SB_APP_LOG, { flags: 'a' }); app.process().stdout.pipe(w); app.process().stderr.pipe(w); }
   page = await app.firstWindow();
   page.setDefaultTimeout(8000);
   page.on('pageerror', (e) => console.log('    [page error]', e.message));

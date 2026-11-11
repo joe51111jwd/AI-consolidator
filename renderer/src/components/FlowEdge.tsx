@@ -1,20 +1,17 @@
 import React from 'react';
-import { BaseEdge, EdgeLabelRenderer, EdgeProps, getBezierPath } from '@xyflow/react';
-import { Zap } from 'lucide-react';
+import { BaseEdge, EdgeLabelRenderer, EdgeProps, getBezierPath, getSmoothStepPath } from '@xyflow/react';
 import { useStore } from '../lib/store';
 import { colorOf } from '../lib/format';
 
-// A line between two cards. Auto-forwarding lines carry a slow drifting dash; when a message
-// travels, the line takes the sender's colour and a dot runs along it.
-// Related lines (a meeting or thread to the latest chat in its frame) are drawn faint and do nothing.
+// A line between two cards: when a message travels, the line takes the sender's colour and a dot runs along it.
 export default function FlowEdge(p: EdgeProps) {
-  if ((p.data as any)?.related) return <RelatedEdge {...p} />;
   return <LinkEdge {...p} />;
 }
 
-function RelatedEdge(p: EdgeProps) {
-  const [path] = getBezierPath(p);
-  return <BaseEdge id={p.id} path={path} className="edge-related" interactionWidth={0} />;
+// The board's flowchart: thin grey elbow lines from a client to its projects and from a project to its chats.
+export function TreeEdge(p: EdgeProps) {
+  const [path] = getSmoothStepPath({ ...p, borderRadius: 10, offset: 18 });
+  return <BaseEdge id={p.id} path={path} className="edge-tree" interactionWidth={0} />;
 }
 
 function LinkEdge(p: EdgeProps) {
@@ -37,7 +34,6 @@ function LinkEdge(p: EdgeProps) {
       <EdgeLabelRenderer>
         <div className="edge-label nodrag nopan" style={{ left: lx, top: ly }}>
           {live ? <span className="edge-pill live" style={{ background: color }}>{live.preview || 'Sending…'}</span>
-            : auto ? <span className="edge-bolt" title="Sends outputs automatically"><Zap size={10} /></span>
             : d.label ? <span className="edge-text">{d.label}</span> : null}
         </div>
       </EdgeLabelRenderer>

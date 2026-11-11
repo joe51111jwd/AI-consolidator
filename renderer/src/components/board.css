@@ -396,3 +396,15 @@
 .board .react-flow__edge:has(.edge-related) { pointer-events: none; }
 .bt-week { padding: 0 12px 0 10px; }
 .bt-btn:disabled { opacity: .55; cursor: default; }
+
+/* Flowchart: client and project pills, thin grey tree lines; nobody draws lines by hand. */
+/* Lines between chats are there when you want them, not the focus: the dots only show on hover. */
+.board .react-flow__handle { opacity: 0; width: 9px; height: 9px; border: 2px solid #fff; background: #A1A1AA; transition: opacity .15s; }
+.board .react-flow__node:hover .react-flow__handle, .board .react-flow__handle.connectingfrom, .board .react-flow__handle.connectingto { opacity: 1; }
+.board .react-flow__node-project-pill { cursor: default; pointer-events: none; }
+.board .project-pill { height: 34px; display: flex; align-items: center; gap: 8px; padding: 0 14px; border-radius: 999px; background: #FFFFFF; border: 1px solid #E4E4E7; color: #3F3F46; font-size: 12.5px; font-weight: 500; white-space: nowrap; overflow: hidden; box-sizing: border-box; }
+.board .project-pill span { overflow: hidden; text-overflow: ellipsis; flex: 1; min-width: 0; }
+.board .project-pill i { font-style: normal; font-size: 11px; color: #A1A1AA; }
+.board .project-pill.client { background: #18181B; border-color: #18181B; color: #FFFFFF; font-weight: 600; }
+.board .edge-tree { stroke: #D4D4D8 !important; stroke-width: 1.2px !important; pointer-events: none; }
+.board .react-flow__edge:has(.edge-tree) { pointer-events: none; }

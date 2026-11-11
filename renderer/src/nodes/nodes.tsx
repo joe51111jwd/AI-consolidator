@@ -1,11 +1,10 @@
 import React, { memo, useEffect, useRef, useState } from 'react';
 import { Handle, Position, NodeResizer, NodeProps } from '@xyflow/react';
-import { GripVertical, FolderGit2, FileText, StickyNote, AlertTriangle, Target, Play, Clock, UserRound, MessageSquare, Zap, Wrench, Plug, Bot, Info, GitPullRequest, EyeOff, MessageSquarePlus, Send } from 'lucide-react';
+import { GripVertical, FolderGit2, FileText, StickyNote, AlertTriangle, MessageSquare, Zap, Wrench, Plug, Bot, Info, GitPullRequest, EyeOff, MessageSquarePlus } from 'lucide-react';
 import { useStore } from '../lib/store';
 import { useShallow } from 'zustand/react/shallow';
 import { api, BoardRow, Entity } from '../lib/api';
-import { ago, tokens, md, SOURCE, dueLabel, categoryOf, baseName, colorOf, PROMPTABLE } from '../lib/format';
-import { sendPrompt } from '../lib/send';
+import { ago, tokens, md, SOURCE, dueLabel, categoryOf, baseName, colorOf } from '../lib/format';
 import Composer from '../components/Composer';
 import { AgentLogo } from '../components/Logos';
 import { GrokAvatar, GroupAvatar, botLook } from '../components/GrokAvatar';
@@ -509,13 +508,6 @@ export const OutputNode = memo(({ id, selected }: NodeProps) => {
   );
 });
 
-const REPEATS = ['off', '15m', '1h', 'daily'] as const;
-const REPEAT_LABEL: Record<string, string> = { '15m': 'Every 15 min', '1h': 'Every hour', daily: 'Daily 9am' };
-type Sched = { every: string; next: number | null };
-const clock = (t: number) => new Date(t).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
-
-type LinkMode = 'instruction' | 'once' | 'linked';
-
 // Starts a new chat with the note's text and parks the new session card beside the note once it shows up.
 async function startChatFromNote(noteId: string, accountId: string, text: string) {
   const st = useStore.getState();
@@ -539,52 +531,19 @@ export const NoteNode = memo(({ id, selected }: NodeProps) => {
   const e = useEntity(id); const [text, setText] = useState(e?.preview || '');
   const ref = useRef<HTMLTextAreaElement>(null);
   const focused = useRef(false); const saved = useRef(e?.preview || ''); const timer = useRef<any>(null);
-  const [sched, setSched] = useState<Sched | null>(null);
-  const link = useStore((s) => s.edges.find((x) => x.source === id && PROMPTABLE(x.target)));
-  const target = useStore((s) => (link ? s.byId[link.target]?.title || 'agent' : ''));
-  const mode: LinkMode = link ? (link.data?.mode || (link.data?.instruction === false ? 'linked' : 'instruction')) : 'linked';
-  const linked = !!link && mode === 'instruction';
   const [picking, setPicking] = useState(false);
   const claude = useStore(useShallow((s) => s.accounts.filter((a) => a.kind === 'claude-code').map((a) => `${a.id}\t${a.label}`)));
   const wheel = useEditWheel();
   useEffect(() => { if (!focused.current && e && e.preview !== saved.current) { saved.current = e.preview || ''; setText(saved.current); } }, [e?.preview]);
   useEffect(() => { if (focusNext === id && ref.current) { focusNext = null; ref.current.focus(); } });
-  useEffect(() => {
-    const load = () => api.call<Record<string, Sched>>('recurring:list').then((m) => setSched(m?.[id] || null)).catch(() => {});
-    load(); const t = setInterval(load, 60000);
-    return () => { clearInterval(t); clearTimeout(timer.current); };
-  }, [id]);
+  useEffect(() => () => clearTimeout(timer.current), [id]);
   if (!e) return <Gone />;
   const save = (v: string) => { clearTimeout(timer.current); if (v === saved.current) return; saved.current = v; api.saveNote({ id, text: v }); };
-  const cycle = async () => {
-    const cur = sched?.every || 'off';
-    const nxt = REPEATS[(REPEATS.indexOf(cur as any) + 1) % REPEATS.length];
-    const m = await api.call<Record<string, Sched>>('recurring:set', id, nxt).catch(() => null);
-    setSched(m?.[id] || null);
-  };
-  const repeating = !!sched && sched.every !== 'off';
-  const sendOnce = () => { if (link && text.trim()) sendPrompt(link.target, text.trim()).then(() => useStore.getState().notify(`Sent to ${target}`)).catch((err) => useStore.getState().notify(err.message)); };
-  const setMode = async (m: LinkMode) => {
-    if (!link) return;
-    await api.saveEdge({ ...link, kind: 'link', data: { ...link.data, mode: m, instruction: m === 'instruction', label: m === 'instruction' ? 'Instruction' : undefined } });
-    await useStore.getState().refreshBoard();
-    if (m === 'once') sendOnce();
-  };
   const startChat = (aid: string) => { setPicking(false); if (text.trim()) startChatFromNote(id, aid, text.trim()); };
   return (
     <Card id={id} selected={selected} className="note-card" minW={180} minH={100}>
       <div className="card-top">
         <span className="src"><StickyNote size={13} /><span className="src-name">Note</span></span>
-        {repeating ? <span className="note-badge">Repeats</span> : link ? (
-          <span className="note-link nodrag" title={target}>
-            <select value={mode} onChange={(ev) => setMode(ev.target.value as LinkMode)} onClick={(ev) => ev.stopPropagation()}>
-              <option value="linked">Just linked</option>
-              <option value="instruction">Instruction</option>
-              <option value="once">Send once</option>
-            </select>
-            {mode === 'once' && <button onClick={(ev) => { ev.stopPropagation(); sendOnce(); }} title={`Send to ${target} again`}><Send size={11} /></button>}
-          </span>
-        ) : null}
         {claude.length > 0 && (picking ? (
           <select className="note-chat nodrag" autoFocus value="" onChange={(ev) => startChat(ev.target.value)} onBlur={() => setPicking(false)} onClick={(ev) => ev.stopPropagation()}>
             <option value="" disabled>Start chat on…</option>
@@ -593,17 +552,12 @@ export const NoteNode = memo(({ id, selected }: NodeProps) => {
         ) : (
           <button className="note-clock nodrag" disabled={!text.trim()} onClick={(ev) => { ev.stopPropagation(); if (claude.length === 1) startChat(claude[0].split('\t')[0]); else setPicking(true); }} title="Start chat from this"><MessageSquarePlus size={12} /></button>
         ))}
-        <button className={`note-clock nodrag ${repeating ? 'on' : ''}`} onClick={cycle}
-          title={repeating ? `${REPEAT_LABEL[sched!.every]} — click to change` : 'Repeat: send this note to the connected agent on a schedule'}>
-          <Clock size={12} />{repeating && <span>{REPEAT_LABEL[sched!.every]}</span>}
-        </button>
       </div>
       <textarea ref={ref} className={`nodrag ${wheel.cls}`} value={text} placeholder="Write something…"
         onFocus={(ev) => { focused.current = true; wheel.check(ev.currentTarget); }}
         onChange={(ev) => { const v = ev.target.value; setText(v); wheel.check(ev.currentTarget); clearTimeout(timer.current); timer.current = setTimeout(() => save(v), 500); }}
         onBlur={() => { focused.current = false; wheel.clear(); save(text); }}
         onKeyDown={(ev) => { if (ev.key === 'Escape') ev.currentTarget.blur(); if (!ev.metaKey && !ev.ctrlKey) ev.stopPropagation(); }} />
-      {repeating && sched!.next && <div className="note-next">{linked ? `Next run ${clock(sched!.next)}` : 'Draw a line to an agent to run it'}</div>}
     </Card>
   );
 });
@@ -623,22 +577,16 @@ function saveGroup(id: string, patch: Partial<BoardRow>, data: Record<string, an
   return api.saveBoard([row]);
 }
 
-// A frame: soft tinted area with a name tab on its top edge and an optional goal the cards inside work toward.
+// A frame: soft tinted area with a name tab on its top edge.
 export const GroupNode = memo(({ id, data, selected }: NodeProps) => {
   const d: any = data;
   const [label, setLabel] = useState(d.label || 'Group');
   const [editing, setEditing] = useState(false);
-  const [goal, setGoal] = useState(d.goal || '');
-  const [editGoal, setEditGoal] = useState(false);
   const input = useRef<HTMLInputElement>(null);
   const cancel = useRef(false);
-  const [pickAcc, setPickAcc] = useState(false);
-  const claude = useStore(useShallow((s) => s.accounts.filter((a) => a.kind === 'claude-code').map((a) => `${a.id}\t${a.label}`)));
-  const hasClaude = useStore((s) => s.board.some((r) => r.parent_id === id && !r.hidden && s.byId[r.id]?.source === 'claude-code' && s.byId[r.id]?.kind === 'session'));
   const seen = useSeen((s) => s.seen); const base = useSeen((s) => s.base);
   const need = useStore((s) => s.board.filter((r) => r.parent_id === id && !r.hidden && needsAttention(s.byId[r.id], s.liveByEntity[r.id], seen[r.id] ?? base)).length);
   useEffect(() => { if (!editing) setLabel(d.label || 'Group'); }, [d.label]);
-  useEffect(() => { if (!editGoal) setGoal(d.goal || ''); }, [d.goal]);
   useEffect(() => { if (editing) { input.current?.focus(); input.current?.select(); } }, [editing]);
 
   const commit = () => {
@@ -646,25 +594,11 @@ export const GroupNode = memo(({ id, data, selected }: NodeProps) => {
     if (cancel.current) { cancel.current = false; setLabel(d.label || 'Group'); return; }
     const v = label.trim() || 'Group'; setLabel(v); if (v !== d.label) saveGroup(id, {}, { label: v });
   };
-  const commitGoal = () => {
-    setEditGoal(false);
-    if (cancel.current) { cancel.current = false; setGoal(d.goal || ''); return; }
-    const v = goal.trim(); setGoal(v); if (v !== (d.goal || '')) saveGroup(id, {}, { goal: v });
-  };
   const keys = (ev: React.KeyboardEvent<HTMLInputElement>) => {
     ev.stopPropagation();
     if (ev.key === 'Escape') cancel.current = true;
     if (ev.key === 'Enter' || ev.key === 'Escape') ev.currentTarget.blur();
   };
-  const work = async () => {
-    const s = useStore.getState();
-    const targets = s.board.filter((r) => r.parent_id === id && !r.hidden && s.byId[r.id] && PROMPTABLE(r.id)).map((r) => r.id);
-    if (!targets.length) { s.notify('No agents in this group'); return; }
-    const text = `Goal for "${label}": ${goal}\n\nDo your part toward this goal, then reply with a short update.`;
-    await Promise.all(targets.map((t) => sendPrompt(t, text, d.accountId ? { accountId: d.accountId } : {}).catch(() => null)));
-    s.notify('Goal sent to the group');
-  };
-
   return (
     <div className="frame" style={{ ['--g' as any]: d.color || '#71717A' }}>
       <NodeResizer isVisible={selected} minWidth={240} minHeight={140} lineClassName="frame-resize-line" handleClassName="frame-resize-handle"
@@ -675,26 +609,19 @@ export const GroupNode = memo(({ id, data, selected }: NodeProps) => {
           <input ref={input} className="nodrag" value={label} size={Math.max(4, label.length + 1)} onChange={(ev) => setLabel(ev.target.value)} onBlur={commit} onKeyDown={keys} />
         ) : <span className="name">{label}</span>}
         {need > 0 && <span className="frame-attn" title={`${need} need${need === 1 ? 's' : ''} you`}>{need}</span>}
-        {claude.length > 0 && hasClaude && (d.accountId || pickAcc ? (
-          <select className="frame-acc nodrag" value={d.accountId || ''} title="Agents in this frame run on this account" autoFocus={pickAcc && !d.accountId}
-            onChange={(ev) => { setPickAcc(false); saveGroup(id, {}, { accountId: ev.target.value || null }); }} onBlur={() => setPickAcc(false)} onClick={(ev) => ev.stopPropagation()}>
-            <option value="">No account</option>
-            {claude.map((c) => { const [aid, l] = c.split('\t'); return <option key={aid} value={aid}>{l}</option>; })}
-          </select>
-        ) : (
-          <button className="frame-acc-add nodrag" title="Dedicate this frame to an account" onClick={(ev) => { ev.stopPropagation(); setPickAcc(true); }}><UserRound size={11} /></button>
-        ))}
       </div>
-      <div className="frame-goal nodrag">
-        {editGoal ? (
-          <span className="goal-edit"><Target size={12} /><input autoFocus value={goal} placeholder="What should this group get done?" onChange={(ev) => setGoal(ev.target.value)} onBlur={commitGoal} onKeyDown={keys} /></span>
-        ) : goal ? (<>
-          <button className="goal-text" onClick={() => setEditGoal(true)} title="Edit goal"><Target size={12} /><span>{goal}</span></button>
-          <button className="goal-go" onClick={work} title="Sends this goal to every agent in the frame"><Play size={10} />Send goal to agents</button>
-        </>) : (
-          <button className={`goal-add ${selected ? 'on' : ''}`} onClick={() => setEditGoal(true)}><Target size={12} />Goal</button>
-        )}
-      </div>
+    </div>
+  );
+});
+
+// A client or project label in a frame's flowchart. Drawn from the frame's layout, never saved or opened.
+export const ProjectPillNode = memo(({ data }: NodeProps) => {
+  const d: any = data;
+  return (
+    <div className={`project-pill ${d.level === 'client' ? 'client' : ''}`} title={d.label}>
+      <Handles />
+      <span>{d.label}</span>
+      {d.count > 1 && <i>{d.count}</i>}
     </div>
   );
 });
@@ -703,5 +630,5 @@ function Gone() { return <div className="card gone" style={{ width: 220 }}><div 
 
 export const nodeTypes = {
   session: SessionNode, account: AccountNode, project: ProjectNode, meeting: MeetingNode, thread: ThreadNode,
-  client: ClientNode, output: OutputNode, note: NoteNode, error: ErrorNode, group: GroupNode,
+  client: ClientNode, output: OutputNode, note: NoteNode, error: ErrorNode, group: GroupNode, 'project-pill': ProjectPillNode,
 };

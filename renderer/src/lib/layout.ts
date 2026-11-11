@@ -297,3 +297,99 @@ export function unoverlap(nodes: SettleNode[], board: BoardRow[]): BoardRow[] {
   }
   return out;
 }
+
+// ---------- the flowchart week board ----------
+// What the week board shows: this week's chats, meetings and mail (or anything running or waiting on you),
+// plus notes and outputs from this week. Account cards and older notes stay off it.
+export function onWeekBoard(e: Entity, now = Date.now()) {
+  if (e.kind === 'account' || e.kind === 'client' || e.kind === 'project' || e.kind === 'error') return false;
+  if (e.status === 'running' || e.status === 'waiting') return true;
+  if (e.kind === 'note' || e.kind === 'output') return now - (e.meta?.createdAt || e.updatedAt) < 7 * DAY;
+  return true;
+}
+export const OLD_FRAMES = new Set(['agents', 'notes', 'other']);
+
+export interface WeekProject { id: string; label: string; ids: string[] }
+export interface WeekClient { id: string; label: string; projects: WeekProject[] }
+export interface TreeData { client: { x: number; y: number }; projects: (WeekProject & { x: number; y: number })[] }
+
+export const PILL_W = 168, PILL_H = 34;
+const LANE = 56, PER_ROW = 3, TREE_GAP = 140, TREE_MAXW = 3600;
+
+// Accepts the `clients` hierarchy from topics:get in a few likely shapes; empty when absent.
+export function parseClients(raw: any): WeekClient[] {
+  if (!Array.isArray(raw)) return [];
+  const str = (v: any, d: string) => (typeof v === 'string' && v.trim() ? v.trim().slice(0, 60) : d);
+  return raw.map((c: any, i: number): WeekClient => {
+    const list = Array.isArray(c?.projects) ? c.projects : Array.isArray(c?.topics) ? c.topics : [];
+    const projects = list.map((p: any, j: number) => ({ id: str(p?.id, `p${j}`), label: str(p?.label ?? p?.name, 'Project'), ids: Array.isArray(p?.ids) ? p.ids.filter((x: any) => typeof x === 'string') : [] }));
+    return { id: str(c?.id, `c${i}`), label: str(c?.label ?? c?.name, 'Client'), projects };
+  }).filter((c) => c.projects.length);
+}
+
+// One frame per client, laid out as a small flowchart: client pill, then a pill per project,
+// then that project's chats in rows to its right. Frames pack left to right with wide gaps.
+export function treeLayout(clients: WeekClient[], heightOf: (id: string) => number): { rows: BoardRow[]; bottom: number } {
+  const rows: BoardRow[] = [];
+  let x = 0, y = 0, shelf = 0;
+  clients.forEach((c, ci) => {
+    const projects = c.projects.filter((p) => p.ids.length);
+    if (!projects.length) return;
+    const gid = `grp:smart:${slug(c.label)}-${ci}`;
+    const px = PAD + PILL_W + LANE, cx = px + PILL_W + LANE;
+    let cy = HEAD + 8;
+    const tree: TreeData = { client: { x: PAD, y: 0 }, projects: [] };
+    for (const p of projects) {
+      const top = cy;
+      let firstH = 0;
+      for (let r = 0; r * PER_ROW < p.ids.length; r++) {
+        const row = p.ids.slice(r * PER_ROW, (r + 1) * PER_ROW);
+        const rh = Math.max(...row.map(heightOf));
+        if (!r) firstH = rh;
+        row.forEach((id, k) => rows.push({ id, x: cx + k * COL, y: cy, parent_id: gid, data: {} }));
+        cy += rh + GUTTER;
+      }
+      tree.projects.push({ ...p, x: px, y: top + (firstH - PILL_H) / 2 });
+      cy += GUTTER * 2;
+    }
+    const ys = tree.projects.map((p) => p.y);
+    tree.client.y = (Math.min(...ys) + Math.max(...ys)) / 2;
+    const most = Math.min(PER_ROW, Math.max(...projects.map((p) => p.ids.length)));
+    const w = cx + most * COL - GUTTER + PAD;
+    const h = cy - GUTTER * 3 + PAD;
+    if (x > 0 && x + w > TREE_MAXW) { x = 0; y += shelf + TREE_GAP; shelf = 0; }
+    rows.push({ id: gid, x, y, w, h, parent_id: null, data: { label: c.label, color: PALETTE[ci % PALETTE.length], smart: true, topic: c.id, tree } });
+    x += w + TREE_GAP; shelf = Math.max(shelf, h);
+  });
+  return { rows, bottom: y + shelf };
+}
+
+// Builds the client → project hierarchy for this week's cards, what needs you first.
+// Without a hierarchy, each topic becomes its own client with one project; uncovered cards
+// go to a "This week" frame split by the quick grouping.
+export function weekClients(ids: string[], clients: WeekClient[], topics: WeekTopic[], byId: Record<string, Entity>, f: WeekFlags): WeekClient[] {
+  const want = new Set(ids.filter((id) => byId[id])), used = new Set<string>();
+  const src: WeekClient[] = clients.length ? clients : topics.map((t) => ({ id: t.id, label: t.label, projects: [{ id: t.id, label: t.label, ids: t.ids }] }));
+  const at = (id: string) => byId[id]?.updatedAt || 0;
+  const score = (id: string) => (f.attn(id) ? 2 : 0) + (f.running(id) ? 1 : 0);
+  const sortIds = (l: string[]) => [...l].sort((a, b) => score(b) - score(a) || at(b) - at(a));
+  const out: WeekClient[] = [];
+  for (const c of src) {
+    const projects = c.projects.map((p) => {
+      const mine = sortIds(p.ids.filter((id) => want.has(id) && !used.has(id)));
+      mine.forEach((id) => used.add(id));
+      return { ...p, ids: mine };
+    }).filter((p) => p.ids.length);
+    if (projects.length) out.push({ ...c, projects });
+  }
+  const rest = [...want].filter((id) => !used.has(id));
+  if (rest.length) {
+    const groups = heuristicGroups(rest.map((id) => byId[id]), byId);
+    out.push({ id: 'week', label: 'This week', projects: groups.map((g, i) => ({ id: `h${i}`, label: g.label, ids: sortIds(g.ids) })) });
+  }
+  const rank = (c: WeekClient) => {
+    const all = c.projects.flatMap((p) => p.ids);
+    return [Number(all.some(f.attn)), Number(all.some(f.running)), Math.max(0, ...all.map(at))];
+  };
+  return out.map((c) => ({ c, r: rank(c) })).sort((a, b) => b.r[0] - a.r[0] || b.r[1] - a.r[1] || b.r[2] - a.r[2]).map(({ c }) => c);
+}

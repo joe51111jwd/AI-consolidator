@@ -1,10 +1,10 @@
 'use strict';
-// Topics: the home sorts what you have going on this week by what it is about ("Harbor Coffee site",
-// "Outreach"), not by which app it lives in. Besides chats, a topic holds the week's Granola
-// meetings, Gmail threads waiting on your reply, clients with work this week and outputs, each next
-// to the chats for the same client or project. A rule of thumb answers at once; Claude (no tools,
-// no user hooks, least-used account, run inside ~/.switchboard so it never shows up as a chat)
-// refines it in the background when the set of items changes.
+// Topics: the home sorts what you have going on this week by what the work is about, as a tree:
+// clients (or, for work with no client, an area such as "Switchboard app") holding projects, each
+// project holding the chats, meetings and emails working on the same thing. `topics` stays the flat
+// list of projects; `clients` is the tree. A rule of thumb answers at once; Claude (no tools, no
+// user hooks, least-used account, run inside ~/.switchboard so it never shows up as a chat)
+// refines it in the background from what each chat asked and answered, when the set changes.
 const path = require('path');
 const hub = require('../hub.cjs');
 const db = require('../db.cjs');
@@ -28,9 +28,10 @@ const KEYWORDS = [
   [/trad(e|ing)|market|polymarket|stock|crypto/i, 'Markets'],
 ];
 // Where an item that matches nothing else goes, by kind.
-const FALLBACK = { meeting: 'Meetings', thread: 'Inbox', output: 'Outputs' };
+const FALLBACK = { meeting: 'Meetings', thread: 'Inbox' };
+const NO_AREA = 'Other work';
 // How each kind is labelled for Claude.
-const KIND_TAG = { meeting: 'meeting', thread: 'email waiting on my reply', client: 'client', output: 'output' };
+const KIND_TAG = { meeting: 'meeting', thread: 'email waiting on my reply' };
 
 let sendFn = null;
 let inflight = null;
@@ -60,39 +61,20 @@ function needsReply(e) {
   return !m.lastFromMe && (!m.participants || m.participants.some((p) => !NO_REPLY.test(p)));
 }
 
-function overdue(c, now = Date.now()) {
-  const d = c.due ? Date.parse(c.due) : NaN;
-  return !!c.next_action && Number.isFinite(d) && d < now - DAY + 1;
-}
-function dueThisWeek(c, now = Date.now()) {
-  const d = c.due ? Date.parse(c.due) : NaN;
-  return !!c.next_action && Number.isFinite(d) && d <= now + WINDOW;
-}
-
-// Everything on the home this week: chats touched in the last 7 days (or running / waiting),
-// meetings from the last 7 days (and the coming week), threads waiting on a reply, outputs, and the
-// clients any of those belong to or that have something due.
-function gather(all, clients, now = Date.now()) {
+// The work on the home this week: chats touched in the last 7 days (or running / waiting), meetings
+// from the last 7 days (and the coming week) and threads waiting on a reply. Notes, outputs, client
+// and account cards are not work in progress and stay out.
+function gather(all, now = Date.now()) {
   const since = now - WINDOW;
   const chats = all.filter((e) => e.kind === 'session' && !(e.meta && e.meta.archived) && !isNoise(e)
     && ((e.updatedAt || 0) >= since || isLive(e)));
   const meetings = all.filter((e) => e.kind === 'meeting' && meetingAt(e) >= since && meetingAt(e) <= now + WINDOW);
   const threads = all.filter((e) => needsReply(e) && (e.updatedAt || 0) >= since);
-  const outputs = all.filter((e) => e.kind === 'output' && (e.updatedAt || 0) >= since);
-  const base = [...chats, ...meetings, ...threads, ...outputs];
-  const used = new Set(base.map((e) => clientOf(e, clients)).filter(Boolean));
-  const cards = all.filter((e) => {
-    if (e.kind !== 'client') return false;
-    const c = (e.meta && e.meta.client) || {};
-    if (c.status === 'done' || c.status === 'lost') return false;
-    return used.has(clientLabel(c)) || dueThisWeek(c, now) || (c.created_at || 0) >= since;
-  });
-  return [...base, ...cards];
+  return [...chats, ...meetings, ...threads];
 }
 
 async function current() {
-  const clients = hub.clients();
-  return { list: gather(await hub.entities(), clients), clients };
+  return { list: gather(await hub.entities()), clients: hub.clients() };
 }
 
 const keyOf = (list) => list.map((e) => e.id).sort().join('|');
@@ -120,7 +102,7 @@ function clientOf(e, clients) {
   const emails = e.kind === 'meeting' ? (m.attendees || []).map((a) => a && a.email) : e.kind === 'thread' ? m.participants || [] : [];
   const hit = clients.find((c) => emails.some((x) => matches(c, x)));
   if (hit) return clientLabel(hit);
-  return namedClient(`${e.title || ''} ${e.kind === 'output' ? '' : e.preview || ''}`, clients);
+  return namedClient(`${e.title || ''} ${e.preview || ''}`, clients);
 }
 
 function folderOf(e) {
@@ -137,32 +119,27 @@ function keywordOf(e) {
   return hit ? hit[1] : null;
 }
 
-// Chats: client, then project folder, then a Grok bot as its own hub, then words in the title.
-function placeOf(e, clients) {
-  const client = clientOf(e, clients);
-  if (client) return client;
+// The project a chat belongs to: its folder, a Grok bot by its name, else words in its title.
+function projectOf(e, clients) {
   const folder = folderOf(e);
   if (folder) return folder;
   if (e.source === 'grok-bot') return e.title || 'Grok bot';
-  return keywordOf(e) || 'Other';
+  return keywordOf(e) || clientOf(e, clients) || 'Other';
 }
 
-// Meetings, threads and outputs: client, then the chat it came from (outputs), then a topic the
-// chats already have whose name is in the title, then words in the title, then a home of its kind.
-function placeOther(e, clients, labels, placed) {
-  const client = clientOf(e, clients);
-  if (client) return client;
-  const from = e.meta && e.meta.from;
-  if (from && placed.has(from)) return placed.get(from);
+// Meetings and threads: the project of a chat for the same client, then a project named in the
+// title, then words in the title, then a home of their kind.
+function projectOther(e, client, projects) {
+  const mine = projects.filter((p) => p.group === client);
+  if (client && mine.length === 1) return mine[0].label;
   const t = words(e.title);
-  const named = labels.find((l) => l.length >= 4 && !/^(other|outputs|inbox|meetings)$/i.test(l) && t.includes(words(l)));
-  if (named) return named;
-  return keywordOf(e) || FALLBACK[e.kind] || 'Other';
+  const named = projects.find((p) => p.label.length >= 4 && (!client || p.group === client) && t.includes(words(p.label)));
+  if (named) return named.label;
+  return client || keywordOf(e) || FALLBACK[e.kind] || 'Other';
 }
 
 function summaryOf(items) {
-  const rank = (e) => (e.kind === 'session' ? 2 : e.kind === 'client' ? 0 : 1);
-  const sorted = [...items].sort((a, b) => Number(isLive(b)) - Number(isLive(a)) || rank(b) - rank(a) || (b.updatedAt || 0) - (a.updatedAt || 0));
+  const sorted = [...items].sort((a, b) => Number(isLive(b)) - Number(isLive(a)) || Number(b.kind === 'session') - Number(a.kind === 'session') || (b.updatedAt || 0) - (a.updatedAt || 0));
   const lead = sorted[0];
   if (!lead) return '';
   const working = items.filter(isRunning).length;
@@ -170,20 +147,45 @@ function summaryOf(items) {
   return working ? `${working} working · latest: ${what}` : `Last: ${what}`;
 }
 
+const topicId = (group, label) => `t:${slug(group)}:${slug(label)}`;
+
+// Rules: the client by email, domain, folder or name; the project by folder, bot or title words;
+// work with no client goes under the area its projects' words point to.
 function heuristic(list, clients) {
-  const groups = new Map();
-  const placed = new Map();
-  const add = (e, label) => {
-    const g = groups.get(label) || { label, items: [] };
-    g.items.push(e); groups.set(label, g); placed.set(e.id, label);
+  const projects = new Map();
+  const add = (e, group, label, client) => {
+    const id = topicId(group, label);
+    const p = projects.get(id) || { id, label, group, client, items: [] };
+    p.items.push(e); projects.set(id, p);
   };
-  const isChat = (e) => e.kind === 'session';
-  for (const e of list.filter(isChat)) add(e, placeOf(e, clients));
-  for (const e of list.filter((x) => x.kind === 'client')) add(e, clientLabel(e.meta.client));
-  const labels = [...groups.keys()];
-  for (const e of list.filter((x) => !isChat(x) && x.kind !== 'client' && x.kind !== 'output')) add(e, placeOther(e, clients, labels, placed));
-  for (const e of list.filter((x) => x.kind === 'output')) add(e, placeOther(e, clients, labels, placed));
-  return [...groups.values()].map((g) => ({ id: `t:${slug(g.label)}`, label: g.label, summary: summaryOf(g.items), ids: g.items.map((e) => e.id) }));
+  for (const e of list.filter((x) => x.kind === 'session')) {
+    const client = clientOf(e, clients);
+    const label = client && !folderOf(e) && e.source !== 'grok-bot' ? client : projectOf(e, clients);
+    if (client) add(e, client, label, true);
+    else add(e, keywordOf(e) || NO_AREA, label, false);
+  }
+  const chatProjects = [...projects.values()];
+  for (const e of list.filter((x) => x.kind !== 'session')) {
+    const client = clientOf(e, clients);
+    const label = projectOther(e, client, chatProjects);
+    const home = chatProjects.find((p) => p.label === label && (!client || p.group === client));
+    if (home) add(e, home.group, label, home.client);
+    else add(e, client || keywordOf(e) || FALLBACK[e.kind] || NO_AREA, label, !!client);
+  }
+  return [...projects.values()].map((p) => ({ id: p.id, label: p.label, group: p.group, client: p.client, summary: summaryOf(p.items), ids: p.items.map((e) => e.id) }));
+}
+
+// The flat projects as the client / area tree, biggest first.
+function tree(topics) {
+  const groups = new Map();
+  for (const t of topics) {
+    const id = `c:${slug(t.group || NO_AREA)}`;
+    const g = groups.get(id) || { id, label: t.group || NO_AREA, client: !!t.client, projects: [] };
+    g.projects.push({ id: t.id, label: t.label, summary: t.summary, ids: t.ids });
+    groups.set(id, g);
+  }
+  const size = (g) => g.projects.reduce((n, p) => n + p.ids.length, 0);
+  return [...groups.values()].sort((a, b) => Number(b.client) - Number(a.client) || size(b) - size(a));
 }
 
 // What each topic holds right now: how many items are working, how many need you, and by kind.
@@ -193,7 +195,7 @@ function decorate(topics, list) {
     const items = t.ids.map((id) => byId.get(id)).filter(Boolean);
     const kinds = {};
     for (const e of items) { const k = e.kind === 'session' ? 'chat' : e.kind; kinds[k] = (kinds[k] || 0) + 1; }
-    const needsYou = items.filter((e) => e.status === 'waiting' || needsReply(e) || (e.kind === 'client' && overdue(e.meta.client))).length;
+    const needsYou = items.filter((e) => e.status === 'waiting' || needsReply(e)).length;
     return { ...t, summary: t.summary || summaryOf(items), counts: { working: items.filter(isRunning).length, needsYou }, kinds };
   });
 }
@@ -210,41 +212,56 @@ function leastUsedAccount() {
 // Parentheses and commas separate the details Claude reads, so they are kept out of the values.
 const bit = (s, n = 60) => truncate(String(s || '').replace(/[(),]/g, ' ').replace(/\s+/g, ' ').trim(), n);
 
+// What a chat is about: its first real prompt and the latest reply, from the transcript when it can
+// be read, else from the card.
+function contentOf(e) {
+  const m = e.meta || {};
+  let first = e.title || '', last = (m.activity && typeof m.activity === 'object' ? m.activity.text : m.activity) || e.preview || '';
+  if (m.file && (e.source === 'claude-code' || e.source === 'claude-app')) {
+    try {
+      const s = claudeCode.parseSession(m.file);
+      const ask = s.messages.find((x) => x.role === 'user' && !x.kind && String(x.text || '').trim().length > 3);
+      const reply = [...s.messages].reverse().find((x) => x.role === 'assistant' && (!x.kind || x.kind === 'recap'));
+      if (ask) first = ask.text;
+      if (reply) last = reply.text;
+    } catch {}
+  }
+  const flat = (t) => String(t || '').replace(/\s+/g, ' ').trim();
+  return { first: truncate(flat(first), 300), last: truncate(flat(last), 300) };
+}
+
 function describe(e, i, clients) {
   const m = e.meta || {};
   const client = clientOf(e, clients);
-  let bits, latest;
+  let bits, body;
   if (e.kind === 'session') {
-    const act = m.activity && typeof m.activity === 'object' ? m.activity.text : m.activity;
+    const c = contentOf(e);
     bits = [e.source, folderOf(e) ? `folder ${bit(folderOf(e))}` : '', client ? `client ${bit(client)}` : '', isLive(e) ? String(e.status || 'running') : ''];
-    latest = act || e.preview;
+    body = [c.first && c.first !== e.title ? `asked: ${c.first}` : '', c.last ? `latest: ${c.last}` : ''].filter(Boolean).join(' | ');
   } else if (e.kind === 'meeting') {
     const who = (m.attendees || []).slice(0, 3).map((a) => a && (a.name || a.email)).filter(Boolean).map((x) => bit(x, 30)).join(' & ');
     bits = ['granola', client ? `client ${bit(client)}` : '', who ? `with ${who}` : ''];
-    latest = e.preview;
-  } else if (e.kind === 'thread') {
-    bits = ['gmail', client ? `client ${bit(client)}` : '', (m.participants || [])[0] ? `from ${bit(m.participants[0], 40)}` : ''];
-    latest = e.preview;
-  } else if (e.kind === 'client') {
-    const c = m.client || {};
-    bits = ['crm', `client ${bit(clientLabel(c))}`, c.next_action ? `next ${bit(c.next_action)}` : ''];
-    latest = '';
+    body = truncate(String(e.preview || '').replace(/\s+/g, ' '), 200);
   } else {
-    bits = [e.source || e.kind, client ? `client ${bit(client)}` : ''];
-    latest = e.preview;
+    bits = ['gmail', client ? `client ${bit(client)}` : '', (m.participants || [])[0] ? `from ${bit(m.participants[0], 40)}` : ''];
+    body = truncate(String(e.preview || '').replace(/\s+/g, ' '), 200);
   }
   const tag = KIND_TAG[e.kind] ? `[${KIND_TAG[e.kind]}] ` : '';
-  const line = truncate(String(latest || '').replace(/\s+/g, ' '), 110);
-  return `${i + 1}. ${tag}${bit(e.title || 'Untitled', 80)} (${bits.filter(Boolean).join(', ')})${line ? ` - ${line}` : ''}`;
+  return `${i + 1}. ${tag}${bit(e.title || 'Untitled', 80)} (${bits.filter(Boolean).join(', ')})${body ? ` - ${body}` : ''}`;
 }
+
+const known = (clients) => clients.map((c) => [clientLabel(c), ...(c.emails || []), ...(c.domains || [])].filter(Boolean).join(' / ')).filter(Boolean).slice(0, 40);
 
 async function askClaude(list, clients) {
   const a = leastUsedAccount();
   if (!a) throw new Error('No Claude account');
-  const text = `These are my AI chats and agents from this week, with my meetings, emails waiting on my reply, clients and outputs.
-Sort them into 2 to 8 topics by what they are about (a client, product, project or kind of work), e.g. "Harbor Coffee site", "SEO tools", "Outreach", "Calendar & admin".
-Put each meeting, email, client and output in the same topic as the chats for that client or project.
-Reply with JSON only, no prose: {"topics":[{"label":"Short name","summary":"What is happening in this topic right now, under 12 words","items":[1,2]}]}
+  const names = known(clients);
+  const text = `These are my AI chats and agents from this week, with my meetings and emails waiting on my reply.
+Sort them into 2 to 8 topics by WHAT THE WORK IS ABOUT, as a tree: clients, each holding projects.
+- Items working on the same thing (same product, site, feature or task) go in ONE project, whatever app or folder they are in.
+- Projects done for the same client go under that client. One client can have several projects.
+- Work with no client goes under a group named for its area, e.g. "Switchboard app", "Personal", "Research".
+${names.length ? `My clients: ${names.join('; ')}.\n` : ''}Reply with JSON only, no prose: {"clients":[{"label":"Client or area","client":true,"projects":[{"label":"Short name","summary":"What is happening right now, under 12 words","items":[1,2]}]}]}
 Use every item number exactly once. Labels are 1 to 4 plain words, no emoji.
 
 ${list.map((e, i) => describe(e, i, clients)).join('\n')}`;
@@ -252,18 +269,27 @@ ${list.map((e, i) => describe(e, i, clients)).join('\n')}`;
   const res = await claudeCode.prompt(quiet, { cwd: APP_DIR, text, signal: AbortSignal.timeout(25000), extraArgs: ['--model', 'sonnet', '--tools', '', ...hub.internalArgs()] });
   const m = String(res.text || '').match(/\{[\s\S]*\}/);
   if (!m) throw new Error('Claude did not answer with JSON');
+  const parsed = JSON.parse(m[0]);
+  // An older flat answer ({topics:[...]}) reads as one project per topic, each its own group.
+  const groups = Array.isArray(parsed.clients) ? parsed.clients
+    : (parsed.topics || []).map((t) => ({ label: t && t.label, client: false, projects: [t] }));
   const used = new Set();
   const topics = [];
-  for (const t of JSON.parse(m[0]).topics || []) {
-    const label = truncate(String((t && t.label) || '').trim(), 40);
-    const ids = ((t && (t.items || t.ids)) || []).map(Number)
-      .filter((n) => Number.isInteger(n) && n >= 1 && n <= list.length && !used.has(n))
-      .map((n) => { used.add(n); return list[n - 1].id; });
-    if (!label || !ids.length) continue;
-    const summary = truncate(String((t && t.summary) || '').replace(/\s+/g, ' ').trim(), 90);
-    const same = topics.find((x) => x.id === `t:${slug(label)}`);
-    if (same) { same.ids.push(...ids); continue; }
-    topics.push({ id: `t:${slug(label)}`, label, summary, ids });
+  for (const g of groups) {
+    const group = truncate(String((g && g.label) || '').trim(), 40) || NO_AREA;
+    const isClient = !!(g && g.client) || clients.some((c) => words(clientLabel(c)) === words(group));
+    for (const p of (g && g.projects) || []) {
+      const label = truncate(String((p && p.label) || '').trim(), 40);
+      const ids = ((p && (p.items || p.ids)) || []).map(Number)
+        .filter((n) => Number.isInteger(n) && n >= 1 && n <= list.length && !used.has(n))
+        .map((n) => { used.add(n); return list[n - 1].id; });
+      if (!label || !ids.length) continue;
+      const summary = truncate(String((p && p.summary) || '').replace(/\s+/g, ' ').trim(), 90);
+      const id = topicId(group, label);
+      const same = topics.find((x) => x.id === id);
+      if (same) { same.ids.push(...ids); continue; }
+      topics.push({ id, label, group, client: isClient, summary, ids });
+    }
   }
   if (!topics.length) throw new Error('Claude returned no topics');
   return mergeRest(topics, list.filter((_, i) => !used.has(i + 1)), clients);
@@ -274,7 +300,8 @@ ${list.map((e, i) => describe(e, i, clients)).join('\n')}`;
 function mergeRest(topics, rest, clients) {
   const out = topics.map((t) => ({ ...t, ids: [...t.ids] }));
   for (const g of heuristic(rest, clients)) {
-    const same = out.find((t) => t.id === g.id || t.label.toLowerCase() === g.label.toLowerCase());
+    const same = out.find((t) => t.id === g.id || t.label.toLowerCase() === g.label.toLowerCase())
+      || (g.client && out.filter((t) => t.group === g.group).length === 1 && out.find((t) => t.group === g.group));
     if (same) same.ids.push(...g.ids); else out.push(g);
   }
   return out;
@@ -282,7 +309,7 @@ function mergeRest(topics, rest, clients) {
 
 function cached() {
   const c = db.getSetting('topics', null);
-  return c && Array.isArray(c.topics) ? c : null;
+  return c && Array.isArray(c.topics) && c.topics.every((t) => t && 'group' in t) ? c : null;
 }
 
 // The cached AI topics, trimmed to the items that are still current, with newcomers placed by rule.
@@ -294,7 +321,11 @@ function project(c, list, clients) {
   return mergeRest(topics, list.filter((e) => !placed.has(e.id)), clients);
 }
 
-const strip = (topics) => topics.map(({ id, label, summary, ids }) => ({ id, label, summary, ids }));
+const strip = (topics) => topics.map(({ id, label, group, client, summary, ids }) => ({ id, label, group, client, summary, ids }));
+const answer = (topics, list, extra) => {
+  const flat = decorate(topics, list);
+  return { topics: flat, clients: tree(flat), ...extra };
+};
 
 async function recompute({ ai = true } = {}) {
   if (inflight) return inflight;
@@ -310,7 +341,7 @@ async function recompute({ ai = true } = {}) {
     db.setSetting('topics', { topics: strip(topics), at, key, via });
     pending = null;
     emitChanged();
-    return { topics: decorate(topics, list), at, key, via };
+    return answer(topics, list, { at, key, via });
   })().finally(() => { inflight = null; });
   return inflight;
 }
@@ -326,10 +357,10 @@ async function get() {
   const { list, clients } = await current();
   const key = keyOf(list);
   const c = cached();
-  if (c && c.key === key) return { topics: decorate(c.topics, list), at: c.at, via: c.via };
+  if (c && c.key === key) return answer(c.topics, list, { at: c.at, via: c.via });
   if (!c) recompute().catch(() => {}); else schedule(key);
   const topics = c ? project(c, list, clients) : heuristic(list, clients);
-  return { topics: decorate(topics, list), at: Date.now(), via: 'rules', stale: true };
+  return answer(topics, list, { at: Date.now(), via: 'rules', stale: true });
 }
 
 async function tick() {
@@ -354,5 +385,5 @@ module.exports = {
     'topics:refresh': () => recompute(),
   },
   start,
-  _test: { heuristic, placeOf, placeOther, project, keyOf, gather, decorate, describe, clientOf },
+  _test: { heuristic, projectOf, projectOther, project, keyOf, gather, decorate, describe, clientOf, tree },
 };

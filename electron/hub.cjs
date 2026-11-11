@@ -405,27 +405,63 @@ function markSent(id) {
 }
 const sentReplies = () => db.getSetting('sentReplies', {}) || {};
 
-// Prompt any card. Returns a run id at once; progress arrives as events.
+// Runs still in flight, so Stop can abort them: run id -> AbortController. A run stays here until
+// its process has exited, even after Stop marked it 'stopped'.
+const controllers = new Map();
+
+// Prompt any card. Returns a run id at once; progress arrives as events. opts.model (opus, sonnet
+// or haiku) picks the Claude model for this message; an unknown one is refused before anything runs.
 function prompt(id, text, opts = {}) {
+  const model = claudeCode.modelName(opts.model);
   const runId = uid('r');
-  runs.set(runId, { id: runId, entityId: id, text: '', status: 'running', startedAt: Date.now() });
+  const ctl = new AbortController();
+  controllers.set(runId, ctl);
+  runs.set(runId, { id: runId, entityId: id, text: '', status: 'running', startedAt: Date.now(), model });
   emit({ type: 'run', run: runs.get(runId) });
   if (opts.from) recordFlow(opts.from, id, text, opts.via || 'app');
+  const stopped = () => ctl.signal.aborted;
   (async () => {
     const full = await buildText(text, opts);
-    const onText = (t) => { const r = runs.get(runId); r.text = t; emit({ type: 'run', run: r }); };
+    if (stopped()) return;
+    const onText = (t) => { const r = runs.get(runId); if (r.status !== 'running') return; r.text = t; emit({ type: 'run', run: r }); };
     let res;
-    try { res = await dispatch(id, full, onText, opts); } catch (err) { runEnded([id], ''); throw err; }
-    const r = runs.get(runId); r.text = res.text || r.text; r.status = 'done'; r.result = res;
+    try { res = await dispatch(id, full, onText, { ...opts, model, signal: ctl.signal }); } catch (err) { if (!stopped()) runEnded([id], ''); throw err; }
+    const r = runs.get(runId);
+    if (stopped()) {
+      // Stopped: keep what it said so far and where it went (a new session's card), forward nothing.
+      if (res && res.entityId) { r.result = res; emit({ type: 'run', run: r }); }
+      runEnded([id, res && res.entityId].filter(Boolean), '');
+      invalidate(); emit({ type: 'entities-changed' });
+      return;
+    }
+    r.text = res.text || r.text; r.status = 'done'; r.result = res;
     emit({ type: 'run', run: r });
     invalidate(); emit({ type: 'entities-changed' });
     const resultId = res.entityId || id;
     markSent(resultId);
     runEnded([id, resultId], r.text, { depth: opts.depth || 0, chain: [...(opts.chain || []), id, resultId] });
   })().catch((err) => {
+    if (stopped()) { runEnded([id], ''); return; }
     const r = runs.get(runId); r.status = 'error'; r.error = err.message; emit({ type: 'run', run: r });
-  });
+  }).finally(() => controllers.delete(runId));
   return runId;
+}
+
+// Stop what is running on a card (or one run, by its id): the CLI process is told to stop and the
+// run is marked 'stopped' at once, keeping the text it had streamed. Returns how many it stopped.
+function stopRun(key) {
+  let stopped = 0;
+  for (const r of runs.values()) {
+    if (r.status !== 'running' || (r.id !== key && r.entityId !== key)) continue;
+    const ctl = controllers.get(r.id);
+    if (!ctl) continue;
+    ctl.abort();
+    r.status = 'stopped'; r.error = 'Stopped'; r.stoppedAt = Date.now();
+    emit({ type: 'run', run: r });
+    runEnded([r.entityId], '');
+    stopped++;
+  }
+  return { stopped };
 }
 
 // ---------- auto-send along lines ----------
@@ -496,7 +532,8 @@ async function checkFinished() {
     db.exec('UPDATE edges SET data = ? WHERE id = ?', JSON.stringify(e.data), e.id);
   }
   const list = await entities();
-  const busy = new Set([...runs.values()].filter((r) => r.status === 'running').map((r) => r.entityId));
+  // A stopped run counts as busy until its process has exited, so its last words aren't forwarded.
+  const busy = new Set([...runs.values()].filter((r) => r.status === 'running' || controllers.has(r.id)).map((r) => r.entityId));
   let n = 0;
   for (const src of new Set(lines.map((e) => e.source))) {
     const ent = list.find((x) => x.id === src);
@@ -511,15 +548,18 @@ async function checkFinished() {
   return n;
 }
 
+// Sends to the card's agent. opts.signal stops the run; opts.model (already checked by prompt) goes
+// to Claude Code as --model, the same way for an existing chat and for a new one.
 async function dispatch(id, text, onText, opts = {}) {
   for (const p of plugins) { const r = p.dispatch && (await p.dispatch(id, text, opts)); if (r) return r; }
   const [kind, accId, ...rest] = id.split(':');
   const ref = rest.join(':');
   const e = find(id) || { meta: {} };
-  if (kind === 'cc') { const a = account(accId); const r = await claudeCode.prompt(a, { sessionId: e.meta.sessionId, cwd: e.meta.cwd, text, onText }); return { ...r, entityId: `cc:${accId}:${r.sessionId}` }; }
-  if (kind === 'cx') { const a = account(accId); return codex.prompt(a, { sessionId: e.meta.sessionId, cwd: e.meta.cwd, text, onText }); }
+  const { signal, model } = opts;
+  if (kind === 'cc') { const a = account(accId); const r = await claudeCode.prompt(a, { sessionId: e.meta.sessionId, cwd: e.meta.cwd, text, onText, signal, model }); return { ...r, entityId: `cc:${accId}:${r.sessionId}` }; }
+  if (kind === 'cx') { const a = account(accId); return codex.prompt(a, { sessionId: e.meta.sessionId, cwd: e.meta.cwd, text, onText, signal }); }
   if (kind === 'cu') return cursor.prompt(account(accId), { agentId: ref, text });
-  if (kind === 'lc') return apiChat.prompt(account(accId), { chatId: ref, text, onText });
+  if (kind === 'lc') return apiChat.prompt(account(accId), { chatId: ref, text, onText, signal });
   if (kind === 'gb') return grokbot.send(ref, text, { prefillOnly: opts.prefillOnly });
   if (kind === 'cd') throw new Error('Claude app sessions are read-only here. Open them in the Claude app.');
   if (kind === 'pj' || kind === 'ac' || kind === 'cl') {
@@ -529,10 +569,9 @@ async function dispatch(id, text, onText, opts = {}) {
     if (kind === 'pj') { cwd = id.slice(3); a = pickAccount(['claude-code', 'codex', 'anthropic-api', 'openai-compatible'], { ...pickOpts, cwd }); }
     if (kind === 'cl') { const c = clients().find((x) => x.id === accId); const p = c && c.project_paths[0]; if (p) cwd = p; a = pickAccount(['claude-code', 'anthropic-api', 'openai-compatible'], { ...pickOpts, cwd: p || null }); }
     if (!a) throw new Error('Add a Claude account first');
-    const model = typeof opts.model === 'string' && /^[\w.\-\[\]]{1,60}$/.test(opts.model) ? opts.model : null;
-    if (a.kind === 'claude-code') { const r = await claudeCode.prompt(a, { cwd, text, onText, extraArgs: model ? ['--model', model] : [] }); return { ...r, entityId: `cc:${a.id}:${r.sessionId}` }; }
-    if (a.kind === 'codex') return codex.prompt(a, { cwd, text, onText });
-    if (a.kind === 'anthropic-api' || a.kind === 'openai-compatible') { const r = await apiChat.prompt(a, { text, onText }); return { ...r, entityId: `lc:${a.id}:${r.chatId}` }; }
+    if (a.kind === 'claude-code') { const r = await claudeCode.prompt(a, { cwd, text, onText, signal, model }); return { ...r, entityId: `cc:${a.id}:${r.sessionId}` }; }
+    if (a.kind === 'codex') return codex.prompt(a, { cwd, text, onText, signal });
+    if (a.kind === 'anthropic-api' || a.kind === 'openai-compatible') { const r = await apiChat.prompt(a, { text, onText, signal }); return { ...r, entityId: `lc:${a.id}:${r.chatId}` }; }
     if (a.kind === 'grok-bot') return grokAccountSend(text, opts);
     throw new Error(`${a.label} can't take prompts`);
   }
@@ -855,7 +894,7 @@ module.exports = {
   events, accounts, publicAccount, account, saveAccount, deleteAccount, firstRunSetup,
   claudeStatus, claudeLogin, claudeLoginCancel, claudeLogout,
   entities, invalidate, transcriptFor, find, label,
-  prompt, runs, sentReplies, recordFlow, flowsFor, edges, saveEdge, deleteEdge, forwardFinished, makeBoard, quickAsk, internalArgs,
+  prompt, stopRun, runs, sentReplies, recordFlow, flowsFor, edges, saveEdge, deleteEdge, forwardFinished, makeBoard, quickAsk, internalArgs,
   brain, setBrain, appendBrain, saveOutput, saveNote, deleteEntity,
   board, saveBoard, deleteBoardNodes,
   clients, saveClient, due, suggestions, usageSummary, chief, chiefHistory, pickAccount, addFinder, addExtraEntities, requestRegroup, use,

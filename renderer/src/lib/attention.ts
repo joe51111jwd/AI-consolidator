@@ -33,7 +33,7 @@ export function needsAttention(e: Entity | undefined, live: Run | undefined, see
   if (e.source === 'grok-bot' && (m.unreadCount > 0 || m.awaitingUserResponse) && (e.updatedAt || 0) > seenAt) return true;
   if (e.status === 'waiting' && (e.updatedAt || Date.now()) > seenAt) return true;
   if (e.status === 'error' && (e.updatedAt || Date.now()) > seenAt) return true;
-  if (live && live.status !== 'running' && live.startedAt > seenAt) return true;
+  if (live && live.status !== 'running' && live.status !== 'stopped' && live.startedAt > seenAt) return true;
   return false;
 }
 

@@ -5,11 +5,12 @@ import { useStore } from '../lib/store';
 import { api } from '../lib/api';
 import { AgentLogo } from './Logos';
 import { useUsage, weeklyPct } from './UsagePill';
+import { MODELS } from '../lib/models';
 import './newchat.css';
 
 interface Recent { path: string; name: string; lastUsed: number }
 
-const MODELS = [{ id: '', label: 'Default' }, { id: 'opus', label: 'Opus' }, { id: 'sonnet', label: 'Sonnet' }, { id: 'haiku', label: 'Haiku' }];
+// The new chat keeps the model it starts with: lib/models.ts remembers it for the new card.
 const OPEN_EVENT = 'sb:new-chat';
 
 export const openNewChat = () => window.dispatchEvent(new Event(OPEN_EVENT));
@@ -131,7 +132,7 @@ export default function NewChat() {
 
         <div className="nc-label">Model</div>
         <div className="nc-seg">
-          {MODELS.map((m) => <button key={m.id} className={model === m.id ? 'on' : ''} onClick={() => setModel(m.id)}>{m.label}</button>)}
+          {MODELS.map((m) => <button key={m.id} className={model === m.id ? 'on' : ''} onClick={() => setModel(m.id)} data-model={m.id}>{m.label}</button>)}
         </div>
 
         <div className="nc-compose">

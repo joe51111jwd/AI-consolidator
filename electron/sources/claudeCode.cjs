@@ -442,14 +442,28 @@ async function logout(account) {
   return authStatus(account);
 }
 
+// The models a chat can pick per message (Claude Code's own aliases). Empty or 'default' means
+// "whatever the account uses"; anything else is refused, so nothing odd reaches the command line.
+const MODELS = ['opus', 'sonnet', 'haiku'];
+function modelName(m) {
+  if (m == null) return null;
+  const k = String(m).trim().toLowerCase();
+  if (!k || k === 'default') return null;
+  if (!MODELS.includes(k)) throw new Error(`Unknown model "${truncate(String(m), 40)}". Pick Opus, Sonnet or Haiku.`);
+  return k;
+}
+
 // Send a prompt. Resumes `sessionId` when given, otherwise starts a new session in cwd.
-async function prompt(account, { sessionId, cwd, text, onText, signal, extraArgs = [] }) {
+// `model` is one of MODELS (or empty for the account's default); `signal` stops the run.
+async function prompt(account, { sessionId, cwd, text, onText, signal, model, extraArgs = [] }) {
   const bin = account.config.bin || which('claude');
   if (!bin) throw new Error('Claude Code (the `claude` command) was not found on this Mac.');
   const args = ['-p', '--output-format', 'stream-json', '--verbose'];
   if (sessionId) args.push('--resume', sessionId);
   const mode = account.config.permissionMode;
   if (mode && mode !== 'default') args.push('--permission-mode', mode);
+  const m = modelName(model);
+  if (m) args.push('--model', m);
   args.push(...extraArgs);
   const env = childEnv(account);
   let acc = '', final = null, newSession = sessionId, usageOut = null;
@@ -469,4 +483,4 @@ async function prompt(account, { sessionId, cwd, text, onText, signal, extraArgs
   return { text: final || acc, sessionId: newSession, usage: usageOut };
 }
 
-module.exports = { orgOf, internalSessions, list, entityFor, sessionFiles, desktopList, desktopEntity, parseSession, transcript, usage, detect, prompt, configDir, childEnv, authStatus, login, logout };
+module.exports = { orgOf, internalSessions, list, entityFor, sessionFiles, desktopList, desktopEntity, parseSession, transcript, usage, detect, prompt, MODELS, modelName, configDir, childEnv, authStatus, login, logout };

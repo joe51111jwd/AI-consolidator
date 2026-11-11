@@ -76,6 +76,15 @@
 .pn-composer .attach { width: 28px; height: 28px; border-radius: 9px; display: grid; place-items: center; color: var(--ink-3); flex: none; }
 .pn-composer .attach:hover { color: var(--ink); background: var(--well-2); }
 .pn-composer.dropping .row { border-color: var(--ink); border-style: dashed; background: var(--card); }
+.pn-composer .model { height: 28px; max-width: 96px; flex: none; border: 0; border-radius: 9px; padding: 0 4px; background: transparent; color: var(--ink-3); font: inherit; font-size: 12px; cursor: pointer; }
+.pn-composer .model:hover, .pn-composer .model:focus-visible { color: var(--ink); background: var(--well-2); outline: 0; }
+.composer .stop { width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; flex: none; color: var(--ink); background: var(--card); box-shadow: inset 0 0 0 1.5px var(--ink); }
+.composer .stop:hover { background: var(--well-2); }
+.composer .stop:disabled { opacity: .45; }
+.pn-composer.multi .stop { width: 28px; height: 28px; border-radius: 9px; }
+.board .card .composer .stop { width: 24px; height: 24px; }
+.pn-stopped { align-self: flex-start; display: inline-flex; align-items: center; gap: 6px; margin: 6px 0 2px 21px; font-size: 11.5px; color: var(--ink-3); }
+.pn-stopped i { width: 7px; height: 7px; border-radius: 1.5px; background: currentColor; }
 
 /* ⌘K search */
 .overlay.pn-overlay { padding-top: 14vh; }

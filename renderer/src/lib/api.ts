@@ -6,7 +6,8 @@ export interface Entity {
 }
 export interface PlanItem { content: string; status: string }
 export interface Message { id: string; role: string; text: string; ts: number; kind?: string; plan?: PlanItem[] }
-export interface Run { id: string; entityId: string; text: string; status: 'running' | 'done' | 'error'; error?: string; startedAt: number; result?: any }
+// 'stopped' means the owner pressed Stop; text keeps what the agent had said by then.
+export interface Run { id: string; entityId: string; text: string; status: 'running' | 'done' | 'error' | 'stopped'; error?: string; startedAt: number; stoppedAt?: number; result?: any; model?: string | null }
 export interface BoardRow { id: string; x: number; y: number; w?: number | null; h?: number | null; parent_id?: string | null; data: any; hidden?: number }
 export interface EdgeRow { id: string; source: string; target: string; kind: 'flow' | 'link'; data: any }
 export interface Flow { id: string; source: string; target: string; preview: string; content: string; via: string; ts: number }
@@ -30,8 +31,9 @@ export const api = {
   call: <T = any,>(ch: string, ...a: any[]): Promise<T> => c(ch, ...a),
   entities: (force = false): Promise<Entity[]> => c('entities', { force }),
   transcript: (id: string): Promise<Message[]> => c('transcript', id),
-  prompt: (id: string, text: string, opts: { attach?: Attach[]; includeBrain?: boolean; from?: string } = {}): Promise<string> => c('prompt', id, text, opts),
+  prompt: (id: string, text: string, opts: { attach?: Attach[]; includeBrain?: boolean; from?: string; model?: string } = {}): Promise<string> => c('prompt', id, text, opts),
   runs: (): Promise<Run[]> => c('runs'),
+  stopRun: (id: string): Promise<{ stopped: number }> => c('run:stop', id),
   accounts: (): Promise<Account[]> => c('accounts'),
   saveAccount: (a: Partial<Account> & { secrets?: Record<string, string> }): Promise<string> => c('account:save', a),
   deleteAccount: (id: string) => c('account:delete', id),

@@ -159,7 +159,8 @@ export default function Inspector() {
     const all = build(e, agent, msgs, flows, byId, accounts);
     if (echo && !all.some((m) => m.role === 'user' && (head(m.body) === head(echo.text) || m.text.includes(head(echo.text))))) all.push({ ...echo, who: YOU, body: echo.text });
     const shown = (t: string) => msgs.some((m) => m.role === 'assistant' && m.text?.trim() && (m.ts || 0) >= (live?.startedAt || 0) - 2000 && (m.text.includes(head(t)) || t.includes(head(m.text))));
-    const recent = live && live.status === 'done' && live.text && Date.now() - live.startedAt < 600000 && !shown(live.text);
+    const ended = live && (live.status === 'done' || live.status === 'stopped');
+    const recent = ended && live.text && Date.now() - live.startedAt < 600000 && !shown(live.text);
     if (live && (live.status === 'running' || recent)) {
       all.push({ id: `live:${live.id}`, role: 'assistant', text: live.text, body: live.text || 'Working…', ts: live.startedAt, who: agent, live: live.status === 'running' });
     }
@@ -177,7 +178,11 @@ export default function Inspector() {
   if (!id || !e || e.kind === 'note') return null;
   const working = live?.status === 'running' || e.status === 'running';
   const pinned = pins.includes(id);
-  const spawned = live?.status === 'done' && live.result?.entityId && live.result.entityId !== id && byId[live.result.entityId] ? live.result.entityId as string : null;
+  const spawned = (live?.status === 'done' || live?.status === 'stopped') && live.result?.entityId && live.result.entityId !== id && byId[live.result.entityId] ? live.result.entityId as string : null;
+  // "Stopped" closes the conversation until something new is said in it (here or elsewhere).
+  const stoppedAt = live?.status === 'stopped' ? live.stoppedAt || live.startedAt : 0;
+  const stopped = !!stoppedAt && !msgs.some((m) => (m.ts || 0) > stoppedAt + 5000);
+  const stoppedNote = stopped ? <div key="stopped" className="pn-stopped" data-testid="run-stopped"><i />Stopped</div> : null;
 
   const saveOutput = async (text: string) => {
     const oid = await api.saveOutput({ title: `From ${e.title}`.slice(0, 80), content: text, source: id });
@@ -271,6 +276,7 @@ export default function Inspector() {
   if (full) {
     const tail = [...rows];
     if (live?.status === 'error') tail.push(<div key="err" className="well err">{live.error}</div>);
+    if (stoppedNote) tail.push(stoppedNote);
     if (spawned) tail.push(<button key="spawned" className="pn-follow" onClick={() => open(spawned)}>Open the new session<ArrowRight size={13} /></button>);
     return (
       <>
@@ -317,6 +323,7 @@ export default function Inspector() {
         {!loading && !items.length && <div className="empty">Nothing here yet.</div>}
         {rows}
         {live?.status === 'error' && <div className="well err">{live.error}</div>}
+        {stoppedNote}
         {spawned && <button className="pn-follow" onClick={() => open(spawned)}>Open the new session<ArrowRight size={13} /></button>}
         <div ref={end} />
       </div>

@@ -283,6 +283,19 @@ export default function Board() {
     smartRef.current(e.instruction || undefined);
   }), []);
 
+  // The AI's content grouping lands a little after the quick one: re-lay out with it, unless you've
+  // arranged the board yourself since.
+  const weekRef = useRef(weekBoard);
+  const lastWeek = useRef(0);
+  weekRef.current = weekBoard;
+  useEffect(() => api.onEvent((e) => {
+    if (e?.type !== 'topics-changed' || arranged.current || weekState.current !== 'done') return;
+    // Not more than once a minute, so cards don't shuffle while you're looking at them.
+    if (Date.now() - lastWeek.current < 60000) return;
+    lastWeek.current = Date.now();
+    weekRef.current(true);
+  }), []);
+
   // On open: lay out this week, unless you've arranged the board by hand since the last time.
   useEffect(() => {
     if (!boardLoaded || !entities.length || weekState.current !== 'pending') return;

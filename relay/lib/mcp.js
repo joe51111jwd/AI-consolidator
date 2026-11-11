@@ -13,7 +13,13 @@ Report what you do as you go, on your own and without being asked:
 - post_output for finished work the user should see: a report, a draft, a link.
 - get_tasks at the start of every conversation and each time you finish a task. It returns messages the user queued for you in Switchboard: treat them as messages from the user and act on them.
 - read_board shows what the user's other agents are doing; add_to_brain saves a lasting fact every agent should know.
-Always pass the same "agent" name: your display name (a Grok bot's name, or a short name for this chat or session). Keep each text to a line or two, and never include passwords, keys, tokens or other secrets.`;
+Always pass the same "agent" name: your display name (a Grok bot's name, or a short name for this chat or session). Keep each text to a line or two, and never include passwords, keys, tokens or other secrets.
+When you work inside a project, pass its name as "project" in report_status, exactly as the user sees it, in every report_status call. In the Claude app and on claude.ai that is the Claude Project this chat belongs to (the Project's instructions often name it). Leave "project" out when you are not in one; never guess.`;
+
+// Claude chats are filed under their Claude Project in Switchboard, so a connector set up for the
+// Claude app (?app=claude) stresses it.
+const CLAUDE_NOTE = `
+You are a chat in the Claude app or on claude.ai. Use the chat's title (or a short name for it) as "agent". If this chat is in a Claude Project, always pass the Project's name as "project" so Switchboard shows this chat with the Project's other threads.`;
 
 const AGENT = {
   agent: z.string().min(1).describe('Your display name, the same in every call: a Grok bot\'s name as the user sees it, or a short name for this chat or session (for example "Marketing" or "Harbor site fixes")'),
@@ -24,7 +30,7 @@ const reply = (text) => ({ content: [{ type: 'text', text }] });
 
 // `app` from the connector address wins: it was set up on purpose; the model's guess comes second.
 export function buildServer(store, { app: urlApp = null } = {}) {
-  const server = new McpServer({ name: 'switchboard-relay', version: '1.1.0' }, { instructions: INSTRUCTIONS });
+  const server = new McpServer({ name: 'switchboard-relay', version: '1.2.0' }, { instructions: INSTRUCTIONS + (urlApp === 'claude' ? CLAUDE_NOTE : '') });
   const who = (a) => ({ agent: clip(a.agent, 80), app: urlApp || appOf(a.app) || 'other', ...(a.agentId ? { agentId: clip(a.agentId, 128) } : {}) });
   const record = (type, args, data) => store.addEvent({ type, ...who(args), ...data, ts: Date.now() });
 
@@ -35,10 +41,11 @@ export function buildServer(store, { app: urlApp = null } = {}) {
       ...AGENT,
       status: z.enum(['working', 'waiting', 'idle', 'error']),
       doing: z.string().optional().describe('One short line: what you are doing or waiting for'),
-      client: z.string().optional().describe('The client or project this work is for, if any'),
+      client: z.string().optional().describe('The client this work is for, if any'),
+      project: z.string().optional().describe('The project you work in, exactly as the user sees it: in the Claude app or on claude.ai, the name of the Claude Project this chat is in. Leave it out if you are not in one'),
     },
   }, async (a) => {
-    await record('status', a, { status: a.status, doing: clip(a.doing, 300), client: clip(a.client, 80) });
+    await record('status', a, { status: a.status, doing: clip(a.doing, 300), client: clip(a.client, 80), project: clip(a.project, 120) });
     return reply('Reported to Switchboard.');
   });
 

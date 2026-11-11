@@ -38,6 +38,7 @@ export function dueLabel(ts?: number) {
 
 export const SOURCE: Record<string, { label: string; color: string }> = {
   'claude-code': { label: 'Claude', color: '#D97757' },
+  'claude-ai': { label: 'claude.ai', color: '#D97757' },
   codex: { label: 'Codex', color: '#10A37F' },
   granola: { label: 'Granola', color: '#5E7F3A' },
   gmail: { label: 'Gmail', color: '#D93025' },

@@ -36,7 +36,7 @@ export function suppressed(e: Entity, now = Date.now()) {
 }
 
 // ---------- filter ----------
-export const srcKey = (s: string) => (s === 'anthropic-api' ? 'claude-code' : s);
+export const srcKey = (s: string) => (s === 'anthropic-api' || s === 'claude-ai' ? 'claude-code' : s);
 export function filterKeys(e: Entity): string[] {
   const keys = ['src:' + srcKey(e.source)];
   const cat = categoryOf(e);

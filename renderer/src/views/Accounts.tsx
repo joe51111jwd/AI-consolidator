@@ -6,6 +6,7 @@ import { SOURCE, tokens } from '../lib/format';
 import { AgentLogo } from '../components/Logos';
 import { useTour } from '../components/Tour';
 import RelaySettings from '../components/RelaySettings';
+import ClaudeAiImport from '../components/ClaudeAiImport';
 
 type Kind = { kind: string; label: string; blurb: string };
 const KINDS: Kind[] = [
@@ -230,6 +231,7 @@ export default function Accounts() {
         </div>
         {tools && tools.results.length > 0 && <div className="well" data-testid="agent-tools-results">{tools.results.map((r) => <div key={r}>{r}</div>)}</div>}
         <RelaySettings />
+        <ClaudeAiImport />
         <div className="set-row">
           <div className="txt"><b>Grok Bot</b><span className="hint">{grok && grok.enabled ? `${grok.bots} bot${grok.bots === 1 ? '' : 's'}${grok.running ? '' : ' · app closed'}` : 'Off'}</span></div>
           <Toggle label="Connect Grok Bot" on={grok ? grok.enabled : true} onChange={setGrokOn} />

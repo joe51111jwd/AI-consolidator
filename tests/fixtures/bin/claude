@@ -45,7 +45,7 @@ process.stdin.on('end', () => {
   const cwd = process.cwd();
   log({ args, cwd, configDir: process.env.CLAUDE_CONFIG_DIR || null, sessionId: id, prompt: input });
   const first = input.trim().split('\n').pop().slice(0, 120);
-  const reply = process.env.SB_STUB_REPLY || smartGroup(input) || topics(input) || `Done (${path.basename(dir)}): ${first}`;
+  const reply = process.env.SB_STUB_REPLY || smartGroup(input) || topics(input) || projectMatch(input) || `Done (${path.basename(dir)}): ${first}`;
   const out = (o) => process.stdout.write(JSON.stringify(o) + '\n');
   out({ type: 'system', subtype: 'init', session_id: id, cwd, model: 'claude-sonnet-5-5' });
   const mid = 'msg_' + crypto.randomBytes(6).toString('hex');
@@ -110,4 +110,18 @@ function ownGroups(text) {
     groups.get(hit).push(r.n);
   }
   return JSON.stringify({ clients: [...groups].filter(([, items]) => items.length).map(([label, items]) => ({ label, client: label !== 'Other', projects: [{ label, summary: `${items.length} items`, items }] })) });
+}
+
+// Imported claude.ai chats are matched to their Claude Projects: a chat goes to the Project whose name
+// starts with a word the chat's line mentions ("Harbor Coffee Launch" for a chat about Harbor Coffee).
+function projectMatch(text) {
+  if (!/Which of my Claude Projects does each chat belong to/.test(text)) return null;
+  const projects = [...text.matchAll(/^P(\d+)\. ([^|\n]+)/gm)].map((m) => ({ id: `P${m[1]}`, word: m[2].trim().split(/\s+/)[0].toLowerCase() }));
+  const chats = [];
+  for (const line of (text.split('\nChats:\n')[1] || '').split('\n')) {
+    const m = line.match(/^(\d+)\. (.*)$/); if (!m) continue;
+    const p = projects.find((x) => x.word.length >= 4 && m[2].toLowerCase().includes(x.word));
+    chats.push({ chat: Number(m[1]), project: p ? p.id : null });
+  }
+  return JSON.stringify({ chats });
 }

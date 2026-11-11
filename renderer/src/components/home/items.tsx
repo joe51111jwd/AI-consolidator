@@ -25,7 +25,7 @@ export function familyOf(e: Entity): Family {
   if (e.source === 'grok-bot') return 'grok';
   if (e.source === 'cursor') return 'cursor';
   if (e.source === 'codex') return 'codex';
-  if (e.source === 'claude-code' || e.source === 'anthropic-api') return 'claude';
+  if (e.source === 'claude-code' || e.source === 'anthropic-api' || e.source === 'claude-ai') return 'claude';
   return 'other';
 }
 

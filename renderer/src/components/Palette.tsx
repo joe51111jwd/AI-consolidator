@@ -15,7 +15,7 @@ type Row = { type: 'hit'; hit: Hit } | { type: 'cmd'; cmd: Cmd };
 interface Cmd { id: string; label: string; icon: any; keys?: string; run: () => void | Promise<void> }
 
 const PREFIX: Record<string, { label: string; source: string; sources?: string[]; kinds?: string[] }> = {
-  claude: { label: 'Claude', source: 'claude-code', sources: ['claude-code', 'anthropic-api'] },
+  claude: { label: 'Claude', source: 'claude-code', sources: ['claude-code', 'anthropic-api', 'claude-ai'] },
   grok: { label: 'Grok', source: 'grok-bot', sources: ['grok-bot'] },
   granola: { label: 'Granola', source: 'granola', sources: ['granola'] },
   meeting: { label: 'Granola', source: 'granola', sources: ['granola'] },
@@ -30,7 +30,7 @@ const PREFIX: Record<string, { label: string; source: string; sources?: string[]
 };
 const CHIPS = ['claude', 'grok', 'granola', 'gmail', 'cursor', 'codex', 'client'];
 const GROUP: Record<string, string> = {
-  'claude-code': 'Claude', 'anthropic-api': 'Claude', 'grok-bot': 'Grok', granola: 'Meetings', gmail: 'Mail',
+  'claude-code': 'Claude', 'anthropic-api': 'Claude', 'claude-ai': 'claude.ai', 'grok-bot': 'Grok', granola: 'Meetings', gmail: 'Mail',
   cursor: 'Cursor', codex: 'Codex', 'openai-compatible': 'Chats', crm: 'Clients', output: 'Outputs', note: 'Notes',
 };
 

@@ -178,6 +178,45 @@ test('clients without headers (Claude connectors) pass the token as ?key=, and t
   await other.client.close();
 });
 
+test('report_status carries the project (a Claude Project) into the event, and it is optional', async () => {
+  const claude = await bot('bot-secret', { path: '/mcp?app=claude&key=bot-secret', header: false });
+  const schema = (await claude.client.listTools()).tools.find((t) => t.name === 'report_status').inputSchema;
+  assert.equal(schema.properties.project.type, 'string');
+  assert.ok(!(schema.required || []).includes('project'), 'project is optional');
+  assert.match(schema.properties.project.description, /Claude Project/);
+  assert.match(claude.client.getInstructions(), /Claude Project/, 'the server tells agents to report their Project');
+  assert.match(claude.client.getInstructions(), /You are a chat in the Claude app/, 'a Claude connector gets the Claude note');
+  await claude.call('report_status', { agent: 'Menu ideas', status: 'working', doing: 'Drafting the spring menu', project: '  Harbor Coffee Launch  ' });
+  await claude.call('report_status', { agent: 'Menu ideas', status: 'idle' });
+  await claude.call('report_status', { agent: 'Long one', status: 'idle', project: 'x'.repeat(300) });
+  const ev = (await events()).events;
+  assert.deepEqual([ev[0].app, ev[0].agent, ev[0].project], ['claude', 'Menu ideas', 'Harbor Coffee Launch'], 'trimmed and stored with the event');
+  assert.equal(ev[1].project, undefined, 'left out when the chat is not in a Project');
+  assert.equal(ev[2].project.length, 120, 'clipped');
+  await claude.client.close();
+  const grokBot = await bot();
+  assert.doesNotMatch(grokBot.client.getInstructions(), /You are a chat in the Claude app/, 'other apps do not get the Claude note');
+  await grokBot.client.close();
+});
+
+test('the project survives the Postgres and Upstash stores', async () => {
+  const { fetchImpl } = fakeUpstash();
+  setStore(upstashStore('https://kv.example.com/', 'kv-token', fetchImpl));
+  const claude = await bot('bot-secret', { path: '/mcp?app=claude&key=bot-secret', header: false });
+  await claude.call('report_status', { agent: 'Menu ideas', status: 'working', project: 'Harbor Coffee Launch' });
+  assert.equal((await events()).events[0].project, 'Harbor Coffee Launch');
+  await claude.client.close();
+  const rows = [];
+  const query = async (text, params) => {
+    if (text.startsWith('INSERT INTO events')) { rows.push({ id: String(rows.length + 1), data: params[1] }); return [{ id: String(rows.length) }]; }
+    if (text.startsWith('SELECT id, data FROM events')) return rows;
+    return [];
+  };
+  const pg = postgresStore('postgres://x', query);
+  await pg.addEvent({ type: 'status', agent: 'Menu ideas', app: 'claude', project: 'Harbor Coffee Launch' });
+  assert.equal((await pg.eventsAfter(0, 10))[0].project, 'Harbor Coffee Launch');
+});
+
 test('tasks are kept apart per app', async () => {
   await appApi('POST', '/api/tasks', { agent: 'Research', app: 'claude', text: 'For the Claude chat' });
   await appApi('POST', '/api/tasks', { agent: 'Research', app: 'grok-bot', text: 'For the Grok bot' });

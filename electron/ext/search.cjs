@@ -4,9 +4,9 @@
 const hub = require('../hub.cjs');
 
 const PREFIX = {
-  claude: { sources: ['claude-code', 'anthropic-api'] },
-  chat: { sources: ['claude-code', 'codex'], category: 'chat' },
-  chats: { sources: ['claude-code', 'codex'], category: 'chat' },
+  claude: { sources: ['claude-code', 'anthropic-api', 'claude-ai'] },
+  chat: { sources: ['claude-code', 'codex', 'claude-ai'], category: 'chat' },
+  chats: { sources: ['claude-code', 'codex', 'claude-ai'], category: 'chat' },
   code: { sources: ['claude-code', 'codex'], category: 'coding' },
   coding: { sources: ['claude-code', 'codex'], category: 'coding' },
   grok: { sources: ['grok-bot'] },

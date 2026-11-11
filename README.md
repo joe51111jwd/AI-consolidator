@@ -1,10 +1,11 @@
 # AI Consolidator (Switchboard)
 
-One place on your Mac to manage the AI chats you already have: every Claude Code session (across all your Claude accounts), Codex session, Grok Bot, Granola meeting, Gmail thread and Cursor cloud agent. See what each one is doing, answer the ones that need you, and then automate them.
+One place on your Mac to manage the AI chats you already have: every Claude Code session (across all your Claude accounts), your claude.ai and Claude app chats and Projects, Codex session, Grok Bot, Granola meeting, Gmail thread and Cursor cloud agent. See what each one is doing, answer the ones that need you, and then automate them.
 
 - **Chats home (⌘2).** All your chats in one list, grouped into topics by what they're doing. Each topic shows how many are working and how many need you; a blue dot marks a chat waiting on you. Filter and search the list at the top.
 - **Open and reply.** Click a chat to open it and talk. Hover a row to send a quick reply without opening it.
 - **Import chats.** Bring any older chat from any Claude account into the app.
+- **claude.ai history and Projects.** Import your chats and Projects from claude.ai's data export; each Project shows with its threads.
 - **Dock.** The account bubbles at the bottom start a new chat; each shows its usage this week so you can spread work across accounts. Hover one to see what it's working on.
 - **Main agent (⌘J).** The **+** in the dock opens an agent that sees everything: ask "what needs me?", get a daily recap, or ask any question across your chats. It also starts chats, notes and boards, and runs the Showcase.
 - **Search (⌘K).** Find any chat, meeting, project, client or command. Open it, put it on the board (⌘Enter), or tag it as context for your next prompt (⌘T).
@@ -63,6 +64,40 @@ Both plans use one email, so the email alone doesn't say which plan a folder is 
 Every prompt you send from a card, and every new session the board starts on it, runs with that card's folder only. The app clears any Claude key or token set in your shell, so it can't quietly use a different account.
 
 If you'd rather use an Anthropic API key, add **Claude API key** (under **Advanced**) instead.
+
+### claude.ai and the Claude app (chats and Projects)
+
+claude.ai keeps your chats and Projects on Anthropic's servers, not on your Mac, and has no public API for them. Switchboard gets them two ways: your history from claude.ai's own data export, and from then on live through Switchboard Relay.
+
+**Import your history**
+
+1. On claude.ai (or in the Claude app) open **Settings → Privacy → Export data**. claude.ai emails you a link, usually within minutes. The link only works while you're signed in, expires after 24 hours and may work only once.
+2. Download what it links to:
+   - Older exports are one zip, named like `data-…-batch-0000.zip`.
+   - Newer exports (since about August 2026) are a list of downloads (`manifest-….json`) with one zip per kind of data. Download at least `conversations-000.zip`, `projects-000.zip` and `light_metadata-000.zip`. You don't need `memories-000.zip` or the others.
+3. In Switchboard open Settings → **Accounts** → **Import claude.ai history** → **Import…** and pick the zip file(s), or the folder you unzipped them into. If the manifest lists a download you didn't pick, it tells you which one.
+
+Each chat becomes a read-only card. Open it to read the whole thread as claude.ai shows it: artifacts and the names of attached files are included, Claude's thinking is left out, and an edited or retried message shows only its latest version. The ↗ button opens the chat on claude.ai so you can continue it there. ⌘K searches every message, and a Project's name finds its chats.
+
+Import again whenever you like with a newer export. Changed chats are updated and new ones added, and nothing is doubled. The export only holds one account's chats, so for a second account (for example a Team plan) export from that account and import it too. Chats you deleted on claude.ai come in the export as empty stubs and are skipped.
+
+**Projects**
+
+The export lists your Projects (name, description, instructions and file names) but not which Project each chat is in. Switchboard works it out:
+
+- A chat that searched a Project's files (claude.ai's project knowledge search names the files it read) goes to that Project.
+- For the rest, Claude reads each chat's title and summary next to your Projects' names, descriptions, instructions and file names, and suggests a Project or none. It runs once after each import on the Claude account you've used least, like topic sorting does. The card says when a Project was "suggested by Claude".
+- You can change any chat's Project on its card, and your choice is never overwritten.
+
+A Project's chats then stay together: as one project on the Chats home and on the board, with older threads too once the Project has work this week. **Show on board** next to a Project in Settings puts its newest chats on the board under it.
+
+**From now on, live**
+
+Connect Switchboard Relay in the Claude app (Settings → Connectors, see [Switchboard Relay](#switchboard-relay-all-your-agents-from-anywhere) below). Chats then report what they're doing as they work. A chat in a Project also reports the Project's name, so its card lands next to that Project's imported threads. Claude doesn't always know the Project's name, so add a line like this to each Project's instructions:
+
+```
+When you report to Switchboard, use project "Harbor Coffee Launch".
+```
 
 ### Codex
 
@@ -147,7 +182,7 @@ Only programs running as you can use it: it listens on 127.0.0.1 and needs the t
 
 ## Where things are kept
 
-- `~/.switchboard/switchboard.db` holds the board, clients, outputs and settings.
+- `~/.switchboard/switchboard.db` holds the board, clients, outputs and settings, and the claude.ai history you imported (Settings → Accounts → **Remove imported history** deletes it).
 - `~/.switchboard/brain.md` is the shared brain.
 - API keys and Google sign-ins are encrypted with your Mac's Keychain.
 
@@ -157,7 +192,7 @@ Only programs running as you can use it: it listens on 127.0.0.1 and needs the t
 npm test
 ```
 
-This builds the app and runs `tests/e2e.cjs`, which starts the real app in a throwaway home folder with stand-in `claude`, `codex` and Grok Bot commands and a stand-in Google server, then clicks through it. On Linux run it under `xvfb-run -a npm test`. It checks 73 things, including:
+This runs the unit tests (`tests/*.test.cjs`, including the claude.ai export reader on a small fake export in `tests/fixtures/claude-export`), then builds the app and runs `tests/e2e.cjs`, which starts the real app in a throwaway home folder with stand-in `claude`, `codex` and Grok Bot commands and a stand-in Google server, then clicks through it. On Linux run it under `xvfb-run -a npm test`. It checks 73 things, including:
 
 - **Board:** cards from every source show up while project folders and scratch sessions don't; Smart group (asking Claude, keeping agents' diagrams); one click opens a card; dragging, grouping by hand (⌘G, rename, ungroup), frame goals, the filter, `sb board` diagrams; positions, groups and lines survive a restart.
 - **Lines and messages:** drawing a line (auto-send on by default, switchable), a reply flowing down it, `sb send --from grok-bot --wait` drawing and lighting a line.
@@ -169,6 +204,7 @@ This builds the app and runs `tests/e2e.cjs`, which starts the real app in a thr
 - **Clients:** replies owed, follow-ups, people you email added as leads, deleted clients not re-added, adding and editing a client.
 - **Corners:** the usage pill, the outputs drawer, Settings, and no Codex anywhere without a Codex account.
 - **Shared brain:** edits saved, and an agent's addition merged in while you're typing.
+- **claude.ai history:** importing an export zip from Settings, Claude matching chats to their Projects, opening a chat read-only, ⌘K over its messages, a Project's threads kept together (with one moved in by hand), re-importing the newer split export without duplicates, a relay chat reporting its Project landing beside them, Show on board, and removing it all.
 
 ### Check these yourself on your Mac
 
@@ -177,9 +213,10 @@ The test can't sign in to real accounts, so check these once after installing:
 1. **Claude, both plans:** sign in on two cards as described above and confirm each shows its own organization and plan. Prompt each card once and check the answer comes back on that card.
 2. **Gmail:** set up the Google client, press **Sign in with Google**, and confirm your threads show on the board and under **Clients**.
 3. **Granola:** open a meeting card and check the notes are there.
-4. **Grok Bot:** turn on "Execution on this computer" in Grok Bot, press **Copy note for Grok Bot** under Settings → **Accounts** and paste it into Grok Bot, then ask Grok Bot to send something to a Claude card and watch the line light up.
-5. **Agent tools:** press **Add Switchboard tools to my agents**, then in any Claude session ask it to list your Switchboard cards.
-6. **App build:** `npm run dist`, open the app from `release`, and check it starts with your board.
+4. **claude.ai history:** export your data from claude.ai, import it under Settings → **Accounts**, and check that your Projects list their chats and that a chat opens with its messages.
+5. **Grok Bot:** turn on "Execution on this computer" in Grok Bot, press **Copy note for Grok Bot** under Settings → **Accounts** and paste it into Grok Bot, then ask Grok Bot to send something to a Claude card and watch the line light up.
+6. **Agent tools:** press **Add Switchboard tools to my agents**, then in any Claude session ask it to list your Switchboard cards.
+7. **App build:** `npm run dist`, open the app from `release`, and check it starts with your board.
 
 ## Development
 

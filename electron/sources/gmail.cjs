@@ -128,13 +128,21 @@ async function threads(account, { force = false } = {}) {
   return res;
 }
 
+// The newest 40 threads, plus every thread from the last week still waiting on your reply (the
+// home shows those), newest first.
+const WEEK = 7 * 86400000;
+const NO_REPLY = /no-?reply|notifications?@|mailer|daemon|calendar-notification/i;
+const awaitsReply = (t) => !t.lastFromMe && t.participants.some((p) => !NO_REPLY.test(p));
+
 async function list(account) {
-  const ts = await threads(account);
-  return ts.slice(0, 40).map((t) => ({
+  const ts = [...(await threads(account))].sort((a, b) => b.updatedAt - a.updatedAt);
+  const since = Date.now() - WEEK;
+  const shown = ts.filter((t, i) => i < 40 || (t.updatedAt >= since && awaitsReply(t)));
+  return shown.map((t) => ({
     id: `gm:${account.id}:${t.id}`, kind: 'thread', source: 'gmail', accountId: account.id,
     title: t.subject, preview: truncate(`${t.last.fromName}: ${t.last.snippet}`, 220), updatedAt: t.updatedAt,
     status: t.lastFromMe ? 'idle' : 'waiting',
-    meta: { threadId: t.id, participants: t.participants, lastFromMe: t.lastFromMe, url: `https://mail.google.com/mail/u/${encodeURIComponent(account.config.email || '0')}/#all/${t.id}` },
+    meta: { threadId: t.id, participants: t.participants, lastFromMe: t.lastFromMe, needsReply: awaitsReply(t), thisWeek: t.updatedAt >= since, url: `https://mail.google.com/mail/u/${encodeURIComponent(account.config.email || '0')}/#all/${t.id}` },
   }));
 }
 

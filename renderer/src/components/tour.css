@@ -1,0 +1,46 @@
+.sb-tour { position: fixed; inset: 0; z-index: 9000; pointer-events: none; }
+.sb-tour .tour-block { position: absolute; inset: 0; pointer-events: auto; background: transparent; }
+.sb-tour .tour-hole {
+  position: absolute; border-radius: 14px; pointer-events: none;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, .7), 0 0 0 9999px rgba(18, 18, 20, .52);
+  transition: left .42s var(--ease), top .42s var(--ease), width .42s var(--ease), height .42s var(--ease), border-radius .42s var(--ease);
+  animation: tour-fade .3s var(--ease);
+}
+.sb-tour .tour-hole.none { box-shadow: 0 0 0 9999px rgba(18, 18, 20, .52); border-radius: 0; }
+.sb-tour .tour-card {
+  position: absolute; pointer-events: auto; box-sizing: border-box;
+  background: var(--card); color: var(--ink); border-radius: var(--r);
+  box-shadow: var(--shadow-lg); padding: 16px 16px 12px;
+  transition: left .42s var(--ease), top .42s var(--ease);
+  animation: tour-in .32s var(--ease);
+}
+.sb-tour .tour-title { font-size: 14px; font-weight: 650; letter-spacing: -0.01em; padding-right: 20px; }
+.sb-tour .tour-body { margin: 6px 0 14px; font-size: 13px; line-height: 1.5; color: var(--ink-2); }
+.sb-tour .tour-x {
+  position: absolute; top: 10px; right: 10px; width: 22px; height: 22px; border-radius: 999px;
+  display: grid; place-items: center; color: var(--ink-3);
+}
+.sb-tour .tour-x:hover { color: var(--ink); background: var(--well); }
+.sb-tour .tour-foot { display: flex; align-items: center; gap: 8px; }
+.sb-tour .tour-dots { display: flex; gap: 4px; }
+.sb-tour .tour-dots i {
+  width: 5px; height: 5px; border-radius: 999px; background: var(--line-2); cursor: pointer;
+  transition: width .3s var(--ease), background .3s var(--ease);
+}
+.sb-tour .tour-dots i.on { width: 14px; background: var(--ink); }
+.sb-tour .tour-step { font-size: 11px; color: var(--ink-3); font-variant-numeric: tabular-nums; }
+.sb-tour .tour-sp { flex: 1; }
+.sb-tour .tour-btn {
+  height: 28px; padding: 0 12px; border-radius: 999px; font-size: 12.5px; font-weight: 550;
+  background: var(--ink); color: #fff;
+}
+.sb-tour .tour-btn:hover { opacity: .9; }
+.sb-tour .tour-btn.ghost { background: transparent; color: var(--ink-2); }
+.sb-tour .tour-btn.ghost:hover { color: var(--ink); background: var(--well); opacity: 1; }
+.sb-tour .tour-skip-link { display: block; margin: 8px auto 0; font-size: 11px; color: var(--ink-3); }
+.sb-tour .tour-skip-link:hover { color: var(--ink); }
+@keyframes tour-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+@keyframes tour-fade { from { opacity: 0; } to { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) {
+  .sb-tour .tour-hole, .sb-tour .tour-card { transition: none; animation: none; }
+}

@@ -1,19 +1,18 @@
 # AI Consolidator (Switchboard)
 
-One whiteboard on your Mac for every AI agent, chat, code project and client you work with.
+One place on your Mac to manage the AI chats you already have: every Claude Code session (across all your Claude accounts), Codex session, Grok Bot, Granola meeting, Gmail thread and Cursor cloud agent. See what each one is doing, answer the ones that need you, and then automate them.
 
-- **Board.** A clean white whiteboard where every Claude Code session (across all your Claude accounts), Codex session, Grok Bot, Granola meeting, Gmail thread, Cursor cloud agent and API chat is a card. One click opens a card with the cursor ready to type; dragging only moves it. Drag a box to select (cards only partly inside count). Code-project folders and throwaway sessions (scratch workspaces, temp folders) stay off the board, and the filter (top right) shows or hides coding sessions, chats, mail, meetings, notes or one agent.
-- **Smart group.** Press **Smart group** and Claude sorts the cards into named frames by client, project or purpose. Frames are soft tinted areas with a name tab (double-click to rename) and an optional goal; **Work toward goal** prompts every agent in the frame. ⌘G still groups selected cards by hand.
-- **Connections.** When one agent sends work to another (for example Grok Bot asking a Claude session to fix a bug), a line appears between the two cards and lights up with the message as it travels. Lines you draw send each finished output to the next card automatically; switch that off from the line's menu.
-- **Quick start.** The dock at the bottom: pick a Claude account (or Grok Bot), type, press Enter. **+** starts on whichever Claude account has used the least this week.
-- **Overall agent.** Lives in the bottom-right corner as a small tab that shows when it's working and flags what needs you: whose turn it is, failed runs, replies you owe, late next steps. Open it (⌘J) to ask across everything, or select a few cards and ask "compare these".
-- **Search.** ⌘K searches every card, including transcripts stored on this Mac. Open the result, put it on the board (⌘Enter), or tag it as context for your next prompt (⌘T).
-- **Outputs.** A drawer on the right edge lists outputs and recent replies as a calm checklist.
-- **Agents can draw.** `sb board` (or the `make_board` tool) puts notes and arrows inside a frame on the board.
-- **Settings** (gear, top right, or ⌘,) holds Accounts, Clients and the shared brain:
-  - **Clients.** A small CRM that ties each client to their email domain, meetings and code folders and lists what's due. People you email back and forth are added as leads on their own; a client you delete is never added back.
-  - **Shared brain.** One notes file every agent can read and add to. It saves as you type.
-- **Usage.** The pill in the top-right corner shows this week's use as a percentage per account; click it for token counts and to set each account's weekly budget.
+- **Chats home (⌘2).** All your chats in one list, grouped into topics by what they're doing. Each topic shows how many are working and how many need you; a blue dot marks a chat waiting on you. Filter and search the list at the top.
+- **Open and reply.** Click a chat to open it and talk. Hover a row to send a quick reply without opening it.
+- **Import chats.** Bring any older chat from any Claude account into the app.
+- **Dock.** The account bubbles at the bottom start a new chat; each shows its usage this week so you can spread work across accounts. Hover one to see what it's working on.
+- **Main agent (⌘J).** The **+** in the dock opens an agent that sees everything: ask "what needs me?", get a daily recap, or ask any question across your chats. It also starts chats, notes and boards, and runs the Showcase.
+- **Search (⌘K).** Find any chat, meeting, project, client or command. Open it, put it on the board (⌘Enter), or tag it as context for your next prompt (⌘T).
+- **Board (⌘1), for automation.** Lay chats out as cards and draw lines between them so one chat's finished output is sent to the next. Notes act as standing instructions; frames group cards around a goal, and **Work toward goal** prompts every agent in the frame. **Smart group** sorts the board for you. Save layouts as named boards and switch between them. **Showcase** plays a short demo.
+- **Usage.** The pill in the top-right corner shows each account's weekly use as a percentage; click it for details and budgets.
+- **Settings (⌘,).** Accounts, Clients (a small CRM tied to email, meetings and folders), the shared brain (one notes file every agent can read and add to), and connecting Grok Bot.
+- **Grok Bot.** Read from the Grok Bot app's local cache on your Mac; sending goes through the app itself. A cloud connector is coming.
+- **Guided tour.** Shows on first launch and walks through each part. Re-open it from ⌘K ("Take the tour"), the **Tour** button in the main agent, or Settings → Accounts.
 
 Everything runs on your computer. Nothing is sent anywhere except to the AI services you already use, the same way their own apps do.
 
@@ -136,6 +135,7 @@ Only programs running as you can use it: it listens on 127.0.0.1 and needs the t
 
 | Keys | Does |
 | --- | --- |
+| ⌘1 / ⌘2 | Board / Chats home |
 | ⌘K | Find any chat, project, client or command |
 | ⌘J | Open the overall agent |
 | ⌘, | Settings (Accounts, Clients, Shared brain) |

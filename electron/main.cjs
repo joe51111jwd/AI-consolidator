@@ -1,5 +1,7 @@
 'use strict';
 const { app, BrowserWindow, ipcMain, shell, nativeTheme, Menu } = require('electron');
+// macOS ignores $HOME for Electron's profile folder, so tests and sandboxes pass their own.
+if (process.env.SB_USER_DATA) app.setPath('userData', process.env.SB_USER_DATA);
 const fs = require('fs');
 const path = require('path');
 const util = require('./util.cjs');
@@ -86,7 +88,10 @@ async function addMcpToAgents() {
     if (a.kind === 'claude-code') {
       const bin = a.config.bin || util.which('claude'); if (!bin) { results.push(`${a.label}: claude command not found`); continue; }
       const env = claudeCode.childEnv(a);
-      await util.run(bin, ['mcp', 'remove', '--scope', 'user', 'switchboard'], { env }).catch(() => {});
+      // Rewriting ~/.claude.json while sessions run is risky, so only touch it when the entry is missing or stale.
+      const have = await util.run(bin, ['mcp', 'get', 'switchboard'], { env }).catch(() => ({ code: 1, stdout: '' }));
+      if (have.code === 0 && (have.stdout || '').includes(sb) && (have.stdout || '').includes(`ac:${a.id}`)) { results.push(`${a.label}: already added`); continue; }
+      if (have.code === 0) await util.run(bin, ['mcp', 'remove', '--scope', 'user', 'switchboard'], { env }).catch(() => {});
       const r = await util.run(bin, ['mcp', 'add', '--scope', 'user', 'switchboard', '-e', `SB_FROM=ac:${a.id}`, '--', sb, 'mcp'], { env });
       results.push(`${a.label}: ${r.code === 0 ? 'added' : util.truncate(r.stderr || r.stdout, 120)}`);
     }

@@ -59,19 +59,34 @@ function heuristic(list, all, clients) {
   return [...groups.values()].sort((a, b) => b.ids.length - a.ids.length);
 }
 
-function describe(e, i, clients) {
+const SOURCE_LABEL = { 'grok-bot': 'Grok bot', 'claude-code': 'Claude chat', codex: 'Codex chat', cursor: 'Cursor agent', gmail: 'email', granola: 'meeting' };
+function describe(e, i, clients, links) {
   const m = e.meta || {};
   const c = clientOf(e, clients);
-  const bits = [e.kind === 'session' ? `${m.category || ''} session` : e.kind, m.cwd && m.cwd !== HOME ? `folder ${path.basename(m.cwd)}` : '', c ? `client ${c.name}` : ''].filter(Boolean).join(', ');
+  const linked = (links.get(e.id) || []).slice(0, 3);
+  const bits = [SOURCE_LABEL[e.source] || (e.kind === 'session' ? `${m.category || ''} session` : e.kind), m.cwd && m.cwd !== HOME ? `folder ${path.basename(m.cwd)}` : '', c ? `client ${c.name}` : '', linked.length ? `linked to ${linked.join(', ')}` : ''].filter(Boolean).join(', ');
   return `${i + 1}. ${truncate(e.title, 80)} (${bits})${e.preview ? ` - ${truncate(e.preview, 100)}` : ''}`;
 }
 
-async function askClaude(list, clients) {
-  const text = `Group these cards from my work whiteboard into 2 to 6 groups by client, project or purpose.
-Reply with JSON only, no prose: {"groups":[{"label":"Short name","items":[1,2]}]}
+function linksFor(list) {
+  const title = new Map(list.map((e) => [e.id, truncate(e.title, 40)]));
+  const links = new Map();
+  for (const ed of hub.edges()) {
+    for (const [a, b] of [[ed.source, ed.target], [ed.target, ed.source]]) {
+      if (!title.has(a) || !title.has(b)) continue;
+      links.set(a, [...(links.get(a) || []), title.get(b)]);
+    }
+  }
+  return links;
+}
+
+async function askClaude(list, clients, instruction) {
+  const rule = String(instruction || '').trim();
+  const text = `Group these cards from my work whiteboard into 2 to 8 groups ${rule ? 'following my rule below exactly' : 'by client, project or purpose'}.
+${rule ? `My rule: "${truncate(rule, 400)}"\n` : ''}Reply with JSON only, no prose: {"groups":[{"label":"Short name","items":[1,2]}]}
 Use every item number exactly once. Labels are 1 to 3 plain words, no numbers or emoji.
 
-${list.map((e, i) => describe(e, i, clients)).join('\n')}`;
+${list.map((e, i) => describe(e, i, clients, linksFor(list))).join('\n')}`;
   const out = await hub.quickAsk(text);
   const m = out.match(/\{[\s\S]*\}/);
   if (!m) throw new Error('Claude did not answer with JSON');
@@ -87,7 +102,30 @@ ${list.map((e, i) => describe(e, i, clients)).join('\n')}`;
   return { groups, rest: list.filter((_, i) => !used.has(i + 1)) };
 }
 
-async function run(ids, { ai = true } = {}) {
+// Notes and outputs follow the card they have a line to, so a line never crosses the board
+// between groups. Groups left empty are dropped.
+const FOLLOWS = /^(nt|out):/;
+function keepLinked(groups) {
+  const where = new Map();
+  groups.forEach((g, i) => g.ids.forEach((id) => where.set(id, i)));
+  for (const e of hub.edges()) {
+    const [mover, anchor] = FOLLOWS.test(e.source) && !FOLLOWS.test(e.target) ? [e.source, e.target]
+      : FOLLOWS.test(e.target) && !FOLLOWS.test(e.source) ? [e.target, e.source] : [null, null];
+    if (!mover || !where.has(mover) || !where.has(anchor) || where.get(mover) === where.get(anchor)) continue;
+    const from = groups[where.get(mover)], to = groups[where.get(anchor)];
+    from.ids = from.ids.filter((id) => id !== mover);
+    to.ids.push(mover);
+    where.set(mover, where.get(anchor));
+  }
+  return groups.filter((g) => g.ids.length);
+}
+
+async function run(ids, opts = {}) {
+  const r = await group(ids, opts);
+  return { ...r, groups: keepLinked(r.groups) };
+}
+
+async function group(ids, { ai = true, instruction = '' } = {}) {
   const all = await hub.entities();
   const byId = new Map(all.map((e) => [e.id, e]));
   const list = [...new Set(Array.isArray(ids) ? ids : [])].map((id) => byId.get(id)).filter(Boolean);
@@ -95,7 +133,7 @@ async function run(ids, { ai = true } = {}) {
   const clients = hub.clients();
   if (ai && list.length > 2 && list.length <= AI_LIMIT) {
     try {
-      const { groups, rest } = await askClaude(list, clients);
+      const { groups, rest } = await askClaude(list, clients, instruction);
       for (const g of heuristic(rest, all, clients)) {
         const same = groups.find((x) => x.label.toLowerCase() === g.label.toLowerCase());
         if (same) same.ids.push(...g.ids); else groups.push(g);

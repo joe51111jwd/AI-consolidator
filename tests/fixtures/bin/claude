@@ -45,7 +45,7 @@ process.stdin.on('end', () => {
   const cwd = process.cwd();
   log({ args, cwd, configDir: process.env.CLAUDE_CONFIG_DIR || null, sessionId: id, prompt: input });
   const first = input.trim().split('\n').pop().slice(0, 120);
-  const reply = process.env.SB_STUB_REPLY || smartGroup(input) || `Done (${path.basename(dir)}): ${first}`;
+  const reply = process.env.SB_STUB_REPLY || smartGroup(input) || topics(input) || `Done (${path.basename(dir)}): ${first}`;
   const out = (o) => process.stdout.write(JSON.stringify(o) + '\n');
   out({ type: 'system', subtype: 'init', session_id: id, cwd, model: 'claude-sonnet-5-5' });
   const mid = 'msg_' + crypto.randomBytes(6).toString('hex');
@@ -66,9 +66,28 @@ function smartGroup(text) {
   const groups = new Map();
   for (const line of text.split('\n')) {
     const m = line.match(/^(\d+)\. /); if (!m) continue;
-    const c = line.match(/[(,]\s*client ([^,)]+)\)/);
+    const c = line.match(/[(,]\s*client ([^,)]+)[,)]/);
     const label = c ? c[1].trim() : 'Everything else';
     groups.set(label, [...(groups.get(label) || []), Number(m[1])]);
   }
   return JSON.stringify({ groups: [...groups].map(([label, items]) => ({ label, items })) });
+}
+
+// The home asks for topics as JSON: one per client, else per project folder. Meetings, emails and
+// outputs (lines tagged "[meeting]" etc.) with no client join a folder topic named in their title.
+function topics(text) {
+  if (!/Sort them into 2 to 8 topics/.test(text)) return null;
+  const rows = [];
+  for (const line of text.split('\n')) {
+    const m = line.match(/^(\d+)\. (\[[^\]]+\] )?(.*?) \(([^)]*)\)/); if (!m) continue;
+    const client = m[4].match(/client ([^,]+)/), folder = m[4].match(/folder ([^,]+)/);
+    rows.push({ n: Number(m[1]), title: m[3].toLowerCase(), label: client ? client[1].trim() : folder ? folder[1].trim() : null });
+  }
+  const folders = [...new Set(rows.map((r) => r.label).filter(Boolean))];
+  const groups = new Map();
+  for (const r of rows) {
+    const label = r.label || folders.find((f) => r.title.includes(f.toLowerCase())) || 'Everything else';
+    groups.set(label, [...(groups.get(label) || []), r.n]);
+  }
+  return JSON.stringify({ topics: [...groups].map(([label, items]) => ({ label, summary: `${items.length} items`, items })) });
 }

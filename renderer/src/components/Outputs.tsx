@@ -5,17 +5,35 @@ import { api, Run } from '../lib/api';
 import { ago, md, SOURCE } from '../lib/format';
 import { dragOutput } from '../nodes/nodes';
 import { AgentLogo } from './Logos';
+import { clean } from './LiveView';
 import './panels.css';
 
 interface Item { id: string; ref: string; title: string; sub?: string; source: string; color?: string; ts: number; text: string; sourceId: string; working?: boolean; saved?: boolean }
 
-const firstLine = (t: string) => (t.split('\n').map((l) => l.replace(/^[#>*\-\s`]+/, '').trim()).find(Boolean) || '').slice(0, 90);
+// Title from the first real line, as plain text; a lead-in ending in ":" gives way to the line after it.
+const firstLine = (t: string) => {
+  const lines = t.split('\n').map((l) => clean(l.replace(/^\s*([-*]|\d+\.)\s+/, ''))).filter(Boolean);
+  return ((lines[0]?.endsWith(':') && lines[1]) || lines[0] || '').slice(0, 90);
+};
 const RUN_WINDOW = 12 * 3600000;
-interface Recent { id: string; title: string; source: string; text: string; ts: number }
+interface Recent { id: string; title: string; source: string; text: string; ts: number; sent?: boolean }
 
 const URL_RE = /https?:\/\/[^\s)<>\]"'`]+/g;
 const linksIn = (t: string) => [...new Set((t.match(URL_RE) || []).map((u) => u.replace(/[.,;:!?]+$/, '')))].slice(0, 4);
 const host = (u: string) => { try { return new URL(u).hostname.replace(/^www\./, ''); } catch { return u; } };
+// A session's last reply only counts as an output when it reads like a deliverable: the session is done,
+// the reply is substantial, and it carries a link, a file path, a heading, a list or code. Progress chatter
+// ("I'll wait in the foreground…"), small talk and Switchboard's own internal runs stay out.
+const INTERNAL = /^(You are the overall agent inside Switchboard|Group these cards from my work whiteboard)/i;
+const DELIVERABLE = /https?:\/\/|(^|\s)(~|\.{0,2})\/[\w.-]+\/[\w./-]+|\b[\w-]+\.(md|pdf|docx?|csv|xlsx|png|html|tsx?|py)\b|^#{1,4}\s|^\s*([-*]|\d+\.)\s|```/m;
+export function isDeliverable(text: string, status?: string, title?: string) {
+  const t = (text || '').trim();
+  if (status === 'running' || status === 'waiting') return false;
+  if (title && INTERNAL.test(title)) return false;
+  if (INTERNAL.test(t)) return false;
+  return t.length > 200 && DELIVERABLE.test(t);
+}
+
 const dataOf = (d: any) => { if (typeof d !== 'string') return d || {}; try { return JSON.parse(d); } catch { return {}; } };
 
 function Links({ text }: { text: string }) {
@@ -97,6 +115,9 @@ export default function Outputs() {
     const seen = new Set(out.map((x) => `${x.ref}:${x.text.trim().slice(0, 80)}`));
     for (const r of recent) {
       if (seen.has(`${r.id}:${r.text.trim().slice(0, 80)}`)) continue;
+      const card = byId[r.id];
+      // Replies to work you sent from Switchboard always count; anything else must read like a deliverable.
+      if (!r.sent && (card?.meta?.noise || card?.meta?.internal || !isDeliverable(r.text, card?.status, card?.title || r.title))) continue;
       out.push({ id: `rc:${r.id}:${r.ts}`, ref: r.id, title: firstLine(r.text) || 'Reply', sub: r.title, source: r.source, color: colorOf(r.id), ts: r.ts, text: r.text, sourceId: r.id });
     }
     return out.sort((a, b) => Number(!!b.working) - Number(!!a.working) || b.ts - a.ts);

@@ -7,16 +7,24 @@ export const PALETTE = ['#D97757', '#6D5BD0', '#2F6B55', '#3F5E8C', '#B08A2E', '
 
 const blank = (e: Entity) => !(e.preview || '').trim();
 
+// Runs Switchboard itself started (the overall agent, smart grouping) are plumbing, not the user's work.
+const INTERNAL_RE = /^\s*(You are the overall agent inside Switchboard|Group these cards from my work whiteboard)/;
+const APP_DIR_RE = /[\\/]\.switchboard([\\/]|$)/;
+export const isInternal = (e: Entity) =>
+  e.kind === 'session' && (
+    (typeof e.meta?.cwd === 'string' && APP_DIR_RE.test(e.meta.cwd))
+    || [e.title, e.preview, e.meta?.activity?.prompt, e.meta?.firstPrompt].some((t) => typeof t === 'string' && INTERNAL_RE.test(t)));
+
 // Which cards show up on the board without the user placing them.
 export function defaultVisible(e: Entity, now = Date.now()) {
-  if (isNoise(e)) return false;
-  // Grok bots you haven't touched in three weeks stay off the board until you add them back.
-  if (e.source === 'grok-bot' && e.kind === 'session') return now - (e.meta?.lastActivityAt || e.updatedAt) < 21 * DAY;
+  if (isNoise(e) || isInternal(e)) return false;
+  // The board is this week: Grok bots quiet for a week stay off it until they're active again or you add them back.
+  if (e.source === 'grok-bot' && e.kind === 'session') return now - (e.meta?.lastActivityAt || e.updatedAt) < 7 * DAY;
   switch (e.kind) {
     case 'account': case 'client': case 'note': case 'error': return true;
     case 'output': return !blank(e) || now - e.updatedAt < 120000;
     case 'session': return now - e.updatedAt < 7 * DAY;
-    case 'meeting': return now - e.updatedAt < 5 * DAY;
+    case 'meeting': return now - e.updatedAt < 7 * DAY;
     case 'thread': return e.status === 'waiting' && now - e.updatedAt < 7 * DAY;
     default: return false;
   }
@@ -24,7 +32,7 @@ export function defaultVisible(e: Entity, now = Date.now()) {
 
 // Cards that never render, even if an older layout placed them.
 export function suppressed(e: Entity, now = Date.now()) {
-  return e.kind === 'project' || isNoise(e) || (e.kind === 'output' && blank(e) && now - e.updatedAt > 600000);
+  return e.kind === 'project' || isNoise(e) || isInternal(e) || (e.kind === 'output' && blank(e) && now - e.updatedAt > 600000);
 }
 
 // ---------- filter ----------
@@ -54,7 +62,7 @@ export function estH(e?: Entity): number {
 }
 
 // ---------- grouping ----------
-export interface GroupSpec { label: string; color?: string; ids: string[] }
+export interface GroupSpec { label: string; color?: string; ids: string[]; topic?: string }
 
 function matchesClient(c: Client, email: string) {
   if (!email) return false; email = email.toLowerCase();
@@ -97,6 +105,41 @@ export function heuristicGroups(list: Entity[], all: Record<string, Entity> = {}
   return [...by.values()].sort((a, b) => a.rank - b.rank).map(({ label, color, ids }) => ({ label, ids, color: color || PALETTE[i++ % PALETTE.length] }));
 }
 
+// ---------- the week board ----------
+export const ARRANGED_KEY = 'boardArranged';
+export const GROK_TOPIC = 'grok';
+export interface WeekTopic { id: string; label: string; ids: string[] }
+export interface WeekFlags { attn: (id: string) => boolean; running: (id: string) => boolean }
+
+const isBot = (e?: Entity) => !!e && e.source === 'grok-bot' && e.kind === 'session';
+
+// Topics become frames, ordered: needing you first, then working, then the rest by latest activity.
+// Grok bots not tied to a topic (none, or a topic that is just that bot) share a "Grok bots" frame;
+// anything no topic covers falls back to the quick grouping, after the topics.
+export function weekGroups(ids: string[], topics: WeekTopic[], byId: Record<string, Entity>, f: WeekFlags): GroupSpec[] {
+  const want = new Set(ids.filter((id) => byId[id])), used = new Set<string>();
+  const ranked: (GroupSpec & { attn: number; work: number; latest: number })[] = [];
+  const bots: string[] = [];
+  const add = (label: string, list: string[], topic: string) => {
+    const at = (id: string) => byId[id]?.updatedAt || 0;
+    const score = (id: string) => (f.attn(id) ? 2 : 0) + (f.running(id) ? 1 : 0);
+    const sorted = [...list].sort((a, b) => score(b) - score(a) || at(b) - at(a));
+    ranked.push({ label, ids: sorted, topic, attn: list.filter(f.attn).length, work: list.filter(f.running).length, latest: Math.max(0, ...list.map(at)) });
+  };
+  for (const t of topics) {
+    const mine = (t.ids || []).filter((id) => want.has(id) && !used.has(id));
+    if (!mine.length) continue;
+    mine.forEach((id) => used.add(id));
+    const solo = mine.every((id) => isBot(byId[id])) && (mine.length === 1 || mine.some((id) => byId[id].title === t.label));
+    if (solo) bots.push(...mine); else add(String(t.label || 'Topic').slice(0, 60), mine, t.id);
+  }
+  for (const id of want) if (!used.has(id) && isBot(byId[id])) { used.add(id); bots.push(id); }
+  if (bots.length) add('Grok bots', bots, GROK_TOPIC);
+  ranked.sort((a, b) => Number(b.attn > 0) - Number(a.attn > 0) || Number(b.work > 0) - Number(a.work > 0) || b.latest - a.latest);
+  const rest = heuristicGroups([...want].filter((id) => !used.has(id)).map((id) => byId[id]), byId);
+  return [...ranked.map(({ label, ids: gids, topic }, i) => ({ label, ids: gids, topic, color: PALETTE[i % PALETTE.length] })), ...rest];
+}
+
 // Keeps only known ids, each once; anything the grouping missed lands in a final group.
 export function cleanGroups(raw: any, ids: string[]): GroupSpec[] {
   const want = new Set(ids), seen = new Set<string>();
@@ -106,7 +149,7 @@ export function cleanGroups(raw: any, ids: string[]): GroupSpec[] {
     for (const id of Array.isArray(g?.ids) ? g.ids : []) if (typeof id === 'string' && want.has(id) && !seen.has(id)) { seen.add(id); gids.push(id); }
     if (!gids.length) continue;
     const color = typeof g.color === 'string' && /^#[0-9a-f]{3,8}$/i.test(g.color) ? g.color : PALETTE[out.length % PALETTE.length];
-    out.push({ label: String(g.label || 'Group').slice(0, 60), color, ids: gids });
+    out.push({ label: String(g.label || 'Group').slice(0, 60), color, ids: gids, ...(typeof g.topic === 'string' ? { topic: g.topic } : {}) });
   }
   const rest = ids.filter((id) => !seen.has(id));
   if (rest.length) out.push({ label: 'Other', color: '#71717A', ids: rest });
@@ -135,7 +178,7 @@ export function frameLayout(groups: GroupSpec[], heightOf: (id: string) => numbe
     const w = PAD * 2 + cols * CARD_W + (cols - 1) * GUTTER;
     const h = HEAD + Math.max(...colH) - GUTTER + PAD;
     if (x > 0 && x + w > MAXW) { x = 0; y += shelf + GAP; shelf = 0; }
-    rows.push({ id: gid, x: origin.x + x, y: origin.y + y, w, h, parent_id: null, data: { label: g.label, color: g.color || PALETTE[gi % PALETTE.length], smart: true } }, ...kids);
+    rows.push({ id: gid, x: origin.x + x, y: origin.y + y, w, h, parent_id: null, data: { label: g.label, color: g.color || PALETTE[gi % PALETTE.length], smart: true, ...(g.topic ? { topic: g.topic } : {}) } }, ...kids);
     x += w + GAP; shelf = Math.max(shelf, h);
   });
   return { rows, bottom: origin.y + y + shelf };
@@ -164,7 +207,8 @@ function homeFrame(e: Entity, rows: BoardRow[], byId: Record<string, Entity>) {
 
 // Where to put cards that appeared since the last layout: in their home frame if it can grow without
 // running into anything, otherwise in a column to the right of everything.
-export function placeNew(ids: string[], existing: BoardRow[], byId: Record<string, Entity>): BoardRow[] {
+// `prefer` names a frame to try first (the card's topic frame on the week board).
+export function placeNew(ids: string[], existing: BoardRow[], byId: Record<string, Entity>, prefer?: (e: Entity) => string | undefined): BoardRow[] {
   const rows = existing.filter((r) => !r.hidden).map((r) => ({ ...r }));
   const out = new Map<string, BoardRow>();
   const tops = rows.filter((r) => !r.parent_id);
@@ -172,7 +216,8 @@ export function placeNew(ids: string[], existing: BoardRow[], byId: Record<strin
   let col = 0, colY = 0;
   for (const id of ids) {
     const e = byId[id];
-    const g = e && rows.find((r) => r.id === homeFrame(e, rows, byId) && r.w && r.h);
+    const want = e && ((prefer && prefer(e)) || homeFrame(e, rows, byId));
+    const g = want ? rows.find((r) => r.id === want && r.w && r.h) : undefined;
     if (g && e) {
       const cols = Math.max(1, Math.round((g.w! - 2 * PAD + GUTTER) / COL));
       const bottoms = new Array(cols).fill(HEAD);

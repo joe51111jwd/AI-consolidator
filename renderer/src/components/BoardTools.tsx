@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Funnel, Sparkles, Check, ChevronDown, Plus, Save, X, Loader2, Eye } from 'lucide-react';
+import { Funnel, Sparkles, Check, ChevronDown, Plus, Save, X, Loader2, Eye, CalendarDays } from 'lucide-react';
 import { useStore } from '../lib/store';
 import { api } from '../lib/api';
 import { AgentLogo } from './Logos';
@@ -54,7 +54,7 @@ function useAway(ref: React.RefObject<HTMLDivElement | null>, onClose: () => voi
 }
 
 // Saved boards: snapshot the layout under a name, switch between them, or start blank.
-function BoardSwitcher() {
+function BoardSwitcher({ onArranged }: { onArranged: () => void }) {
   const [open, setOpen] = useState(false);
   const [list, setList] = useState<Saved[]>([]);
   const [current, setCurrent] = useState<string | null>(null);
@@ -65,7 +65,8 @@ function BoardSwitcher() {
   const load = () => api.call<{ boards: Saved[]; current: string | null }>('boards:list').then((r) => { setList(r?.boards || []); setCurrent(r?.current || null); }).catch(() => {});
   useEffect(() => { load(); }, []);
   useAway(ref, () => { setOpen(false); setNaming(false); }, '.bt-boards');
-  const after = async (msg: string) => { await load(); const s = useStore.getState(); await s.refreshBoard(); await s.refresh(true); notify(msg); setOpen(false); setNaming(false); };
+  // A saved or blank board is your arrangement: opening the app keeps it instead of laying out the week.
+  const after = async (msg: string) => { onArranged(); await load(); const s = useStore.getState(); await s.refreshBoard(); await s.refresh(true); notify(msg); setOpen(false); setNaming(false); };
   const save = async () => { const n = name.trim(); if (!n) return; await api.call('boards:save', n); await after(`Saved “${n}”`); setName(''); };
   return (
     <div className="bt-wrap">
@@ -97,12 +98,35 @@ function BoardSwitcher() {
 }
 
 // Floating board controls under the shell's top-right cluster: filter and AI grouping.
-export default function BoardTools({ busy, onSmart, off, setOff, overview, onOverview }: { busy: boolean; onSmart: () => void; off: string[]; setOff: (o: string[]) => void; overview: boolean; onOverview: () => void }) {
+const GROUP_PRESETS = ['Client', 'Work being done', 'Account', 'Client or work being done; Grok bots in their own group unless they belong to one project'];
+
+// "Group by…": presets or your own words; Smart group then follows that rule.
+function GroupByPanel({ onPick, onClose }: { onPick: (rule: string) => void; onClose: () => void }) {
+  const [rule, setRule] = useState(() => localStorage.getItem('sb.groupRule') || '');
+  const go = (r: string) => { const t = r.trim(); if (!t) return; localStorage.setItem('sb.groupRule', t); onPick(t); onClose(); };
+  return (
+    <div className="bt-panel bt-groupby" data-testid="group-by-panel">
+      <div className="bt-h">Group by</div>
+      {GROUP_PRESETS.map((p) => <button key={p} className="bt-row" onClick={() => go(p)}>{p}</button>)}
+      <input autoFocus className="bt-rule" value={rule} placeholder="Or say how, e.g. by client" data-testid="group-rule"
+        onChange={(e) => setRule(e.target.value)} onKeyDown={(e) => { e.stopPropagation(); if (e.key === 'Enter') go(rule); if (e.key === 'Escape') onClose(); }} />
+    </div>
+  );
+}
+
+export default function BoardTools({ busy, onSmart, onWeek, onArranged, off, setOff, overview, onOverview }: {
+  busy: boolean; onSmart: (rule?: string) => void; onWeek: () => void; onArranged: () => void;
+  off: string[]; setOff: (o: string[]) => void; overview: boolean; onOverview: () => void;
+}) {
   const [open, setOpen] = useState(false);
+  const [groupBy, setGroupBy] = useState(false);
   const toggle = (k: string) => setOff(off.includes(k) ? off.filter((x) => x !== k) : [...off, k]);
   return (
     <div className="board-tools" onClick={(e) => e.stopPropagation()}>
-      <BoardSwitcher />
+      <BoardSwitcher onArranged={onArranged} />
+      <button className="bt-btn bt-week" data-testid="week-board" onClick={onWeek} disabled={busy} title="Lay out everything from this week, by what it's about">
+        <CalendarDays size={14} /><span>This week</span>
+      </button>
       <div className="bt-wrap">
         <button className={`bt-btn bt-filter ${off.length ? 'active' : ''}`} title="Filter the board" onClick={() => setOpen(!open)}>
           <Funnel size={14} />{off.length > 0 && <i className="bt-dot" />}
@@ -112,9 +136,15 @@ export default function BoardTools({ busy, onSmart, off, setOff, overview, onOve
       <button className={`bt-btn bt-overview ${overview ? 'active' : ''}`} onClick={onOverview} title={overview ? 'Back to your layout' : 'See everything going on, grouped by client'}>
         <Eye size={14} /><span>Overview</span>
       </button>
-      <button className={`bt-btn bt-smart ${busy ? 'busy' : ''}`} onClick={onSmart} disabled={busy} title="Let AI sort the board into groups">
-        {busy ? <Loader2 size={14} className="bt-spin" /> : <Sparkles size={14} />}<span>{busy ? 'Grouping…' : 'Smart group'}</span>
-      </button>
+      <div className="bt-wrap bt-smart-wrap">
+        <button className={`bt-btn bt-smart ${busy ? 'busy' : ''}`} onClick={() => onSmart()} disabled={busy} title="Let AI sort the board into groups">
+          {busy ? <Loader2 size={14} className="bt-spin" /> : <Sparkles size={14} />}<span>{busy ? 'Grouping…' : 'Smart group'}</span>
+        </button>
+        <button className="bt-btn bt-groupby-btn" disabled={busy} onClick={() => setGroupBy(!groupBy)} title="Group by…" data-testid="group-by">
+          <ChevronDown size={14} />
+        </button>
+        {groupBy && <GroupByPanel onPick={(r) => onSmart(r)} onClose={() => setGroupBy(false)} />}
+      </div>
     </div>
   );
 }

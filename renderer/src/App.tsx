@@ -7,17 +7,21 @@ import Inspector from './components/Inspector';
 import Chief from './components/Chief';
 import Palette from './components/Palette';
 import Onboarding from './components/Onboarding';
+import Tour from './components/Tour';
+import ImportChats from './components/ImportChats';
 import Outputs from './components/Outputs';
 import Dock from './components/Dock';
 import UsagePill from './components/UsagePill';
 import Settings, { SettingsTab } from './components/Settings';
 import BrandMark from './components/BrandMark';
 import LiveView from './components/LiveView';
+import { BoardToDo } from './components/home/ToDo';
 import './components/shell.css';
 
 const TABS = ['accounts', 'clients', 'brain'];
 type Mode = 'board' | 'live';
 const MODE_KEY = 'sb.mode';
+// The board (this week's work, laid out) is the home; the list only once you've picked it.
 const savedMode = (): Mode => (localStorage.getItem(MODE_KEY) === 'live' ? 'live' : 'board');
 
 export default function App() {
@@ -45,7 +49,7 @@ export default function App() {
     (window as any).__sbRefresh = async () => { await useStore.getState().refresh(true); await useStore.getState().refreshBoard(); };
     // Used by the end-to-end tests: 'board' closes the settings panel, anything else opens that tab.
     (window as any).__sbView = (name: string) => set({ settingsTab: TABS.includes(name) ? (name as SettingsTab) : null });
-    // Used by the end-to-end tests: 'live' shows the simple list, anything else the board.
+    // Used by the end-to-end tests: 'live' shows the list, anything else the board.
     (window as any).__sbMode = (name: string) => setMode(name === 'live' ? 'live' : 'board');
     // Used by the screenshot mode in main.cjs to step through screens.
     (window as any).__sbScene = (i: number) => {
@@ -69,22 +73,23 @@ export default function App() {
     <div className={`shell ${window.sbBridge?.platform === 'darwin' ? 'mac' : ''}`}>
       <ReactFlowProvider>
         <main className={`main ${mode === 'live' ? 'is-hidden' : ''}`} aria-hidden={mode === 'live'}><Board /></main>
-        {mode === 'live' && <LiveView />}
+        {mode === 'live' && <LiveView onMode={setMode} />}
+        {mode === 'board' && <BoardToDo />}
         <div className="drag-strip" />
         <div className="float tl">
           <div className="tl-pill">
             <BrandMark />
             <span className="div" />
-            <button className="search-btn" data-testid="search" onClick={() => set({ paletteOpen: true })}><Search size={14} />Search<kbd>⌘K</kbd></button>
+            <button className="search-btn" data-testid="search" data-tour="search" onClick={() => set({ paletteOpen: true })}><Search size={14} />Search<kbd>⌘K</kbd></button>
           </div>
-          <div className="mode-seg" role="tablist" aria-label="View">
+          <div className="mode-seg" role="tablist" aria-label="View" data-tour="mode">
             <button role="tab" aria-selected={mode === 'board'} className={mode === 'board' ? 'on' : ''} data-testid="mode-board" title="Board (⌘1)" onClick={() => setMode('board')}>Board</button>
-            <button role="tab" aria-selected={mode === 'live'} className={mode === 'live' ? 'on' : ''} data-testid="mode-live" title="Live (⌘2)" onClick={() => setMode('live')}>Live</button>
+            <button role="tab" aria-selected={mode === 'live'} className={mode === 'live' ? 'on' : ''} data-testid="mode-live" title="List (⌘2)" onClick={() => setMode('live')}>List</button>
           </div>
         </div>
         <div className="float tr">
           <UsagePill />
-          <button className={`round-btn ${settingsTab ? 'on' : ''}`} title="Settings (⌘,)" data-testid="settings-btn" onClick={() => set({ settingsTab: settingsTab ? null : 'accounts' })}><Settings2 size={16} /></button>
+          <button className={`round-btn ${settingsTab ? 'on' : ''}`} title="Settings (⌘,)" data-testid="settings-btn" data-tour="settings" onClick={() => set({ settingsTab: settingsTab ? null : 'accounts' })}><Settings2 size={16} /></button>
         </div>
         <Dock />
         <Outputs />
@@ -92,6 +97,8 @@ export default function App() {
         {inspector && <Inspector />}
         <Palette />
         <Onboarding />
+        <Tour />
+        <ImportChats />
         <Settings />
       </ReactFlowProvider>
       {toast && <div className="toast">{toast}</div>}

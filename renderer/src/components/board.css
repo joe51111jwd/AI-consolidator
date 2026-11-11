@@ -129,8 +129,10 @@
 .board .board-switch.on { background: #18181B; }
 .board .board-switch.on i { transform: translateX(12px); }
 
-/* ---------- floating board tools ---------- */
-.board-tools { position: absolute; z-index: 5; top: 64px; right: 16px; display: flex; align-items: center; gap: 6px; }
+/* ---------- board tools: in the top bar, centred, never over the canvas ---------- */
+.board-tools { position: fixed; z-index: 6; top: 10px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 6px; -webkit-app-region: no-drag; }
+.board-tools .bt-panel { right: auto; left: 0; transform-origin: top left; }
+@media (max-width: 1180px) { .board-tools { left: auto; right: 16px; top: 52px; transform: none; } .board-tools .bt-panel { left: auto; right: 0; transform-origin: top right; } }
 .bt-wrap { position: relative; }
 .bt-btn {
   height: 32px; min-width: 32px; padding: 0 9px; border-radius: 999px; display: inline-flex; align-items: center; justify-content: center; gap: 7px;
@@ -252,11 +254,9 @@
 @keyframes attn-pulse { 0%, 100% { box-shadow: 0 0 0 2px #fff, 0 0 0 2px rgba(37, 99, 235, .35); } 50% { box-shadow: 0 0 0 2px #fff, 0 0 0 6px rgba(37, 99, 235, 0); } }
 .board .frame-attn { min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px; background: #2563EB; color: #fff; font-size: 10px; font-weight: 600; display: inline-flex; align-items: center; justify-content: center; flex: none; }
 
-/* ---------- overview: running cards pop, idle ones recede ---------- */
-.board.overview .react-flow__node:not(.react-flow__node-group) > .card { transition: opacity .25s ease; }
-.board.overview .react-flow__node > .card:not(.is-running):not(.needs-you) { opacity: .55; }
-.board.overview .card.is-running .activity, .board.overview .card.is-running .act-now { font-size: 13px; font-weight: 500; color: #18181B; }
-.board.overview .card.is-running .act-prompt { display: none; }
+/* ---------- overview: everything at full strength, frame names readable from far out ---------- */
+.board.overview .frame-tab { transform: scale(1.8); transform-origin: left bottom; }
+.board.overview .frame-goal { visibility: hidden; }
 .bt-overview { padding: 0 12px 0 10px; }
 
 /* ---------- notes: link mode + start chat ---------- */
@@ -342,9 +342,14 @@
 .board .card.v2 .due-tag.red { background: var(--red-soft, #FEF3F2); color: var(--red, #B42318); }
 
 /* the drawer */
+.board .card.v2.inspected .card-more { display: none; }
+.board .react-flow__node > .card.v2.inspected .card-face { box-shadow: 0 0 0 1.5px #18181B, 0 10px 26px -14px rgba(24, 24, 27, .3); }
 .board .card.v2 .card-more { display: grid; grid-template-rows: 0fr; opacity: 0; margin-top: -5px; transition: grid-template-rows .22s cubic-bezier(.2, .7, .2, 1), opacity .16s ease, margin-top .22s ease; }
 .board .card.v2 .card-more-in { min-height: 0; overflow: hidden; display: flex; flex-direction: column; gap: 8px; }
 .board .card.v2 .card-more-in > :first-child { margin-top: 6px; }
+.board .card.v2 .card-steps { display: flex; flex-direction: column; gap: 3px; font-size: 11.5px; color: #52525B; }
+.board .card.v2 .card-steps .step { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.board .card.v2 .card-steps .step b { font-weight: 550; color: #8A8A93; margin-right: 5px; }
 .board .react-flow__node:hover > .card.v2 .card-more { grid-template-rows: 1fr; opacity: 1; margin-top: 0; transition-delay: .12s; }
 .board .react-flow__node.selected > .card.v2 .card-more,
 .board .react-flow__node > .card.v2:focus-within .card-more,
@@ -373,9 +378,21 @@
 .board .card.v2 .grok-hide { margin-left: -2px; }
 .board .react-flow__node:hover .card.v2.grok-card .grok-hide { opacity: 1; }
 
-/* overview: the now line is the headline */
-.board.overview .card.v2.is-running .card-now { font-size: 12.5px; }
-.board.overview .react-flow__node > .card.v2:not(.is-running):not(.needs-you) { opacity: .55; }
 .board .card.v2 > .react-flow__handle { z-index: 2; }
 .board .card.v2 > .react-flow__resize-control { z-index: 3; }
 .board .card.v2 .kind-chip { height: auto; padding: 0; background: none; box-shadow: none; color: inherit; font-size: inherit; font-weight: 500; letter-spacing: 0; }
+
+.bt-smart-wrap { display: flex; gap: 2px; }
+.bt-smart-wrap .bt-smart { border-top-right-radius: 6px; border-bottom-right-radius: 6px; }
+.bt-groupby-btn { width: 30px; justify-content: center; padding: 0; border-top-left-radius: 6px; border-bottom-left-radius: 6px; }
+.board-tools .bt-groupby { left: auto; right: 0; width: 280px; transform-origin: top right; }
+.bt-groupby .bt-row { color: #3F3F46; height: auto; min-height: 30px; padding: 6px 10px; line-height: 1.35; white-space: normal; }
+.bt-groupby .bt-row:hover { background: #F4F4F5; color: #18181B; }
+.bt-rule { width: calc(100% - 12px); margin: 6px; height: 32px; border-radius: 9px; border: 1px solid #E4E4E7; padding: 0 10px; font: inherit; font-size: 12.5px; outline: none; }
+.bt-rule:focus { border-color: #18181B; }
+
+/* ---------- related lines (client-side only, never saved, never send) ---------- */
+.board .react-flow__edge-path.edge-related { stroke: #D4D4D8; stroke-width: 1; stroke-dasharray: 3 5; pointer-events: none; }
+.board .react-flow__edge:has(.edge-related) { pointer-events: none; }
+.bt-week { padding: 0 12px 0 10px; }
+.bt-btn:disabled { opacity: .55; cursor: default; }

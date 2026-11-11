@@ -4,6 +4,7 @@ import { useStore } from '../lib/store';
 import { api, Account, Entity } from '../lib/api';
 import { AgentLogo } from './Logos';
 import { useUsage, weeklyPct } from './UsagePill';
+import { clean, toolVerb } from './LiveView';
 import './shell.css';
 
 const AUTO = 'auto';
@@ -15,7 +16,7 @@ function placeholder(a: Account, auto: boolean) {
 }
 
 function oneLine(s?: unknown, n = 70) {
-  const t = (typeof s === 'string' ? s : '').replace(/[#*`_>|[\]]/g, '').replace(/\s+/g, ' ').trim();
+  const t = clean(typeof s === 'string' ? s : '');
   return t.length > n ? '…' + t.slice(-n) : t;
 }
 
@@ -37,6 +38,7 @@ export default function Dock() {
   const wrap = useRef<HTMLDivElement>(null);
   const input = useRef<HTMLInputElement>(null);
   const hoverT = useRef<any>(null);
+  const [under, setUnder] = useState(false);
 
   const claude = accounts.filter((a) => a.kind === 'claude-code');
   const others = accounts.filter((a) => a.kind === 'grok-bot' || a.kind === 'codex');
@@ -108,12 +110,27 @@ export default function Dock() {
     return () => window.removeEventListener('sb:dock-pick', on);
   }, []);
   useEffect(() => () => clearTimeout(hoverT.current), []);
+  // Fade the dock while a card sits underneath it, so it never hides the bottom of a card.
+  useEffect(() => {
+    const t = setInterval(() => {
+      const el = wrap.current;
+      if (!el || document.hidden) return;
+      const d = el.getBoundingClientRect();
+      let hit = false;
+      for (const n of document.querySelectorAll('.react-flow__node')) {
+        const r = n.getBoundingClientRect();
+        if (r.right > d.left && r.left < d.right && r.bottom > d.top - 6 && r.top < d.bottom) { hit = true; break; }
+      }
+      setUnder(hit);
+    }, 400);
+    return () => clearInterval(t);
+  }, []);
 
   const enter = (id: string) => { clearTimeout(hoverT.current); setHover(id); };
   const leave = () => { clearTimeout(hoverT.current); hoverT.current = setTimeout(() => setHover(null), 220); };
   const choose = (id: string) => { set({ chiefOpen: false }); setPick(pick === id ? null : id); };
   const label = (a: Account, off: boolean) => off ? `${a.label} · not signed in` : pct[a.id] != null ? `${a.label} · ${pct[a.id]}% this week` : a.label;
-  const activityText = (a: any): string => typeof a === 'string' ? a : a ? [a.tool, a.text].filter(Boolean).join(' · ') : '';
+  const activityText = (a: any): string => typeof a === 'string' ? a : a ? (a.tool ? toolVerb(a.tool) : a.text || '') : '';
   const activity = (e: Entity) => oneLine(activityText(e.meta?.activity)) || (live[e.id]?.status === 'running' ? oneLine(live[e.id]?.text) : '') || oneLine(e.preview) || '—';
   const send = async () => {
     const t = text.trim();
@@ -133,7 +150,7 @@ export default function Dock() {
   };
 
   return (
-    <div ref={wrap} className={`dock ${target ? 'open' : ''}`} data-testid="dock">
+    <div ref={wrap} className={`dock ${target ? 'open' : ''} ${under && !target && !hover ? 'under' : ''}`} data-testid="dock" data-tour="dock">
       {bubbles.map((a) => {
         const auth = a.config?.auth;
         const off = a.kind === 'claude-code' && auth && auth.loggedIn === false;
@@ -167,7 +184,7 @@ export default function Dock() {
           </span>
         );
       })}
-      <button className={`dock-b add ${chiefOpen ? 'on' : ''} ${chiefRunning ? 'working' : ''}`} data-tip={chiefOpen ? undefined : runningCount ? `Agent · ${runningCount} working  ⌘J` : 'Agent  ⌘J'} aria-label="Agent" aria-expanded={chiefOpen} data-testid="dock-plus"
+      <button className={`dock-b add ${chiefOpen ? 'on' : ''} ${chiefRunning ? 'working' : ''}`} data-tip={chiefOpen ? undefined : runningCount ? `Agent · ${runningCount} working  ⌘J` : 'Agent  ⌘J'} aria-label="Agent" aria-expanded={chiefOpen} data-testid="dock-plus" data-tour="agent"
         onClick={() => { setPick(null); set({ chiefOpen: !chiefOpen }); }}>
         <Plus size={18} strokeWidth={2.2} />
         {runningCount > 0 && <span className="dock-run" title={`${runningCount} working now`}>{runningCount}</span>}

@@ -4,7 +4,8 @@ export interface Entity {
   id: string; kind: 'account' | 'session' | 'project' | 'meeting' | 'thread' | 'client' | 'output' | 'note' | 'error';
   source: string; accountId?: string; title: string; preview?: string; updatedAt: number; status?: Status; meta: any;
 }
-export interface Message { id: string; role: string; text: string; ts: number; kind?: string }
+export interface PlanItem { content: string; status: string }
+export interface Message { id: string; role: string; text: string; ts: number; kind?: string; plan?: PlanItem[] }
 export interface Run { id: string; entityId: string; text: string; status: 'running' | 'done' | 'error'; error?: string; startedAt: number; result?: any }
 export interface BoardRow { id: string; x: number; y: number; w?: number | null; h?: number | null; parent_id?: string | null; data: any; hidden?: number }
 export interface EdgeRow { id: string; source: string; target: string; kind: 'flow' | 'link'; data: any }

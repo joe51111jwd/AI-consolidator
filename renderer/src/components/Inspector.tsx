@@ -41,7 +41,7 @@ function build(e: Entity, agent: Who, raw: Message[], rawFlows: Flow[], byId: Re
   const incoming = e.kind === 'output' ? [] : flows.filter((f) => f.target === e.id && f.source !== e.id && f.via !== 'drag' && f.content.trim());
   const used = new Set<string>();
   const items: Item[] = msgs.map((m) => {
-    if (m.kind === 'tool') return { ...m, who: agent, body: m.text };
+    if (m.kind === 'tool' || m.kind === 'plan' || m.kind === 'recap') return { ...m, who: agent, body: m.text };
     if (e.source === 'gmail') {
       const h = m.text.match(MAIL);
       return { ...m, body: h ? m.text.slice(h[0].length) : m.text, who: m.role === 'user' ? YOU : { key: `mail:${h?.[1]}`, name: h?.[1] || 'Sender', source: 'gmail', color: SOURCE.gmail.color } };
@@ -83,6 +83,14 @@ export default function Inspector() {
   const [width, setWidth] = useState(() => Number(localStorage.getItem('sb.inspectorW')) || 480);
   const [resizing, setResizing] = useState(false);
 
+  // Publish how much of the window the inspector covers, so the board can centre cards in the free area.
+  useEffect(() => {
+    const root = document.documentElement;
+    (window as any).__sbInspectorW = Math.min(width, window.innerWidth - 24) + 12;
+    root.style.setProperty('--insp-open-w', `${(window as any).__sbInspectorW}px`);
+    return () => { (window as any).__sbInspectorW = 0; root.style.removeProperty('--insp-open-w'); };
+  }, [width]);
+
   // Notes edit inline on the board; they never open here.
   useEffect(() => { if (e?.kind === 'note') open(null); }, [e?.kind]);
 
@@ -106,7 +114,9 @@ export default function Inspector() {
     setLoading(true);
     api.transcript(id).then((m) => alive && setMsgs(m)).catch((err) => alive && notify(err.message)).finally(() => alive && setLoading(false));
     api.flows(id).then((f) => alive && setFlows(f)).catch(() => {});
-    return () => { alive = false; };
+    // Keep the open chat in sync with the session file, like the Claude app does.
+    const t = setInterval(() => { api.transcript(id).then((m) => alive && setMsgs((prev) => (prev.length === m.length && prev[prev.length - 1]?.text === m[m.length - 1]?.text ? prev : m))).catch(() => {}); }, 3000);
+    return () => { alive = false; clearInterval(t); };
   }, [id, e?.updatedAt, live?.status]);
 
   useEffect(() => {
@@ -164,6 +174,16 @@ export default function Inspector() {
   const rows: React.ReactNode[] = [];
   for (let k = 0; k < items.length; k++) {
     const it = items[k];
+    if (it.kind === 'plan') {
+      // Only the newest plan update shows in the stream; older ones are history.
+      if (items.slice(k + 1).some((x) => x.kind === 'plan')) continue;
+      rows.push(<PlanCard key={`plan:${it.id}`} plan={(it as any).plan || []} />);
+      continue;
+    }
+    if (it.kind === 'recap') {
+      rows.push(<div key={`recap:${it.id}`} className="pn-recap"><span>Recap</span>{it.body}</div>);
+      continue;
+    }
     if (it.kind === 'tool') {
       const steps: Item[] = [];
       while (k < items.length && items[k].kind === 'tool') steps.push(items[k++]);
@@ -210,6 +230,8 @@ export default function Inspector() {
     );
   }
 
+  const latestPlan = (() => { for (let k = items.length - 1; k >= 0; k--) if (items[k].kind === 'plan') return (items[k] as any).plan as { content: string; status: string }[]; return null; })();
+
   return (
     <div className={`inspector pn ${outputsOpen ? 'shift' : ''} ${resizing ? 'resizing' : ''}`} style={{ width: Math.min(width, window.innerWidth - 24) }}
       onKeyDown={(ev) => { if (ev.key === 'Delete' || ev.key === 'Backspace') ev.stopPropagation(); }}>
@@ -239,6 +261,7 @@ export default function Inspector() {
           </div>
         )}
       </div>
+      {latestPlan && <PlanCard plan={latestPlan} pinned />}
       <div className="msgs" key={id}>
         {loading && !items.length && <div className="empty">Loading…</div>}
         {!loading && !items.length && <div className="empty">Nothing here yet.</div>}
@@ -264,6 +287,23 @@ export default function Inspector() {
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+// The plan as the Claude app shows it: done, current and next steps.
+function PlanCard({ plan, pinned }: { plan: { content: string; status: string }[]; pinned?: boolean }) {
+  const [open, setOpen] = useState(!pinned || plan.length <= 6);
+  if (!plan.length) return null;
+  const done = plan.filter((t) => t.status === 'completed').length;
+  return (
+    <div className={`pn-plan ${pinned ? 'pinned' : ''}`} data-testid={pinned ? 'plan-pinned' : 'plan-card'}>
+      <button className="pn-plan-h" onClick={() => setOpen(!open)}><span>Plan</span><span className="pn-plan-n">{done}/{plan.length}</span></button>
+      {open && plan.map((t, i) => (
+        <div key={i} className={`pn-plan-row ${t.status}`}>
+          <i>{t.status === 'completed' ? '✓' : t.status === 'in_progress' ? '' : ''}</i><span>{t.content}</span>
+        </div>
+      ))}
     </div>
   );
 }

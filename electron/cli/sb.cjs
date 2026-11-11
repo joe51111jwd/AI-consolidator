@@ -56,6 +56,10 @@ async function mcp() {
       edges: z.array(z.object({ from: z.string(), to: z.string(), label: z.string().optional() })).optional().describe('Arrows between note ids'),
     },
     async ({ title, nodes, edges }) => { const r = await call('POST', '/board', { title, nodes, edges: edges || [], from }); return text(`Drew "${title}" on the board: ${r.ids.length} notes, ${r.edges.length} arrows.`); });
+  server.tool('group_board',
+    "Regroup the cards on the user's Switchboard board into named frames, following the user's rule (for example 'by client or by the work being done; Grok bots in their own group unless they belong to one project'). Use this whenever the user asks to organize, group, sort or arrange the board. Pass their rule in their own words.",
+    { instruction: z.string().describe("The user's grouping rule") },
+    async ({ instruction }) => { await call('POST', '/group', { instruction }); return text(`Regrouping the board: ${instruction}`); });
   server.tool('whats_due', 'List what is due for clients (CRM, email and meetings).', {}, async () => text(await call('GET', '/due')));
   await server.connect(new StdioServerTransport());
 }

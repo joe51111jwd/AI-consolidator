@@ -25,7 +25,7 @@ function nextRun(s, now = Date.now()) {
 function instructionsFor(id) {
   const sched = schedules();
   const notes = allEdges()
-    .filter((e) => e.target === id && e.source.startsWith('nt:') && e.data?.instruction !== false && !nextRun(sched[e.source]))
+    .filter((e) => e.target === id && e.source.startsWith('nt:') && e.data?.instruction !== false && !e.data?.example && !nextRun(sched[e.source]))
     .map((e) => noteText(e.source).trim()).filter(Boolean);
   return notes.join('\n\n');
 }
@@ -59,7 +59,8 @@ async function tick() {
     const due = nextRun(s);
     if (!due || due > now) continue;
     const text = noteText(id).trim();
-    const targets = edges.filter((e) => e.source === id && PROMPTABLE.test(e.target)).map((e) => e.target);
+    // Only lines you drew: sample lines from the example board never reach a real agent.
+    const targets = edges.filter((e) => e.source === id && PROMPTABLE.test(e.target) && !e.data?.example).map((e) => e.target);
     s.last = now; changed = true;
     if (!text) continue;
     for (const t of targets) {

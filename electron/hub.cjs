@@ -249,10 +249,16 @@ async function entities({ force = false } = {}) {
   for (const n of db.all('SELECT * FROM notes ORDER BY ts DESC LIMIT 200')) {
     list.push({ id: `nt:${n.id}`, kind: 'note', source: 'note', title: truncate(n.text.split('\n')[0], 60) || 'Note', preview: n.text, updatedAt: n.ts, status: 'idle', meta: {} });
   }
+  const have = new Set(list.map((e) => e.id));
+  for (const fn of extras) { try { for (const e of fn() || []) if (e && !have.has(e.id)) { list.push(e); have.add(e.id); } } catch {} }
   entityCache = { at: Date.now(), list };
   scheduleSettle(list);
   return list;
 }
+
+// Feature modules can add cards the sources don't list (e.g. older chats the user imported).
+const extras = [];
+function addExtraEntities(fn) { extras.push(fn); }
 
 // Cards that aren't in the current list (older sessions opened from History or ⌘K) are looked up
 // by finders that feature modules register.
@@ -390,6 +396,15 @@ async function buildText(text, { attach = [], includeBrain = false } = {}) {
   return pre + text;
 }
 
+// Cards whose latest reply answers work sent from Switchboard; kept across restarts for the Outputs drawer.
+function markSent(id) {
+  if (id === CHIEF_ID) return;
+  const sent = { ...(db.getSetting('sentReplies', {}) || {}), [id]: Date.now() };
+  const keep = Object.entries(sent).sort((x, y) => y[1] - x[1]).slice(0, 200);
+  db.setSetting('sentReplies', Object.fromEntries(keep));
+}
+const sentReplies = () => db.getSetting('sentReplies', {}) || {};
+
 // Prompt any card. Returns a run id at once; progress arrives as events.
 function prompt(id, text, opts = {}) {
   const runId = uid('r');
@@ -405,6 +420,7 @@ function prompt(id, text, opts = {}) {
     emit({ type: 'run', run: r });
     invalidate(); emit({ type: 'entities-changed' });
     const resultId = res.entityId || id;
+    markSent(resultId);
     runEnded([id, resultId], r.text, { depth: opts.depth || 0, chain: [...(opts.chain || []), id, resultId] });
   })().catch((err) => {
     const r = runs.get(runId); r.status = 'error'; r.error = err.message; emit({ type: 'run', run: r });
@@ -472,7 +488,7 @@ function forwardFinished() {
   return finishing;
 }
 async function checkFinished() {
-  const lines = edges().filter((e) => e.kind === 'link' && e.data.autoForward && /^(cc|cx):/.test(e.source));
+  const lines = edges().filter((e) => e.kind === 'link' && e.data.autoForward && !e.data.example && /^(cc|cx):/.test(e.source));
   if (!lines.length) return 0;
   const now = Date.now();
   for (const e of lines.filter((x) => !x.data.armedAt)) {
@@ -628,8 +644,10 @@ function saveNote({ id, text }) {
 
 // ---------- board layout ----------
 function board() { return db.all('SELECT * FROM board_nodes').map((n) => ({ ...n, data: db.J(n.data, {}) })); }
+// A row shown again is no longer hidden by a blank board (data.viewHidden, see ext/boards.cjs).
 function saveBoard(nodes) {
-  for (const n of nodes) {
+  for (let n of nodes) {
+    if (!n.hidden && n.data && n.data.viewHidden != null) { n = { ...n, data: { ...n.data } }; delete n.data.viewHidden; }
     db.exec(`INSERT INTO board_nodes(id, x, y, w, h, parent_id, data, hidden) VALUES(?,?,?,?,?,?,?,?)
       ON CONFLICT(id) DO UPDATE SET x = excluded.x, y = excluded.y, w = excluded.w, h = excluded.h, parent_id = excluded.parent_id, data = excluded.data, hidden = excluded.hidden`,
     n.id, n.x, n.y, n.w ?? null, n.h ?? null, n.parent_id ?? null, JSON.stringify(n.data || {}), n.hidden ? 1 : 0);
@@ -727,8 +745,18 @@ async function suggestions() {
 }
 
 // ---------- usage ----------
+// One row per account, plus a 'claude-app' row for each Claude org the desktop app meters that no
+// account card covers (usage.weekPct / fiveHourPct are the app's real plan percentages).
 function usageSummary() {
-  return accounts().map((a) => ({ id: a.id, label: a.label, kind: a.kind, color: a.color, usage: usageFor(a) }));
+  const rows = accounts().map((a) => ({ id: a.id, label: a.label, kind: a.kind, color: a.color, usage: usageFor(a) }));
+  const covered = new Set(rows.map((r) => r.usage && r.usage.org).filter(Boolean));
+  let plans = []; try { plans = claudeDesktop.planUsage(); } catch {}
+  for (const p of plans) {
+    if (covered.has(p.org)) continue;
+    rows.push({ id: `org:${p.org}`, label: p.name ? `Claude · ${p.name}` : `Claude org ${p.org.slice(0, 8)}`, kind: 'claude-app', color: null,
+      usage: { h5: 0, d1: 0, d7: 0, out7: 0, sessions: 0, byModel: {}, weekPct: p.week, fiveHourPct: p.fiveHour, resetsAt: p.resetsAt, planAt: p.at, org: p.org, exact: true } });
+  }
+  return rows;
 }
 
 // ---------- the overall agent ----------
@@ -755,7 +783,14 @@ async function chiefContext(selected) {
 const CHIEF_SYSTEM = `You are the overall agent inside Switchboard, a local whiteboard where the user sees all their AI agents, chats, code projects and clients.
 You can read the context below. Be brief and concrete: lead with the answer. When you compare outputs, say which is better and why in a few lines.
 When the user asks you to hand work to another card, use the switchboard tools if you have them (send_to_card), otherwise write the exact prompt they should send.
+When the user asks to organize, group, sort or arrange the board, call group_board with their rule in their own words (for example "by client or by the work being done; Grok bots in their own group unless they belong to one project"). Never draw notes or frames to describe groups instead.
 Never send email or take actions outside Switchboard.`;
+
+// Asks the open window to regroup the board by the user's rule (the window owns the layout).
+function requestRegroup(instruction) {
+  emit({ type: 'regroup', instruction: String(instruction || '').slice(0, 400) });
+  return { ok: true };
+}
 
 function chief(question, { selected = [], accountId } = {}) {
   const runId = uid('r');
@@ -773,7 +808,7 @@ function chief(question, { selected = [], accountId } = {}) {
       const convo = history.slice(0, -1).slice(-10).map((m) => `${m.role === 'user' ? 'User' : 'You'}: ${m.text}`).join('\n\n');
       const text = `${CHIEF_SYSTEM}\n\n${ctx}\n\n${convo ? 'Conversation so far:\n' + convo + '\n\n' : ''}User: ${question}`;
       const mcp = mcpConfigPath();
-      const extra = mcp ? ['--mcp-config', mcp, '--allowedTools', 'mcp__switchboard'] : [];
+      const extra = [...(mcp ? ['--mcp-config', mcp, '--allowedTools', 'mcp__switchboard'] : []), ...internalArgs()];
       res = await claudeCode.prompt(a, { cwd: APP_DIR, text, onText, extraArgs: extra });
     } else {
       const messages = history.map((m) => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: m.text }));
@@ -788,11 +823,19 @@ function chief(question, { selected = [], accountId } = {}) {
 
 // A quick one-off question to Claude (no tools, short timeout) for helpers like smart grouping.
 // Runs inside ~/.switchboard so it never shows up as a card.
+// Switchboard's own Claude runs (main agent, grouping, topics) must not pick up the user's personal
+// hooks, which inject routing advice and other text into the answer.
+function internalArgs() {
+  const f = path.join(APP_DIR, 'internal-settings.json');
+  try { if (!exists(f)) fs.writeFileSync(f, JSON.stringify({ disableAllHooks: true })); } catch {}
+  return ['--settings', f];
+}
+
 async function quickAsk(text, { timeoutMs = 25000, model = 'sonnet' } = {}) {
   const a = pickAccount(['claude-code']);
   if (!a) throw new Error('No Claude account');
   const quiet = { ...a, config: { ...a.config, permissionMode: undefined } };
-  const res = await claudeCode.prompt(quiet, { cwd: APP_DIR, text, signal: AbortSignal.timeout(timeoutMs), extraArgs: ['--model', model, '--tools', ''] });
+  const res = await claudeCode.prompt(quiet, { cwd: APP_DIR, text, signal: AbortSignal.timeout(timeoutMs), extraArgs: ['--model', model, '--tools', '', ...internalArgs()] });
   return res.text || '';
 }
 
@@ -811,10 +854,10 @@ module.exports = {
   events, accounts, publicAccount, account, saveAccount, deleteAccount, firstRunSetup,
   claudeStatus, claudeLogin, claudeLoginCancel, claudeLogout,
   entities, invalidate, transcriptFor, find, label,
-  prompt, runs, recordFlow, flowsFor, edges, saveEdge, deleteEdge, forwardFinished, makeBoard, quickAsk,
+  prompt, runs, sentReplies, recordFlow, flowsFor, edges, saveEdge, deleteEdge, forwardFinished, makeBoard, quickAsk, internalArgs,
   brain, setBrain, appendBrain, saveOutput, saveNote, deleteEntity,
   board, saveBoard, deleteBoardNodes,
-  clients, saveClient, due, suggestions, usageSummary, chief, chiefHistory, pickAccount, addFinder, use,
+  clients, saveClient, due, suggestions, usageSummary, chief, chiefHistory, pickAccount, addFinder, addExtraEntities, requestRegroup, use,
   gmailConnect: (id) => gmail.connect(account(id)).then((email) => { const a = account(id); a.config.email = email; saveAccount(a); return email; }),
   BRAIN,
 };

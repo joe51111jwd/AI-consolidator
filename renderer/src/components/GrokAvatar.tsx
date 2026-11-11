@@ -25,6 +25,23 @@ function resolveColor(color?: string): string {
   return GROK_COLORS[color.toLowerCase()] ?? color;
 }
 
+const SEED_COLORS = ['purple', 'orange', 'red', 'brown', 'pink', 'blue', 'green', 'teal', 'amber'];
+
+function hash(s: string): number {
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); }
+  return h >>> 0;
+}
+
+// A bot whose cache has no avatar still gets its own stable colour and shape, derived from its id or name.
+export function botLook(seed: string | undefined, color?: string | null, shape?: string | null): { color: string; shape: BlobShape } {
+  const h = hash(seed || '');
+  return {
+    color: resolveColor(color || (seed ? SEED_COLORS[h % SEED_COLORS.length] : undefined)),
+    shape: shape ? resolveShape(shape) : seed ? SHAPES[Math.floor(h / SEED_COLORS.length) % SHAPES.length] : 'cloud',
+  };
+}
+
 function starPoints(cx: number, cy: number, outer: number, inner: number): string {
   return Array.from({ length: 10 }, (_, i) => {
     const r = i % 2 ? inner : outer;
@@ -48,11 +65,12 @@ function shapeEl(shape: BlobShape, p: React.SVGProps<SVGElement>): React.ReactNo
   }
 }
 
-type AvatarProps = { color?: string; shape?: string; size?: number; working?: boolean; attention?: boolean; title?: string };
+type AvatarProps = { color?: string; shape?: string; size?: number; working?: boolean; attention?: boolean; title?: string; seed?: string };
 
-export function GrokAvatar({ color, shape, size = 28, working, attention, title }: AvatarProps) {
-  const fill = resolveColor(color);
-  const s = resolveShape(shape);
+export function GrokAvatar({ color, shape, size = 28, working, attention, title, seed }: AvatarProps) {
+  const look = botLook(seed ?? title, color, shape);
+  const fill = look.color;
+  const s = look.shape;
   const isWhite = fill.toUpperCase() === '#FFFFFF';
   const eyeY = s === 'bean' ? 18 : s === 'gumdrop' ? 22 : 19;
   return (
@@ -72,7 +90,7 @@ export function GrokAvatar({ color, shape, size = 28, working, attention, title 
   );
 }
 
-type Member = { color?: string; shape?: string };
+type Member = { color?: string; shape?: string; seed?: string };
 
 export function GroupAvatar({ members, size = 28, attention }: { members: Member[]; size?: number; attention?: boolean }) {
   const m = members.slice(0, 3);
@@ -84,7 +102,7 @@ export function GroupAvatar({ members, size = 28, attention }: { members: Member
     <span className="ga-group" style={{ width: size, height: size }}>
       {m.map((mem, i) => (
         <span key={i} style={{ left: spots[i][0] * size, top: spots[i][1] * size, zIndex: 3 - i }}>
-          <GrokAvatar color={mem.color} shape={mem.shape} size={mini} />
+          <GrokAvatar color={mem.color} shape={mem.shape} seed={mem.seed} size={mini} />
         </span>
       ))}
       {attention && <i className="ga-badge" />}

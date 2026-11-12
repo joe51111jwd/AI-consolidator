@@ -1412,10 +1412,31 @@ async function main() {
     assert(!/e2e-bot-token/.test(await box.innerText()), 'the agent token is never shown');
     await grok.locator('.ca-btn', { hasText: 'Copy' }).nth(1).click();
     await until(async () => (await app.evaluate(({ clipboard }) => clipboard.readText())) === 'Bearer e2e-bot-token', 'Copy fills in the saved agent token');
-    await grok.locator('input[type=checkbox]').check();
-    await until(async () => /1 \/ 6 done/.test(await box.innerText()), 'ticking an app counts it as done');
+    assert(/Connected/.test(await grok.getByTestId('connect-state').innerText()), 'Grok Bot, whose bots already reported, shows as connected');
+    assert(/Not connected/.test(await box.getByTestId('connect-chatgpt').getByTestId('connect-state').innerText()), 'an app that never reached the relay does not');
+    assert(/\d \/ 6 connected/.test(await box.innerText()), 'counts the connected apps');
     await page.keyboard.press('Escape');
     await until(async () => (await box.count()) === 0, 'Escape closes it');
+  });
+  await check('adding a bot means adding the connector: Done waits until the bot connects', async () => {
+    await view('Accounts');
+    await page.locator('.page-h button', { hasText: 'Add account' }).click();
+    assert((await page.locator('.modal .due-item', { hasText: 'Grok Bot' }).count()) === 1, 'Grok Bot is offered as a bot');
+    await page.locator('.modal .due-item', { hasText: 'ChatGPT' }).click();
+    const add = page.getByTestId('add-bot');
+    await add.waitFor();
+    assert((await add.innerText()).includes(`${relay.url}/mcp?app=chatgpt`), 'shows its connector address');
+    assert(/Waiting for it to connect/.test(await add.getByTestId('connect-state').innerText()), 'waits for it');
+    assert(await page.getByTestId('add-bot-done').isDisabled(), 'Done is off until it connects');
+    await fetch(`${relay.url}/mcp?app=chatgpt&key=e2e-bot-token`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'ChatGPT', version: '1' } } }),
+    });
+    await until(async () => /Connected/.test(await add.getByTestId('connect-state').innerText()), 'it notices the connector was added', 20000);
+    await page.getByTestId('add-bot-done').click();
+    await toast(/ChatGPT connected/);
+    assert((await page.locator('.modal').count()) === 0, 'and closes');
+    assert(!(await api('entities', { force: true })).some((e) => /^rl:chatgpt:/.test(e.id)), 'connecting alone makes no card');
   });
   await section('claude.ai history (data export) and Claude Projects');
   const CA = {

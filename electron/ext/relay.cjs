@@ -76,8 +76,13 @@ const cardId = (list, a) => { const c = localCard(list, a); return c ? c.id : `r
 
 async function apply(events) {
   const list = await hub.entities().catch(() => []);
+  const seen = db.getSetting('relayApps', {}) || {};
   for (const ev of events) {
-    if (!ev || typeof ev.agent !== 'string' || !ev.agent.trim()) continue;
+    if (!ev) continue;
+    const app = appOf(ev.app);
+    seen[app] = Math.max(seen[app] || 0, Number(ev.ts) || Date.now());
+    // An app added the connector: it counts as connected, but it isn't an agent with a card.
+    if (ev.type === 'connected' || typeof ev.agent !== 'string' || !ev.agent.trim()) continue;
     const a = agentFor(ev.agent, ev.app, ev.agentId);
     if (ev.type !== 'delivered') a.name = truncate(ev.agent.trim(), 80); // the agent's latest own spelling
     const ts = Number(ev.ts) || Date.now();
@@ -115,6 +120,7 @@ async function apply(events) {
       default: break;
     }
   }
+  db.setSetting('relayApps', seen);
 }
 
 // ---------- merging onto the cards ----------
@@ -311,13 +317,20 @@ function normalize(u) {
   return `${x.origin}${x.pathname.replace(/\/+$/, '')}`;
 }
 
+// Each app that has reached Switchboard through the connector, with when it was last heard from.
+function connectedApps() {
+  const out = { ...(db.getSetting('relayApps', {}) || {}) };
+  for (const a of state().values()) out[a.app] = Math.max(out[a.app] || 0, a.at || 0);
+  return out;
+}
+
 function status() {
   const u = url();
   const list = [...state().values()].sort((a, b) => b.at - a.at).map((a) => ({ name: a.name, app: a.app, at: a.at, ...(a.project ? { project: a.project } : {}) }));
   return {
     url: u, mcpUrl: u ? `${u}/mcp` : '', enabled: on(), active: enabled(),
     hasToken: secrets.has(APP_TOKEN), hasBotToken: secrets.has(BOT_TOKEN),
-    lastSync: db.getSetting('relaySync', null), agents: list,
+    lastSync: db.getSetting('relaySync', null), agents: list, apps: connectedApps(),
   };
 }
 

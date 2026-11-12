@@ -102,6 +102,7 @@
 .acc-card .acc-actions { display: flex; gap: 2px; margin-left: auto; align-self: flex-start; }
 .kind-list { display: flex; flex-direction: column; gap: 6px; }
 .kind-list .due-item { grid-template-columns: 22px 1fr; align-items: center; }
+.kind-sub { margin: 8px 2px 0; font-size: 11.5px; color: var(--ink-3); }
 .disclose { display: flex; align-items: center; gap: 6px; color: var(--ink-3); font-size: 12px; font-weight: 500; padding: 8px 2px 2px; }
 .disclose:hover { color: var(--ink); }
 .disclose svg { transition: transform .2s var(--ease); }

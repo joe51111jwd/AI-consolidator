@@ -9,13 +9,13 @@ import RelaySettings from '../components/RelaySettings';
 import NotifySettings from '../components/NotifySettings';
 import ContextSettings from '../components/ContextSettings';
 import ClaudeAiImport from '../components/ClaudeAiImport';
+import { CONNECT_APPS, ConnectApp, ConnectState, ConnectSteps, useRelay } from '../components/ConnectAgents';
 
 type Kind = { kind: string; label: string; blurb: string };
 const KINDS: Kind[] = [
   { kind: 'claude-code', label: 'Claude account', blurb: 'Your Claude login, through Claude Code.' },
   { kind: 'gmail', label: 'Gmail', blurb: 'Read-only, with Google sign-in.' },
   { kind: 'granola', label: 'Granola', blurb: 'Meeting notes on this Mac.' },
-  { kind: 'grok-bot', label: 'Grok Bot', blurb: 'Your Grok bots and their chats, from the app.' },
 ];
 // Key-based and rarely used sources stay out of the way.
 const ADVANCED: Kind[] = [
@@ -24,6 +24,8 @@ const ADVANCED: Kind[] = [
   { kind: 'anthropic-api', label: 'Claude API key', blurb: 'Chats billed to an Anthropic key.' },
   { kind: 'openai-compatible', label: 'Grok API or other model API', blurb: 'Any OpenAI-compatible key. Defaults to xAI.' },
 ];
+// Bots you add here; Codex stays under Advanced and Claude Code on this Mac shows up by itself.
+const BOT_APPS = CONNECT_APPS.filter((a) => ['grok-bot', 'claude', 'chatgpt', 'cursor'].includes(a.id));
 const PERMISSIONS: [string, string][] = [['default', 'Ask first'], ['acceptEdits', 'Edit files'], ['bypassPermissions', 'Full access']];
 
 function grokText(sb: string) {
@@ -121,6 +123,37 @@ function Dedicated({ a, map, onChange }: { a: Account; map: Record<string, strin
 
 type GrokStatus = { enabled: boolean; installed: boolean; running: boolean; signedIn: boolean; bots: number; cache: boolean };
 
+// A bot is added by adding the Switchboard connector to it: it counts once it has connected.
+function AddBot({ app, hasAccount, onDone, onBack }: { app: ConnectApp; hasAccount: boolean; onDone: () => void; onBack: () => void }) {
+  const { st, loaded } = useRelay(true);
+  const notify = useStore((s) => s.notify);
+  const on = !!st?.apps?.[app.id];
+  const finish = async () => {
+    try {
+      if (app.id === 'grok-bot' && !hasAccount) await api.saveAccount({ kind: 'grok-bot', label: 'Grok Bot', config: {} });
+    } catch (e: any) { notify(e.message); return; }
+    onDone(); notify(`${app.label} connected`);
+  };
+  if (loaded && !st?.url) return (
+    <div className="form" data-testid="add-bot">
+      <p className="hint">Bots connect through your Switchboard Relay, which isn't set up yet. Set it up under Connections on this page, then add the bot.</p>
+      <div style={{ display: 'flex', gap: 8 }}><button className="btn" onClick={onBack}>Back</button></div>
+    </div>
+  );
+  return (
+    <div className="form" data-testid="add-bot">
+      <p className="hint">Add the Switchboard connector in {app.label}. It shows up here the moment it connects.</p>
+      <ConnectSteps app={app} st={st} />
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <ConnectState on={on} waiting />
+        <span className="spacer" />
+        <button className="btn" onClick={onBack}>Back</button>
+        <button className="btn primary" data-testid="add-bot-done" disabled={!on} onClick={finish}>Done</button>
+      </div>
+    </div>
+  );
+}
+
 function KindButton({ k, onPick }: { k: Kind; onPick: (k: Kind) => void }) {
   return (
     <button className="due-item" onClick={() => onPick(k)}>
@@ -178,6 +211,7 @@ export default function Accounts() {
     label: k.kind === 'openai-compatible' ? 'Grok API' : k.kind === 'claude-code' ? 'Claude' : k.label,
     config: k.kind === 'openai-compatible' ? { baseUrl: 'https://api.x.ai/v1', model: 'grok-4' } : k.kind === 'claude-code' ? { configDir: freeClaudeDir(accounts) } : {},
   });
+  const bot = edit && !edit.kind && edit.bot ? BOT_APPS.find((a) => a.id === edit.bot) || null : null;
   const usageOf = (id: string) => entities.find((e) => e.id === `ac:${id}`)?.meta?.usage;
   const field = (k: string) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => setEdit({ ...edit, config: { ...edit.config, [k]: e.target.value } });
   const secret = (k: string) => (e: React.ChangeEvent<HTMLInputElement>) => setEdit({ ...edit, secretsIn: { ...edit.secretsIn, [k]: e.target.value } });
@@ -274,10 +308,14 @@ export default function Accounts() {
       {edit && (
         <div className="overlay" onClick={() => setEdit(null)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <div style={{ display: 'flex' }}><h3>{edit.id ? edit.label : edit.kind ? (SOURCE[edit.kind]?.label || 'Add account') : 'Add account'}</h3><button className="icon-btn" style={{ marginLeft: 'auto' }} onClick={() => setEdit(null)}><X size={16} /></button></div>
-            {!edit.kind ? (
+            <div style={{ display: 'flex' }}><h3>{edit.id ? edit.label : edit.kind ? (SOURCE[edit.kind]?.label || 'Add account') : bot ? `Add ${bot.label}` : 'Add account'}</h3><button className="icon-btn" style={{ marginLeft: 'auto' }} onClick={() => setEdit(null)}><X size={16} /></button></div>
+            {bot ? (
+              <AddBot app={bot} hasAccount={accounts.some((a) => a.kind === bot.id)} onBack={() => setEdit({ ...edit, bot: '' })} onDone={() => { setEdit(null); refresh(); }} />
+            ) : !edit.kind ? (
               <div className="kind-list">
                 {KINDS.map((k) => <KindButton key={k.kind} k={k} onPick={pick} />)}
+                <div className="kind-sub">Bots and agents · added with the Switchboard connector</div>
+                {BOT_APPS.map((a) => <KindButton key={a.id} k={{ kind: a.source, label: a.label, blurb: 'Add the Switchboard connector to it' }} onPick={() => setEdit({ ...edit, bot: a.id })} />)}
                 <button className={`disclose ${advanced ? 'open' : ''}`} onClick={() => setAdvanced(!advanced)}><ChevronRight size={13} />Advanced</button>
                 {advanced && ADVANCED.map((k) => <KindButton key={k.kind} k={k} onPick={pick} />)}
               </div>

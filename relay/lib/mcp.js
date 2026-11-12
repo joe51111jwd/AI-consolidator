@@ -138,6 +138,13 @@ export async function handleMcp(req, res, store, body, opts) {
     res.end(JSON.stringify({ jsonrpc: '2.0', error: { code: -32000, message: 'Method not allowed: this server is stateless, send requests with POST.' }, id: null }));
     return;
   }
+  // An app adding the connector starts with initialize: tell Switchboard it connected, so adding
+  // a bot there can wait for it. Not an agent of its own, so it never becomes a card.
+  const init = (Array.isArray(body) ? body : [body]).find((m) => m && m.method === 'initialize');
+  if (init) {
+    const client = init.params && init.params.clientInfo && init.params.clientInfo.name;
+    await store.addEvent({ type: 'connected', agent: clip(client || 'connector', 80), app: (opts && opts.app) || 'other', ts: Date.now() });
+  }
   const server = buildServer(store, opts);
   const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
   res.on('close', () => { transport.close().catch(() => {}); server.close().catch(() => {}); });

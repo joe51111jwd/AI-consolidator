@@ -25,7 +25,11 @@ const appApi = async (method, path, body, token = 'app-secret') => {
   const r = await fetch(base + path, { method, headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: body && JSON.stringify(body) });
   return { status: r.status, body: await r.json() };
 };
-const events = async (since = 0) => (await appApi('GET', `/api/events?since=${since}`)).body;
+// The agents' own events; `all` also has the "connected" event each MCP client's initialize leaves.
+const events = async (since = 0) => {
+  const b = (await appApi('GET', `/api/events?since=${since}`)).body;
+  return { ...b, all: b.events, events: b.events.filter((e) => e.type !== 'connected') };
+};
 
 // A fake agent: a real MCP client. By default a Grok bot sending its token in a header; `path` and
 // `header: false` connect the way Claude's connectors do (app and key in the address).
@@ -87,7 +91,7 @@ test('report_status, log_action, log_subagent, post_output and add_to_brain beco
   await call('add_to_brain', { agent: 'Marketing', text: 'Harbor wants Friday delivery' });
   const { events: ev, cursor } = await events();
   assert.deepEqual(ev.map((e) => e.type), ['status', 'action', 'subagent', 'output', 'brain']);
-  assert.equal(cursor, 5);
+  assert.equal(cursor, 6, 'after the connected event');
   assert.ok(ev.every((e) => e.agent === 'Marketing' && e.app === 'grok-bot' && e.ts > 0 && e.id > 0));
   assert.deepEqual([ev[0].status, ev[0].doing, ev[0].client], ['working', 'Drafting the spring promo', 'Harbor Coffee']);
   assert.deepEqual([ev[1].kind, ev[1].text], ['browser', 'Opened the pricing page']);
@@ -96,6 +100,15 @@ test('report_status, log_action, log_subagent, post_output and add_to_brain beco
   assert.equal(ev[3].url, undefined, 'only http(s) links are kept');
   assert.equal(ev[4].text, 'Harbor wants Friday delivery');
   await client.close();
+});
+
+test('an app adding the connector is recorded once per connect, under the app in its address', async () => {
+  const grok = await bot();
+  const claude = await bot('bot-secret', { path: '/mcp?app=claude&key=bot-secret', header: false });
+  await grok.client.listTools();
+  const hello = (await events()).all.filter((e) => e.type === 'connected');
+  assert.deepEqual(hello.map((e) => [e.app, e.agent]), [['grok-bot', 'fake-agent'], ['claude', 'fake-agent']], 'initialize only, not every request');
+  await grok.client.close(); await claude.client.close();
 });
 
 test('invalid tool input is refused', async () => {

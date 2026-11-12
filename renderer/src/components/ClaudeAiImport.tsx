@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Check, Download, LayoutGrid, Sparkles, TriangleAlert, X } from 'lucide-react';
 import { api, Entity } from '../lib/api';
+import { HERE } from '../lib/platform';
 import { useStore } from '../lib/store';
 import { ago } from '../lib/format';
 
@@ -61,7 +62,7 @@ export default function ClaudeAiImport() {
       <div className="set-row">
         <div className="txt">
           <b>Import claude.ai history</b>
-          <span className="hint">Chats and Projects from claude.ai and the Claude app aren't kept on this Mac. On claude.ai open Settings → Privacy → Export data, then pick what the email links to: the zip file(s), or the folder you unzipped them into. Importing a newer export updates what changed.</span>
+          <span className="hint">Chats and Projects from claude.ai and the Claude app aren't kept on {HERE}. On claude.ai open Settings → Privacy → Export data, then pick what the email links to: the zip file(s), or the folder you unzipped them into. Importing a newer export updates what changed.</span>
         </div>
         <button className="btn accent" data-testid="claudeai-import" disabled={busy || st?.importing} onClick={importNow}><Download size={13} />{st?.importing ? 'Importing…' : 'Import…'}</button>
       </div>

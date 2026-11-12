@@ -104,7 +104,7 @@ export default function NewChat() {
       follow(runId, acct, cwd, before);
     } catch (e: any) { notify(e.message || 'Could not start the chat'); setSending(false); }
   };
-  const folders = cwd && !recent.some((r) => r.path === cwd) ? [{ path: cwd, name: cwd.split('/').pop() || cwd, lastUsed: 0 }, ...recent] : recent;
+  const folders = cwd && !recent.some((r) => r.path === cwd) ? [{ path: cwd, name: cwd.split(/[\\/]/).pop() || cwd, lastUsed: 0 }, ...recent] : recent;
 
   return createPortal(
     <div className="nc-scrim" onMouseDown={(e) => { if (e.target === e.currentTarget) close(); }}>

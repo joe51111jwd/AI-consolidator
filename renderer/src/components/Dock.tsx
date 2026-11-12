@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Plus, ArrowUp, X } from 'lucide-react';
 import { useStore } from '../lib/store';
 import { api, Account, Entity } from '../lib/api';
+import { key } from '../lib/platform';
 import { AgentLogo } from './Logos';
 import { useUsage, weeklyPct } from './UsagePill';
 import { clean, toolVerb } from './LiveView';
@@ -184,7 +185,7 @@ export default function Dock() {
           </span>
         );
       })}
-      <button className={`dock-b add ${chiefOpen ? 'on' : ''} ${chiefRunning ? 'working' : ''}`} data-tip={chiefOpen ? undefined : runningCount ? `Agent · ${runningCount} working  ⌘J` : 'Agent  ⌘J'} aria-label="Agent" aria-expanded={chiefOpen} data-testid="dock-plus" data-tour="agent"
+      <button className={`dock-b add ${chiefOpen ? 'on' : ''} ${chiefRunning ? 'working' : ''}`} data-tip={chiefOpen ? undefined : runningCount ? `Agent · ${runningCount} working  ${key('J')}` : `Agent  ${key('J')}`} aria-label="Agent" aria-expanded={chiefOpen} data-testid="dock-plus" data-tour="agent"
         onClick={() => { setPick(null); set({ chiefOpen: !chiefOpen }); }}>
         <Plus size={18} strokeWidth={2.2} />
         {runningCount > 0 && <span className="dock-run" title={`${runningCount} working now`}>{runningCount}</span>}

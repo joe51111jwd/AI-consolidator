@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 'use strict';
-// `sb`: talk to the Switchboard app from any terminal, script or agent on this Mac.
+// `sb`: talk to the Switchboard app from any terminal, script or agent on this computer.
 //   sb cards                         list cards
 //   sb send <card> "text" [--from grok-bot] [--wait] [--brain]
 //   sb read <card> [n]               latest messages of a card
@@ -67,7 +67,7 @@ async function mcp() {
   server.tool('list_cards', 'List every card on the Switchboard board (agents, sessions, projects, clients, outputs), to see what else is going on and who can help.', {}, async () => text(await call('GET', '/cards')));
   server.tool('read_card', 'Read the latest messages of a card by id or title.', { card: z.string(), n: z.number().optional() }, async ({ card, n }) => text(await call('GET', `/card?id=${encodeURIComponent(card)}&n=${n || 20}`)));
   server.tool('send_to_card', 'Send a prompt to another agent or chat card. Set wait to get its reply.', { card: z.string(), text: z.string(), wait: z.boolean().optional() }, async ({ card, text: t, wait }) => text(await call('POST', '/send', { to: card, text: t, from, wait: !!wait })));
-  server.tool('read_brain', "Read the shared brain: the user's notes and facts that every agent on this Mac shares (clients, preferences, decisions, how things are set up). Read it at the start of a task so you don't ask for what is already known.", {}, async () => text((await call('GET', '/brain')).text || '(empty)'));
+  server.tool('read_brain', `Read the shared brain: the user's notes and facts that every agent on ${process.platform === 'darwin' ? 'this Mac' : 'this computer'} shares (clients, preferences, decisions, how things are set up). Read it at the start of a task so you don't ask for what is already known.`, {}, async () => text((await call('GET', '/brain')).text || '(empty)'));
   server.tool('add_to_brain',
     "Add a fact to the shared brain so every other agent knows it too. Do this on your own, without being asked, whenever you learn something durable and useful: a user preference, a client detail or deadline, a decision and why, where something lives, a command that works, a gotcha you hit. One or two short sentences per note. Never add secrets, passwords or keys.",
     { text: z.string().describe('The fact, one or two short sentences') }, async ({ text: t }) => { await call('POST', '/brain', { text: t, from }); return text('Added to the shared brain.'); });

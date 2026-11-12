@@ -12,7 +12,7 @@ let ctx = null;
 let last = { at: 0, results: [] };
 let chain = Promise.resolve();
 
-const sbPath = () => path.join(util.APP_DIR, 'bin', 'sb');
+const sbPath = () => util.sbLauncher().sb;
 const isOn = () => ctx.db.getSetting('autoAgentTools', true) !== false;
 
 function claudeEntry(a) {
@@ -23,12 +23,16 @@ function claudeEntry(a) {
     return (j.mcpServers && j.mcpServers.switchboard) || null;
   } catch { return null; }
 }
-const claudeOk = (s, a, sb) => !!s && s.command === sb && (s.env || {}).SB_FROM === `ac:${a.id}`;
+const sameArgs = (x, y) => JSON.stringify(x || []) === JSON.stringify(y);
+const claudeOk = (s, a, sb) => !!s && s.command === sb.command && sameArgs(s.args, sb.args) && (s.env || {}).SB_FROM === `ac:${a.id}`;
 function codexConfig(a) {
   try { return fs.readFileSync(path.join(util.expand(a.config.home || '~/.codex'), 'config.toml'), 'utf8'); } catch { return ''; }
 }
 const codexHasAny = (t) => /\[mcp_servers\.switchboard\]/.test(t);
-const codexOk = (t, a, sb) => codexHasAny(t) && t.includes(sb) && t.includes(`ac:${a.id}`);
+// config.toml writes the path as a TOML string, which escapes backslashes the way JSON does.
+const codexOk = (t, a, sb) => codexHasAny(t) && t.includes(JSON.stringify(sb.command).slice(1, -1)) && t.includes(`ac:${a.id}`);
+// `-e KEY=value` flags for this account's entry: who is asking, plus what the launcher needs.
+const envFlags = (flag, a, sb) => Object.entries({ SB_FROM: `ac:${a.id}`, ...sb.env }).flatMap(([k, v]) => [flag, `${k}=${v}`]);
 
 const fail = (e) => ({ code: 1, stderr: e.message });
 const said = (r) => (r.code === 0 ? 'added' : util.truncate(r.stderr || r.stdout, 120));
@@ -46,7 +50,7 @@ async function applyClaude(a, on, sb) {
   }
   if (claudeOk(cur, a, sb)) return `${a.label}: ready`;
   if (cur) await util.run(bin, ['mcp', 'remove', '--scope', 'user', 'switchboard'], { env }).catch(() => {});
-  const r = await util.run(bin, ['mcp', 'add', '--scope', 'user', 'switchboard', '-e', `SB_FROM=ac:${a.id}`, '--', sb, 'mcp'], { env }).catch(fail);
+  const r = await util.run(bin, ['mcp', 'add', '--scope', 'user', 'switchboard', ...envFlags('-e', a, sb), '--', sb.command, ...sb.args], { env }).catch(fail);
   if (r.code !== 0 && cur) await util.run(bin, ['mcp', 'add-json', '--scope', 'user', 'switchboard', JSON.stringify(cur)], { env }).catch(() => {});
   return `${a.label}: ${said(r)}`;
 }
@@ -60,12 +64,12 @@ async function applyCodex(a, on, sb) {
   }
   if (codexOk(t, a, sb)) return `${a.label}: ready`;
   if (codexHasAny(t)) await util.run(bin, ['mcp', 'remove', 'switchboard']).catch(() => {});
-  const r = await util.run(bin, ['mcp', 'add', 'switchboard', '--env', `SB_FROM=ac:${a.id}`, '--', sb, 'mcp']).catch(fail);
+  const r = await util.run(bin, ['mcp', 'add', 'switchboard', ...envFlags('--env', a, sb), '--', sb.command, ...sb.args]).catch(fail);
   return `${a.label}: ${said(r)}`;
 }
 
 async function apply(on) {
-  const sb = sbPath();
+  const sb = util.sbLauncher();
   const results = [];
   for (const a of ctx.hub.accounts()) {
     if (a.kind === 'claude-code') results.push(await applyClaude(a, on, sb));

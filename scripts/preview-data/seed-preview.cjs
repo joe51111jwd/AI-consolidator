@@ -39,6 +39,8 @@ function claudeRows(id, cwd, branch, turns, start, step) {
 function seedPreview(HOME) {
   fs.rmSync(HOME, { recursive: true, force: true });
   fs.mkdirSync(HOME, { recursive: true });
+  // Where desktop apps keep their data in this home (Granola, Grok Bot), as the app looks for it.
+  const appData = require('../../electron/util.cjs').appDataDir(HOME);
   const now = Date.now();
   const code = (p) => path.join(HOME, 'code', p);
   const running = [];
@@ -138,13 +140,13 @@ function seedPreview(HOME) {
   ], { ago: 5 * DAY + 2 * HR });
 
   // Granola
-  w(path.join(HOME, 'Library', 'Application Support', 'Granola', 'cache-v3.json'), JSON.stringify({ cache: JSON.stringify({ state: { documents: {
+  w(path.join(appData, 'Granola', 'cache-v3.json'), JSON.stringify({ cache: JSON.stringify({ state: { documents: {
     g1: { id: 'g1', title: 'Brightline weekly with Michael', created_at: iso(now - DAY - 3 * HR), notes_markdown: 'Listing pages first, then the morning digest bot. Michael wants the SEO one-pager by Friday. Asked about adding Spanish pages.', people: { attendees: [{ email: 'michael@brightlinerealty.example', name: 'Michael Reyes' }] } },
     g2: { id: 'g2', title: 'Andrew · subscription launch', created_at: iso(now - 3 * DAY), notes_markdown: 'Subscriptions live before the Maple Roast launch Saturday. 10% subscriber discount. He will send product photos Thursday.', people: { attendees: [{ email: 'andrew@andrewscoffee.example', name: 'Andrew Shaw' }] } },
   } } }) }));
 
   // Grok Bot app cache (same layout tests/e2e.cjs fakes)
-  const GROK = path.join(HOME, 'Library', 'Application Support', 'Grok Bot', 'sand-client-persistence');
+  const GROK = path.join(appData, 'Grok Bot', 'sand-client-persistence');
   const b32 = (s) => { const A = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567'; let bits = 0, val = 0, out = ''; for (const b of Buffer.from(s, 'utf8')) { val = (val << 8) | b; bits += 8; while (bits >= 5) { out += A[(val >>> (bits - 5)) & 31]; bits -= 5; } } if (bits > 0) out += A[(val << (5 - bits)) & 31]; return out; };
   const grok = (key, value, schemaVersion = 1) => w(path.join(GROK, `${b32(key)}.blob`), JSON.stringify({ schemaVersion, value }));
   const bots = [

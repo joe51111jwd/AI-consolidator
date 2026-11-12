@@ -5,6 +5,7 @@ import { useImport } from './ImportChats';
 import { api, Entity, BoardRow } from '../lib/api';
 import { SOURCE, ago } from '../lib/format';
 import { suppressed } from '../lib/layout';
+import { ENTER, alt, key } from '../lib/platform';
 import { AgentLogo } from './Logos';
 import { useTour } from './Tour';
 import { useConnectAgents } from './ConnectAgents';
@@ -144,8 +145,8 @@ export default function Palette() {
         notify('Example board added');
       } catch (err: any) { notify(err?.message || 'Could not add the examples'); }
     } },
-    { id: 'settings', label: 'Open settings', icon: Settings, keys: '⌘,', run: () => set({ settingsTab: 'accounts' }) },
-    { id: 'chief', label: 'Ask across all agents', icon: Sparkles, keys: '⌘J', run: () => set({ chiefOpen: true, chiefMin: false }) },
+    { id: 'settings', label: 'Open settings', icon: Settings, keys: key(','), run: () => set({ settingsTab: 'accounts' }) },
+    { id: 'chief', label: 'Ask across all agents', icon: Sparkles, keys: key('J'), run: () => set({ chiefOpen: true, chiefMin: false }) },
     { id: 'outputs', label: 'Outputs', icon: Inbox, run: () => set({ outputsOpen: true }) },
     ...((window as any).__sbRegroup ? [{ id: 'smart', label: 'Smart group', icon: LayoutGrid, run: () => (window as any).__sbRegroup() }] : []),
     { id: 'accounts', label: 'Accounts', icon: Settings, run: () => set({ settingsTab: 'accounts' }) },
@@ -274,15 +275,15 @@ export default function Palette() {
                   </span>
                   {k === i && (
                     <span className="pn-acts" onClick={(ev) => ev.stopPropagation()}>
-                      <button onClick={() => choose(k, 'tag')} title={tagged ? 'Remove from context (⌘T)' : 'Tag as context (⌘T)'} className={tagged ? 'on' : ''}><Tag size={12} /></button>
-                      <button onClick={() => choose(k, 'add')} title="Add to board (⌘↵)"><Plus size={13} /></button>
+                      <button onClick={() => choose(k, 'tag')} title={tagged ? `Remove from context (${key('T')})` : `Tag as context (${key('T')})`} className={tagged ? 'on' : ''}><Tag size={12} /></button>
+                      <button onClick={() => choose(k, 'add')} title={`Add to board (${key(ENTER)})`}><Plus size={13} /></button>
                     </span>
                   )}
                 </div>
               </React.Fragment>
             );
           })}
-          {!q && <div className="pn-tip">Tip: ⌥Space opens this from anywhere in the app</div>}
+          {!q && <div className="pn-tip">Tip: {alt('Space')} opens this from anywhere in the app</div>}
         </div>
         <div className="pn-foot">
           {pins.length > 0 ? (
@@ -291,7 +292,7 @@ export default function Palette() {
               <button onClick={() => set({ pins: [] })} title="Clear tags"><X size={11} /></button>
             </span>
           ) : <span />}
-          <span className="pn-keys"><kbd>↵</kbd> open · <kbd>⌘↵</kbd> add to board · <kbd>⌘T</kbd> tag</span>
+          <span className="pn-keys"><kbd>{ENTER}</kbd> open · <kbd>{key(ENTER)}</kbd> add to board · <kbd>{key('T')}</kbd> tag</span>
         </div>
       </div>
     </div>

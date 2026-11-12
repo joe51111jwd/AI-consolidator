@@ -3,9 +3,9 @@
 // Read-only. The cache format is undocumented, so every field is optional.
 const fs = require('fs');
 const path = require('path');
-const { HOME, expand, truncate } = require('../util.cjs');
+const { HERE, appDataDir, expand, truncate } = require('../util.cjs');
 
-const DEFAULT_DIR = path.join(HOME, 'Library', 'Application Support', 'Granola');
+const DEFAULT_DIR = path.join(appDataDir(), 'Granola');
 let memo = { file: null, mtimeMs: 0, docs: [] };
 
 function findCache(account) {
@@ -99,6 +99,6 @@ function transcript(account, docId) {
   return msgs;
 }
 
-function detect() { return findCache({ config: {} }) ? ['Granola on this Mac'] : []; }
+function detect() { return findCache({ config: {} }) ? [`Granola on ${HERE}`] : []; }
 
-module.exports = { list, transcript, load, detect, actionItems };
+module.exports = { DEFAULT_DIR, list, transcript, load, detect, actionItems };

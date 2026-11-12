@@ -17,6 +17,9 @@ const { _electron } = require('playwright-core');
 const ROOT = path.join(__dirname, '..');
 const RUN = `${process.pid}`;
 const HOME = path.join(os.tmpdir(), `switchboard-e2e-${RUN}`);
+// Where desktop apps (the Claude app, Granola, Grok Bot) keep their data in that home: ~/Library/
+// Application Support on macOS, ~/.config on Linux (the app is pointed there with XDG_CONFIG_HOME).
+const APP_DATA = require('../electron/util.cjs').appDataDir(HOME);
 const BIN = path.join(__dirname, 'fixtures', 'bin');
 const LOG = path.join(os.tmpdir(), `switchboard-e2e-${RUN}-calls.log`);
 const LOGINS = path.join(os.tmpdir(), `switchboard-e2e-${RUN}-logins.json`);
@@ -109,6 +112,7 @@ async function launch() {
     SB_TEST_LOG: LOG, SB_TEST_LOGINS: LOGINS, SB_TEST_OPEN_LOG: OPENED, SB_TEST_NOTIFY_LOG: NOTIFY, SB_USER_DATA: path.join(HOME, 'electron-profile'), SB_TEST_ACCESSIBILITY: '0', ...mock.env,
   };
   delete env.ANTHROPIC_API_KEY; delete env.CLAUDE_CONFIG_DIR; delete env.ELECTRON_RUN_AS_NODE;
+  if (process.platform === 'linux') env.XDG_CONFIG_HOME = APP_DATA;
   const args = [ROOT];
   if (process.platform === 'linux') args.unshift('--no-sandbox', '--password-store=basic');
   if (process.platform === 'darwin') args.unshift('--use-mock-keychain');
@@ -276,7 +280,7 @@ function sb(...args) {
 
 // A fake Grok Bot app cache under the test HOME: the same <base32(key)>.blob JSON files the real
 // app keeps, with a roster of two bots, a transcript and the selected bot.
-const GROK_DIR = path.join(HOME, 'Library', 'Application Support', 'Grok Bot', 'sand-client-persistence');
+const GROK_DIR = path.join(APP_DATA, 'Grok Bot', 'sand-client-persistence');
 function base32(str) {
   const A = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
   let bits = 0, val = 0, out = '';
@@ -566,8 +570,8 @@ async function main() {
       { type: 'assistant', sessionId: sid, cwd, timestamp: ts, uuid: `${sid}-1`, message: { id: 'msg_scratch', role: 'assistant', model: 'claude-sonnet-5-5', content: [{ type: 'text', text: 'Scratch reply' }], usage: { input_tokens: 10, output_tokens: 5 } } },
     ].map((r) => JSON.stringify(r)).join('\n') + '\n');
   }
-  // A chat from the Claude desktop app: its scratch folder lives under ~/Library/Application Support.
-  writeSession('.claude', path.join(HOME, 'Library', 'Application Support', 'Claude', 'scratch-workspaces', 'ws-1', 'sess-1', 'scratch-2026-11-11-e2e'), S.desktop.split(':')[2],
+  // A chat from the Claude desktop app: its scratch folder lives in the app's data folder.
+  writeSession('.claude', path.join(APP_DATA, 'Claude', 'scratch-workspaces', 'ws-1', 'sess-1', 'scratch-2026-11-11-e2e'), S.desktop.split(':')[2],
     [['user', 'Plan the Harbor Coffee loyalty card'], ['assistant', 'Here is a loyalty card plan: ten stamps, the tenth drink free.']], Date.now() - 30 * 60000);
   // A month-old chat: too old for the board on its own, so it has to be imported.
   writeSession('.claude', path.join(HOME, 'code', 'harbor-coffee-site'), S.old.split(':')[2],
@@ -714,7 +718,16 @@ async function main() {
     await until(async () => (await node(S.desktop).count()) === 1, 'the desktop chat is a card');
     assert((await node(S.scratch).count()) === 0, 'the temp-folder session is not');
   });
-  await check('the Grok Bot permission prompt shows once and "Later" hides it', async () => {
+  // Accessibility (Switchboard pressing Return in Grok Bot) is a macOS permission: elsewhere there is nothing to ask for.
+  if (process.platform !== 'darwin') await check('off macOS there is no Grok Bot permission prompt, and Settings shows no Accessibility row', async () => {
+    assert(!(await api('perm:status')).applies, 'Accessibility does not apply here');
+    await sleep(500);
+    assert((await page.locator('.sb-onboard').count()) === 0, 'no permission prompt');
+    await view('Accounts');
+    assert((await page.getByTestId('grok-accessibility').count()) === 0, 'no Accessibility row in Settings');
+    await view('Board');
+  });
+  else await check('the Grok Bot permission prompt shows once and "Later" hides it', async () => {
     const prompt = page.locator('.sb-onboard');
     await until(async () => (await prompt.count()) === 1, 'the prompt asks for Accessibility permission');
     assert(/Allow Switchboard to send to Grok Bot/.test(await prompt.innerText()), 'says what it is for');

@@ -15,7 +15,7 @@ const { APP_DIR, HOME, truncate } = require('../util.cjs');
 const DAY = 86400000;
 const WINDOW = 7 * DAY;
 const SETTLE = 30000;
-const NOISE = /\/scratch-workspaces\/|^(\/private)?\/tmp(\/|$)|^(\/private)?\/var\/folders\//;
+const NOISE = /[/\\]scratch-workspaces[/\\]|^(\/private)?\/tmp(\/|$)|^(\/private)?\/var\/folders\//;
 const NO_REPLY = /no-?reply|notifications?@|mailer|daemon|calendar-notification|updates?@|news(letter)?@/i;
 
 const KEYWORDS = [

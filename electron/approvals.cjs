@@ -10,7 +10,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { EventEmitter } = require('events');
 const db = require('./db.cjs');
-const { APP_DIR, exists, truncate } = require('./util.cjs');
+const { APP_DIR, exists, truncate, sbLauncher } = require('./util.cjs');
 
 const PROMPT_TOOL = 'mcp__switchboard__approve_tool';
 const TIMEOUT_MS = 10 * 60000;
@@ -91,8 +91,8 @@ function describe(tool, input) {
 // without asking, as before). `origin` is the card the prompt was sent to; the chat's own card id is
 // known for a resumed chat, and learned from Claude Code's first event for a new one.
 function openRun({ origin, accountId }) {
-  const sb = path.join(APP_DIR, 'bin', 'sb');
-  if (!exists(sb)) return null;
+  const sb = sbLauncher();
+  if (!exists(sb.sb)) return null;
   const key = crypto.randomBytes(9).toString('hex');
   const run = { key, origin: origin || null, accountId: accountId || null, chat: origin && origin.startsWith('cc:') ? origin : null, rules: new Set() };
   runs.set(key, run);
@@ -101,7 +101,7 @@ function openRun({ origin, accountId }) {
   // SB_ASK goes both in the MCP server's own env and in Claude's, which Claude Code passes on to the
   // servers it starts, so the question finds its chat even if a user-level `switchboard` server wins.
   const env = { SB_ASK: key };
-  fs.writeFileSync(mcpConfig, JSON.stringify({ mcpServers: { switchboard: { command: sb, args: ['mcp'], env: { SB_FROM: run.chat || run.origin || 'mcp', ...env } } } }, null, 2), { mode: 0o600 });
+  fs.writeFileSync(mcpConfig, JSON.stringify({ mcpServers: { switchboard: { command: sb.command, args: sb.args, env: { ...sb.env, SB_FROM: run.chat || run.origin || 'mcp', ...env } } } }, null, 2), { mode: 0o600 });
   return {
     key, mcpConfig, env, tool: PROMPT_TOOL,
     onSession(sessionId) {

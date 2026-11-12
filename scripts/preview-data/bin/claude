@@ -7,14 +7,14 @@ const { spawnSync } = require('child_process');
 const path = require('path');
 const STUB = path.join(__dirname, '..', '..', '..', 'tests', 'fixtures', 'bin', 'claude');
 const args = process.argv.slice(2);
-if (args[0] === 'auth') process.exit(spawnSync(STUB, args, { stdio: 'inherit' }).status || 0);
+if (args[0] === 'auth') process.exit(spawnSync(process.execPath, [STUB, ...args], { stdio: 'inherit' }).status || 0);
 
 let input = '';
 process.stdin.on('data', (d) => { input += d; });
 process.stdin.on('end', () => {
   const reply = /Sort them into 2 to 8 topics/.test(input) && !/Use EXACTLY these top-level groups/.test(input) ? curated(input) : null;
   const env = reply ? { ...process.env, SB_STUB_REPLY: reply } : process.env;
-  const r = spawnSync(STUB, args, { input, env, stdio: ['pipe', 'inherit', 'inherit'] });
+  const r = spawnSync(process.execPath, [STUB, ...args], { input, env, stdio: ['pipe', 'inherit', 'inherit'] });
   process.exit(r.status || 0);
 });
 

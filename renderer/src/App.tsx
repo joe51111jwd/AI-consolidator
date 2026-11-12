@@ -3,6 +3,7 @@ import { ReactFlowProvider } from '@xyflow/react';
 import { Search, Settings2 } from 'lucide-react';
 import { useStore, wireEvents } from './lib/store';
 import { wireNotify } from './lib/notify';
+import { key } from './lib/platform';
 import Board from './components/Board';
 import Inspector from './components/Inspector';
 import Chief from './components/Chief';
@@ -83,16 +84,16 @@ export default function App() {
           <div className="tl-pill">
             <BrandMark />
             <span className="div" />
-            <button className="search-btn" data-testid="search" data-tour="search" onClick={() => set({ paletteOpen: true })}><Search size={14} />Search<kbd>⌘K</kbd></button>
+            <button className="search-btn" data-testid="search" data-tour="search" onClick={() => set({ paletteOpen: true })}><Search size={14} />Search<kbd>{key('K')}</kbd></button>
           </div>
           <div className="mode-seg" role="tablist" aria-label="View" data-tour="mode">
-            <button role="tab" aria-selected={mode === 'board'} className={mode === 'board' ? 'on' : ''} data-testid="mode-board" title="Board (⌘1)" onClick={() => setMode('board')}>Board</button>
-            <button role="tab" aria-selected={mode === 'live'} className={mode === 'live' ? 'on' : ''} data-testid="mode-live" title="List (⌘2)" onClick={() => setMode('live')}>List</button>
+            <button role="tab" aria-selected={mode === 'board'} className={mode === 'board' ? 'on' : ''} data-testid="mode-board" title={`Board (${key('1')})`} onClick={() => setMode('board')}>Board</button>
+            <button role="tab" aria-selected={mode === 'live'} className={mode === 'live' ? 'on' : ''} data-testid="mode-live" title={`List (${key('2')})`} onClick={() => setMode('live')}>List</button>
           </div>
         </div>
         <div className="float tr">
           <UsagePill />
-          <button className={`round-btn ${settingsTab ? 'on' : ''}`} title="Settings (⌘,)" data-testid="settings-btn" data-tour="settings" onClick={() => set({ settingsTab: settingsTab ? null : 'accounts' })}><Settings2 size={16} /></button>
+          <button className={`round-btn ${settingsTab ? 'on' : ''}`} title={`Settings (${key(',')})`} data-testid="settings-btn" data-tour="settings" onClick={() => set({ settingsTab: settingsTab ? null : 'accounts' })}><Settings2 size={16} /></button>
         </div>
         <Dock />
         <Outputs />

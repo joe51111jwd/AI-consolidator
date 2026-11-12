@@ -7,7 +7,7 @@ const crypto = require('crypto');
 const { EventEmitter } = require('events');
 const db = require('./db.cjs');
 const secrets = require('./secrets.cjs');
-const { APP_DIR, HOME, exists, truncate, uid, run, which } = require('./util.cjs');
+const { APP_DIR, HOME, IS_MAC, HERE, exists, truncate, uid, run, which, sbLauncher } = require('./util.cjs');
 const claudeCode = require('./sources/claudeCode.cjs');
 const codex = require('./sources/codex.cjs');
 const granola = require('./sources/granola.cjs');
@@ -121,7 +121,8 @@ function firstRunSetup() {
   claudeCode.detect().forEach((dir, i) => saveAccount({ kind: 'claude-code', label: i === 0 ? 'Claude' : `Claude ${i + 1}`, config: { configDir: dir } }));
   if (codex.hasSessions()) saveAccount({ kind: 'codex', label: 'Codex', config: {} });
   if (granola.detect().length) saveAccount({ kind: 'granola', label: 'Granola', config: {} });
-  saveAccount({ kind: 'grok-bot', label: 'Grok Bot', config: {} });
+  // Grok Bot is a Mac app: elsewhere its card only comes when its data is there.
+  if (IS_MAC || grokbot.status().installed) saveAccount({ kind: 'grok-bot', label: 'Grok Bot', config: {} });
 }
 
 // ---------- entities ----------
@@ -355,9 +356,9 @@ function dedicatedAccount(kinds, { accountId, cwd, group } = {}) {
   if (ok(accountId)) return ok(accountId);
   if (cwd) {
     const map = db.getSetting('accountForPath', {}) || {};
-    const norm = (p) => path.resolve(String(p).replace(/^~(?=$|\/)/, HOME)).replace(/\/+$/, '');
+    const norm = (p) => path.resolve(String(p).replace(/^~(?=$|[/\\])/, HOME)).replace(/[/\\]+$/, '');
     const dir = norm(cwd);
-    const best = Object.keys(map).map((k) => ({ k, p: norm(k) })).filter(({ p }) => dir === p || dir.startsWith(p + '/'))
+    const best = Object.keys(map).map((k) => ({ k, p: norm(k) })).filter(({ p }) => dir === p || dir.startsWith(p + path.sep))
       .sort((x, y) => y.p.length - x.p.length).map(({ k }) => ok(map[k])).find(Boolean);
     if (best) return best;
   }
@@ -600,7 +601,7 @@ async function claudeChat(a, origin, opts) {
 async function grokAccountSend(text, opts = {}) {
   if (!grokbot.enabled()) throw new Error('The Grok Bot connection is off. Turn it on in Accounts.');
   const st = grokbot.status();
-  if (!st.installed) throw new Error("Grok Bot isn't installed on this Mac, so nothing was sent.");
+  if (!st.installed) throw new Error(`Grok Bot isn't installed on ${HERE}, so nothing was sent.`);
   const agentId = grokbot.selectedAgent();
   if (!agentId) throw new Error("Couldn't tell which Grok bot to send to. Send from that bot's own card, or open Grok Bot and pick the bot first.");
   return grokbot.send(agentId, text, { prefillOnly: opts.prefillOnly });
@@ -897,11 +898,11 @@ async function quickAsk(text, { timeoutMs = 25000, model = 'sonnet' } = {}) {
 
 let mcpPathMemo = null;
 function mcpConfigPath() {
-  const sb = path.join(APP_DIR, 'bin', 'sb');
-  if (!exists(sb)) return null;
+  const sb = sbLauncher();
+  if (!exists(sb.sb)) return null;
   if (!mcpPathMemo) {
     mcpPathMemo = path.join(APP_DIR, 'mcp.json');
-    fs.writeFileSync(mcpPathMemo, JSON.stringify({ mcpServers: { switchboard: { command: sb, args: ['mcp'], env: { SB_FROM: CHIEF_ID } } } }, null, 2));
+    fs.writeFileSync(mcpPathMemo, JSON.stringify({ mcpServers: { switchboard: { command: sb.command, args: sb.args, env: { ...sb.env, SB_FROM: CHIEF_ID } } } }, null, 2));
   }
   return mcpPathMemo;
 }

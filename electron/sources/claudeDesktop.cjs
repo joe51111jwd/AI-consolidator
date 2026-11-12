@@ -9,9 +9,10 @@
 // locally in a usable form, so they are not listed here.
 const fs = require('fs');
 const path = require('path');
-const { HOME, walk } = require('../util.cjs');
+const { appDataDir, walk } = require('../util.cjs');
 
-const ROOT = path.join(HOME, 'Library', 'Application Support', 'Claude');
+// ~/Library/Application Support/Claude on macOS, %APPDATA%\Claude on Windows, ~/.config/Claude on Linux.
+const ROOT = path.join(appDataDir(), 'Claude');
 let memo = { at: 0, titles: new Map(), agents: [] };
 
 function readIndex(sub) {

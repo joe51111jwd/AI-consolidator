@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { create } from 'zustand';
 import { Check, Copy, Loader2, X } from 'lucide-react';
 import { api } from '../lib/api';
+import { HERE } from '../lib/platform';
 import { useStore } from '../lib/store';
 import { AgentLogo } from './Logos';
 import './connect.css';
@@ -25,7 +26,7 @@ export const CONNECT_APPS: ConnectApp[] = [
     { text: 'Turn it on for the chats that should report.' },
   ] },
   { id: 'claude-code', source: 'claude-code', label: 'Claude Code elsewhere', steps: [
-    { text: 'Run once on each other computer or cloud box (this Mac already shows up):', value: 'claude mcp add --transport http --scope user switchboard-relay "{MCP}?app=claude-code" --header "Authorization: Bearer {TOKEN}"' },
+    { text: `Run once on each other computer or cloud box (${HERE} already shows up):`, value: 'claude mcp add --transport http --scope user switchboard-relay "{MCP}?app=claude-code" --header "Authorization: Bearer {TOKEN}"' },
   ] },
   { id: 'cursor', source: 'cursor', label: 'Cursor', steps: [
     { text: 'Add to ~/.cursor/mcp.json:', value: '{"mcpServers":{"switchboard-relay":{"url":"{MCP}?app=cursor","headers":{"Authorization":"Bearer {TOKEN}"}}}}' },

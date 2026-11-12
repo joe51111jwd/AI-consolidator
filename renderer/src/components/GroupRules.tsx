@@ -35,8 +35,8 @@ export default function GroupRules({ onClose }: { onClose: () => void }) {
   const save = async () => {
     const groups = rows.map((r) => ({ label: r.label.trim(), hint: r.hint.trim() })).filter((r) => r.label);
     await api.call('groupRules:set', { groups });
-    notify(groups.length ? `Grouping by your ${groups.length} groups` : 'Back to automatic groups');
     onClose();
+    notify(groups.length ? `Grouping by your ${groups.length} groups` : 'Back to automatic groups');
   };
 
   return (

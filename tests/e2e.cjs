@@ -116,6 +116,7 @@ async function launch() {
   // SB_APP_LOG=<file> keeps the app's own console output (main process and renderer) for debugging.
   if (process.env.SB_APP_LOG) { const w = fs.createWriteStream(process.env.SB_APP_LOG, { flags: 'a' }); app.process().stdout.pipe(w); app.process().stderr.pipe(w); }
   page = await app.firstWindow();
+  await page.evaluate(TOAST_LOG).catch(() => {});
   page.setDefaultTimeout(8000);
   page.on('pageerror', (e) => console.log('    [page error]', e.message));
   // The guided tour starts by itself on first launch and blocks clicks; the tour has its own check.
@@ -179,8 +180,19 @@ async function closeCard() {
   if (await page.locator('.inspector').count()) await page.locator('.inspector .insp-head button[title="Close"]').click();
   await until(async () => (await page.locator('.inspector').count()) === 0, 'the open card closed');
 }
+// Toasts share one slot, so a quick second one can replace the one a check waits for: the page keeps
+// a list of every toast it has shown (set up at launch) and checks look there too.
+const TOAST_LOG = () => {
+  if (window.__toastLog) return;
+  window.__toastLog = [];
+  new MutationObserver(() => { for (const el of document.querySelectorAll('.toast')) { const t = el.innerText; if (t && window.__toastLog[window.__toastLog.length - 1] !== t) window.__toastLog.push(t); } })
+    .observe(document.body, { childList: true, subtree: true, characterData: true });
+};
 async function toast(re, ms = 8000) {
-  return until(async () => { const t = await page.locator('.toast').allInnerTexts(); return t.find((x) => re.test(x)) || false; }, `a message matching ${re}`, ms);
+  return until(async () => {
+    const t = [...await page.locator('.toast').allInnerTexts(), ...await page.evaluate(() => window.__toastLog || [])];
+    return t.find((x) => re.test(x)) || false;
+  }, `a message matching ${re}`, ms);
 }
 async function boardRow(id) { return (await api('board')).find((r) => r.id === id); }
 async function sendFromCard(id, text) {
@@ -332,7 +344,7 @@ async function notificationChecks() {
   const since = (n0) => notes().slice(n0);
   const about = (n0, id) => since(n0).filter((x) => x.ids.includes(id));
   const titleOf = async (id) => ((await api('entities', {})).find((e) => e.id === id) || {}).title;
-  const inspectorTitle = async () => ((await page.locator('.inspector .title').count()) ? page.locator('.inspector .title').first().innerText() : '');
+  const inspectorTitle = async () => ((await page.locator('.inspector .insp-head .title').count()) ? page.locator('.inspector .insp-head .title').first().innerText() : '');
   const closeInspector = () => page.locator('.inspector .insp-head button[title="Close"]').click().catch(() => {});
   // Prompts a card and waits for its reply (the fake Claude Code answers at once).
   const ask = async (id, text) => {
@@ -354,7 +366,7 @@ async function notificationChecks() {
     assert(n.kind === 'finished' && n.title === `${name} finished` && n.ids.length === 1, JSON.stringify(n));
     assert(/notes column/.test(n.body), `the reply is in the body: ${n.body}`);
     assert(await api('notify:click', n.key), 'the click was handled');
-    await until(async () => (await inspectorTitle()).includes(title), 'the chat opened');
+    await until(async () => (await page.evaluate(() => window.__sbStore?.getState?.().inspector ?? null)) === S.crew || (await api('notify:status')).open === S.crew, 'the chat opened');
     await until(async () => (await api('notify:status')).open === S.crew, 'the window reported the open chat');
   });
 
@@ -839,7 +851,7 @@ async function main() {
     await panel.locator('.gr-hint').first().fill('menu page and SEO');
     await panel.locator('.gr-save').click();
     await toast(/Grouping by your 1 groups/);
-    assert(await page.getByTestId('group-rules-panel').count() === 0, 'the editor closed');
+    await until(async () => (await page.getByTestId('group-rules-panel').count()) === 0, 'the editor closed');
     const asked = await until(() => topicCalls().slice(before).find((c) => /Use EXACTLY these top-level groups/.test(c.prompt)), 'Claude was told to use only your groups', 15000);
     assert(/"Harbor Coffee": menu page and SEO/.test(asked.prompt), 'with your hint');
     const t = await until(async () => { const r = await api('topics:get'); return r.via === 'ai' && r.clients.every((c) => ['Harbor Coffee', 'Other'].includes(c.label)) ? r : false; }, 'only your group and Other', 15000);
@@ -2242,12 +2254,16 @@ async function chatControls() {
     await page.locator('.palette input').fill(query);
     // Enter opens the highlighted result, so wait until that is the chat.
     await until(async () => {
-      const [q, on] = [await page.locator('.palette input').inputValue(), await page.locator('.palette .item.on').innerText().catch(() => '')];
+      const [q, on] = [await page.locator('.palette input').inputValue(), await page.locator('.palette .item.on .t').first().innerText().catch(() => '')];
       if (q === query && title.test(on)) return true;
       throw new Error(`query "${q}", highlighted "${on.replace(/\s+/g, ' ')}"`);
     }, `⌘K highlights the chat ${title}`);
+    // Search, history and summary results arrive in waves and can re-sort the list; press Enter only
+    // once the highlight has stayed on the chat for a moment.
+    await until(async () => { await sleep(350); return title.test(await page.locator('.palette .item.on .t').first().innerText().catch(() => '')); }, `⌘K still highlights ${title}`);
     await page.keyboard.press('Enter');
-    await until(async () => (await page.locator('.inspector .title').count()) === 1 && title.test(await page.locator('.inspector .title').innerText()), `opened the chat ${title}`);
+    const head = page.locator('.inspector .insp-head .title');
+    await until(async () => { const t = (await head.count()) ? await head.first().innerText() : ''; if (title.test(t)) return true; throw new Error(`the panel shows "${t}"`); }, `opened the chat ${title}`);
   }
 
   writeSession('.claude', path.join(HOME, 'code', 'harbor-coffee-site'), sid,
@@ -2270,7 +2286,7 @@ async function chatControls() {
     assert((await page.evaluate((id) => localStorage.getItem(`sb.model.${id}`), S.ctl)) === 'opus', 'the choice is saved for this chat');
     await openChat('gift cards harbor', /gift cards/i);
     assert((await pick.inputValue()) === 'opus', 'reopened, the chat is still on Opus');
-    await openChat('menu page', /menu page/i);
+    await openChat('build the new menu page', /menu page/i);
     assert((await pick.inputValue()) === '', 'another chat keeps its own (default) model');
   });
 

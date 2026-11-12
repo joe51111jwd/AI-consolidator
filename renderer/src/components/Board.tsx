@@ -275,13 +275,20 @@ export default function Board() {
   // arranged the board yourself since.
   const weekRef = useRef(weekBoard);
   const lastWeek = useRef(0);
+  // The grouping landed while the opening layout was still running (it often lands within
+  // milliseconds of it): lay it out as soon as that layout is done instead of dropping it.
+  const topicsMissed = useRef(false);
   weekRef.current = weekBoard;
-  useEffect(() => api.onEvent((e) => {
-    if (e?.type !== 'topics-changed' || arranged.current || weekState.current !== 'done') return;
+  const relayoutWeek = () => {
     // Not more than once a minute, so cards don't shuffle while you're looking at them.
-    if (Date.now() - lastWeek.current < 60000) return;
+    if (arranged.current || Date.now() - lastWeek.current < 60000) return;
     lastWeek.current = Date.now();
     weekRef.current(true);
+  };
+  useEffect(() => api.onEvent((e) => {
+    if (e?.type !== 'topics-changed') return;
+    if (weekState.current === 'running') topicsMissed.current = true;
+    else if (weekState.current === 'done') relayoutWeek();
   }), []);
 
   // On open: lay out this week, unless you've arranged the board by hand since the last time.
@@ -295,6 +302,7 @@ export default function Board() {
       if (!arranged.current) await weekBoard(true);
       weekState.current = 'done';
       setWeekReady(true);
+      if (topicsMissed.current) { topicsMissed.current = false; relayoutWeek(); }
     })();
   }, [boardLoaded, entities.length]);
 

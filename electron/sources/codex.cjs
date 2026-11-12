@@ -2,7 +2,7 @@
 // OpenAI Codex CLI: sessions are JSONL "rollout" files under ~/.codex/sessions/YYYY/MM/DD/.
 const fs = require('fs');
 const path = require('path');
-const { expand, exists, readJsonl, walk, truncate, run, which, HOME } = require('../util.cjs');
+const { expand, exists, readJsonl, walk, truncate, run, which, HOME, HERE } = require('../util.cjs');
 const classify = require('./classify.cjs');
 
 const cache = new Map();
@@ -78,7 +78,7 @@ function usage(account) {
 
 async function prompt(account, { sessionId, cwd, text, onText, signal }) {
   const bin = account.config.bin || which('codex');
-  if (!bin) throw new Error('The Codex CLI (`codex`) was not found on this Mac.');
+  if (!bin) throw new Error(`The Codex CLI (\`codex\`) was not found on ${HERE}.`);
   const args = sessionId ? ['exec', '--json', 'resume', sessionId, '-'] : ['exec', '--json', '-'];
   let acc = '';
   const env = {}; if (account.config.home) env.CODEX_HOME = home(account);

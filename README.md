@@ -22,7 +22,7 @@ Everything runs on your computer. Nothing is sent anywhere except to the AI serv
 
 ## Install
 
-You need a Mac with [Node.js 22.13 or newer](https://nodejs.org) and Git.
+Switchboard runs on macOS, Linux and Windows. To run it from source you need [Node.js 22.13 or newer](https://nodejs.org) and Git.
 
 ```bash
 git clone https://github.com/joe51111jwd/AI-consolidator.git
@@ -38,6 +38,14 @@ npm run dist
 ```
 
 The app appears in the `release` folder. The first time you open it, right-click it and choose **Open**, because it isn't signed with an Apple developer certificate.
+
+**Linux and Windows.** Run the **Build** workflow on GitHub (Actions → Build → Run workflow, or push a `v*` tag) and download the installers from the run: an AppImage and a `.deb` for Linux, a `Setup .exe` for Windows. Or build them yourself on that system with `npm run dist:linux` or `npm run dist:win`.
+
+- AppImage: `chmod +x Switchboard-*.AppImage` and open it. Where Linux doesn't allow Chromium's sandbox for AppImages (Ubuntu 24.04 and later), it starts without it by itself.
+- deb: `sudo apt install ./switchboard_*_amd64.deb`, then open Switchboard from your apps (installs to `/opt/Switchboard`).
+- Windows: run `Switchboard Setup *.exe`. It installs for your user only, no admin needed. It isn't code-signed, so SmartScreen may ask: **More info → Run anyway**.
+
+What differs from the Mac: the Grok Bot desktop app only exists for macOS, so on Linux and Windows Grok bots reach Switchboard through Switchboard Relay, and there is no Accessibility permission to give. Keys are kept with Windows' own encryption (tied to your Windows sign-in) or, on Linux, in GNOME Keyring or KWallet; with neither running they are saved only lightly encrypted. The Terminal button next to a Claude account copies the sign-in command for you to run.
 
 Want to look around before connecting anything? `npm run demo` opens the app with made-up sample data in a throwaway folder.
 
@@ -188,6 +196,8 @@ Only programs running as you can use it: it listens on 127.0.0.1 and needs the t
 
 ## Keyboard
 
+On Linux and Windows use Ctrl where this says ⌘, and Alt for ⌥.
+
 | Keys | Does |
 | --- | --- |
 | ⌘1 / ⌘2 | Board / Chats home |
@@ -204,7 +214,8 @@ Only programs running as you can use it: it listens on 127.0.0.1 and needs the t
 
 - `~/.switchboard/switchboard.db` holds the board, clients, outputs, chat summaries and settings, including the tools you chose to always allow in each chat, and the claude.ai history you imported (Settings → Accounts → **Remove imported history** deletes it).
 - `~/.switchboard/brain.md` is the shared brain.
-- API keys and Google sign-ins are encrypted with your Mac's Keychain.
+- API keys and Google sign-ins are encrypted with your Mac's Keychain (on Windows with your Windows sign-in, on Linux with your keyring).
+- Other apps' data is read where they keep it: `~/Library/Application Support` on macOS, `%APPDATA%` on Windows, `~/.config` on Linux (for example the Claude app's sessions and Granola's notes). Claude Code's `~/.claude` and Codex's `~/.codex` are in your home folder everywhere.
 
 ## Testing
 

@@ -133,6 +133,10 @@
 .board-tools { position: fixed; z-index: 6; top: 10px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 6px; -webkit-app-region: no-drag; }
 .board-tools .bt-panel { right: auto; left: 0; transform-origin: top left; }
 @media (max-width: 1180px) { .board-tools { left: auto; right: 16px; top: 52px; transform: none; } .board-tools .bt-panel { left: auto; right: 0; transform-origin: top right; } }
+/* Linux and Windows: "Ctrl+K" makes the search pill wider, and on windows up to 1470 px wide (1280 and
+   1366 px screens) the centred tools would slide under Board | List, so there they keep only their
+   icons (the names are in the tooltips). */
+@media (min-width: 1181px) and (max-width: 1470px) { .shell:not(.mac) .board-tools .bt-btn > span:not(.bt-board-name) { display: none; } }
 .bt-wrap { position: relative; }
 .bt-btn {
   height: 32px; min-width: 32px; padding: 0 9px; border-radius: 999px; display: inline-flex; align-items: center; justify-content: center; gap: 7px;

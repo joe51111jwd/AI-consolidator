@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { create } from 'zustand';
 import { Check, Plus, Search, X } from 'lucide-react';
 import { api } from '../lib/api';
+import { HERE } from '../lib/platform';
 import { useStore } from '../lib/store';
 import { ago } from '../lib/format';
 import { ClaudeLogo } from './Logos';
@@ -56,7 +57,7 @@ export default function ImportChats() {
     <div className="imp-back" onMouseDown={() => set(false)}>
       <div className="imp" role="dialog" aria-label="Import chats" data-testid="import-chats" onMouseDown={(e) => e.stopPropagation()}>
         <div className="imp-head">
-          <b>Import chats</b><span>Every Claude chat on this Mac, any age</span>
+          <b>Import chats</b><span>Every Claude chat on {HERE}, any age</span>
           <button className="imp-x" onClick={() => set(false)} aria-label="Close"><X size={15} /></button>
         </div>
         <label className="imp-search">
@@ -74,7 +75,7 @@ export default function ImportChats() {
                 <ClaudeLogo size={14} />
                 <div className="imp-main">
                   <div className="imp-title">{it.title}</div>
-                  <div className="imp-meta">{[it.accountLabel, it.cwd ? it.cwd.split('/').pop() : null, ago(it.updatedAt)].filter(Boolean).join(' · ')}</div>
+                  <div className="imp-meta">{[it.accountLabel, it.cwd ? it.cwd.split(/[\\/]/).pop() : null, ago(it.updatedAt)].filter(Boolean).join(' · ')}</div>
                 </div>
                 <button className={`imp-add ${done ? 'done' : ''}`} disabled={done} onClick={() => add(it)} data-testid="import-add">
                   {done ? <><Check size={13} />On board</> : <><Plus size={13} />Add</>}

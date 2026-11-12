@@ -1,6 +1,6 @@
 'use strict';
 // Local message bus on 127.0.0.1. The `sb` command and its MCP server talk to it, so
-// Grok Bot, Claude Code or any script on this Mac can send work to a card and the
+// Grok Bot, Claude Code or any script on this computer can send work to a card and the
 // board shows the message travelling. Every request needs the token in ~/.switchboard/bus-token.
 const http = require('http');
 const fs = require('fs');

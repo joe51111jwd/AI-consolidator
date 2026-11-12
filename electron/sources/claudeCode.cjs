@@ -4,7 +4,7 @@
 // Prompting runs the user's own `claude` CLI in print mode, so it uses that account's login.
 const fs = require('fs');
 const path = require('path');
-const { HOME, APP_DIR, expand, exists, readJsonl, walk, truncate, plain, run, which } = require('../util.cjs');
+const { HOME, HERE, APP_DIR, expand, exists, readJsonl, walk, truncate, plain, run, which } = require('../util.cjs');
 const classify = require('./classify.cjs');
 const claudeDesktop = require('./claudeDesktop.cjs');
 
@@ -433,7 +433,7 @@ async function authStatus(account) {
 // account and organization (for example your Team org or your personal plan) this card uses.
 function login(account, { email, onOutput, signal } = {}) {
   const bin = account.config.bin || which('claude');
-  if (!bin) return Promise.reject(new Error('Claude Code (the `claude` command) was not found on this Mac. Install it first: npm install -g @anthropic-ai/claude-code'));
+  if (!bin) return Promise.reject(new Error(`Claude Code (the \`claude\` command) was not found on ${HERE}. Install it first: npm install -g @anthropic-ai/claude-code`));
   fs.mkdirSync(configDir(account), { recursive: true });
   const args = ['auth', 'login'];
   if (email) args.push('--email', email);
@@ -445,7 +445,7 @@ function login(account, { email, onOutput, signal } = {}) {
 }
 async function logout(account) {
   const bin = account.config.bin || which('claude');
-  if (!bin) throw new Error('Claude Code was not found on this Mac');
+  if (!bin) throw new Error(`Claude Code was not found on ${HERE}`);
   await run(bin, ['auth', 'logout'], { env: childEnv(account), cwd: HOME });
   return authStatus(account);
 }
@@ -471,7 +471,7 @@ const ASKING_MODES = new Set(['default', 'acceptEdits']);
 // instead: Claude Code calls the Switchboard MCP server's approve_tool and waits for the owner.
 async function prompt(account, { sessionId, cwd, text, onText, signal, model, extraArgs = [], ask }) {
   const bin = account.config.bin || which('claude');
-  if (!bin) throw new Error('Claude Code (the `claude` command) was not found on this Mac.');
+  if (!bin) throw new Error(`Claude Code (the \`claude\` command) was not found on ${HERE}.`);
   const args = ['-p', '--output-format', 'stream-json', '--verbose'];
   if (sessionId) args.push('--resume', sessionId);
   const mode = account.config.permissionMode;

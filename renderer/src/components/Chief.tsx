@@ -3,6 +3,7 @@ import { ArrowUp, ChevronDown, ChevronRight, X, GripVertical, Copy, FileOutput, 
 import { useStore } from '../lib/store';
 import { api, Message } from '../lib/api';
 import { md } from '../lib/format';
+import { key } from '../lib/platform';
 import { AgentLogo } from './Logos';
 import { useTour } from './Tour';
 import ConnectAgents, { useConnectAgents } from './ConnectAgents';
@@ -157,7 +158,7 @@ function Actions({ onDone }: { onDone: () => void }) {
   };
   return (
     <div className="cf-actions">
-      <button className="cf-act" data-testid="dock-new" title="New chat  ⌘N" onClick={() => { onDone(); openNewChat(); }}><MessageSquarePlus size={14} />New chat</button>
+      <button className="cf-act" data-testid="dock-new" title={`New chat  ${key('N')}`} onClick={() => { onDone(); openNewChat(); }}><MessageSquarePlus size={14} />New chat</button>
       <button className="cf-act" onClick={run('Blank board', () => api.call('boards:blank'))}><LayoutTemplate size={14} />New blank board</button>
       <button className="cf-act" data-testid="chief-tour" onClick={() => { onDone(); useTour.getState().start(); }}><Compass size={14} />Tour</button>
       <button className="cf-act" data-testid="chief-connect" onClick={() => { onDone(); useConnectAgents.getState().set(true); }}><Plug size={14} />Connect your agents</button>
@@ -272,7 +273,7 @@ export default function Chief() {
             <ChiefGlyph size={16} working={running} />
             <span className="cf-title">Agent</span>
             {items.length > 0 && <span className={`cf-badge ${late ? 'hot' : ''}`} title="Needs you">{items.length}</span>}
-            <button className="icon-btn" title="Close  (Esc, ⌘J)" aria-label="Close" onClick={close}><ChevronRight size={16} /></button>
+            <button className="icon-btn" title={`Close  (Esc, ${key('J')})`} aria-label="Close" onClick={close}><ChevronRight size={16} /></button>
           </div>
           <Actions onDone={close} />
         </div>

@@ -8,6 +8,8 @@ const path = require('path');
 function seed(HOME) {
   fs.rmSync(HOME, { recursive: true, force: true });
   fs.mkdirSync(HOME, { recursive: true });
+  // Where desktop apps keep their data in this home (Granola's cache), as the app looks for it.
+  const appData = require('../electron/util.cjs').appDataDir(HOME);
   const now = Date.now();
   const MIN = 60000, HR = 3600000, DAY = 86400000;
   const iso = (t) => new Date(t).toISOString();
@@ -68,7 +70,7 @@ function seed(HOME) {
   { const t = (now - 40 * MIN) / 1000; fs.utimesSync(cxFile, t, t); }
 
   // Granola
-  w(path.join(HOME, 'Library', 'Application Support', 'Granola', 'cache-v3.json'), JSON.stringify({ cache: JSON.stringify({ state: {
+  w(path.join(appData, 'Granola', 'cache-v3.json'), JSON.stringify({ cache: JSON.stringify({ state: {
     documents: {
       m1: { id: 'm1', title: 'Harbor Coffee kickoff', created_at: iso(now - 4 * DAY), notes_markdown: 'Menu page, seasonal drinks, local SEO. Budget agreed. They want it before the holiday rush.', people: { attendees: [{ email: 'maya@harborcoffee.example', name: 'Maya Lin' }] } },
       m2: { id: 'm2', title: 'Fieldline weekly', created_at: iso(now - 1 * DAY), notes_markdown: 'Crew schedule bug is the top issue. Release 2.3 Friday.', people: { attendees: [{ email: 'dev@fieldline.example', name: 'Dev Patel' }] } },

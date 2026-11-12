@@ -1,6 +1,8 @@
 'use strict';
-// API keys and tokens, encrypted with Electron safeStorage (a key kept in the macOS Keychain).
-// Values never leave the main process; the window only learns whether a key is set.
+// API keys and tokens, encrypted with Electron safeStorage: a key kept in the macOS Keychain, Windows'
+// DPAPI (tied to the Windows sign-in), or on Linux the desktop's keyring (GNOME Keyring, KWallet), or
+// Electron's built-in key when there is none (main.cjs). Values never leave the main process; the
+// window only learns whether a key is set.
 //
 // The Keychain is only touched asynchronously: macOS asks the owner for permission whenever the
 // app's signature changes (every update of an unsigned build), and the old synchronous calls froze
@@ -17,6 +19,10 @@ const RETRY_MS = 60000;
 let warming = null;
 let lastWarm = 0;
 let onLocked = () => {};
+const UNAVAILABLE = {
+  darwin: 'Keychain encryption is not available',
+  win32: 'Windows encryption is not available',
+}[process.platform] || 'No keyring is available to encrypt it. Start GNOME Keyring or KWallet, or open Switchboard with --password-store=basic.';
 
 async function decryptAll() {
   for (const r of db.all('SELECT key, value FROM secrets')) {
@@ -37,7 +43,7 @@ function onUnreadable(fn) { onLocked = fn; }
 
 function set(key, value) {
   if (!value) { cache.delete(key); unread.delete(key); db.exec('DELETE FROM secrets WHERE key = ?', key); return Promise.resolve(); }
-  if (!safeStorage.isEncryptionAvailable()) throw new Error('Keychain encryption is not available');
+  if (!safeStorage.isEncryptionAvailable()) throw new Error(UNAVAILABLE);
   const v = String(value);
   cache.set(key, v);
   unread.delete(key);
@@ -58,10 +64,21 @@ function get(key) {
 }
 function has(key) { return cache.has(key) || !!db.get('SELECT 1 AS x FROM secrets WHERE key = ?', key); }
 
+// Where saved keys are kept, in words for Settings.
+function where() {
+  if (process.platform === 'darwin') return 'Keys stay encrypted in your Keychain.';
+  if (process.platform === 'win32') return 'Keys stay encrypted with your Windows sign-in.';
+  let backend = 'unknown';
+  try { backend = safeStorage.getSelectedStorageBackend(); } catch {}
+  return backend === 'basic_text'
+    ? 'Keys are saved on this computer. No system keyring was found, so they are only lightly encrypted.'
+    : 'Keys stay encrypted in your system keyring.';
+}
+
 // Resolves once every save in flight is written (bounded, so quitting never hangs).
 function flush(ms = 3000) {
   if (!writes.size) return Promise.resolve();
   return Promise.race([Promise.allSettled([...writes]), new Promise((r) => setTimeout(r, ms))]);
 }
 
-module.exports = { set, get, has, warm, flush, onUnreadable };
+module.exports = { set, get, has, warm, flush, onUnreadable, where };

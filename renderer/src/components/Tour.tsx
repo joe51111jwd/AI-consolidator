@@ -4,6 +4,7 @@ import { create } from 'zustand';
 import { X } from 'lucide-react';
 import { useStore } from '../lib/store';
 import { api } from '../lib/api';
+import { key } from '../lib/platform';
 import { useConnectAgents } from './ConnectAgents';
 import './tour.css';
 
@@ -33,7 +34,7 @@ const STEPS: Step[] = [
   { target: ['[data-tour=agent-panel]', '.sb-chief.open .chief-panel'], chief: true,
     title: 'Main agent', body: 'Ask across everything: "what needs me?", a daily recap, or any question about your chats.' },
   { target: ['[data-tour=search]', '[data-testid=search]'],
-    title: 'Search  ⌘K', body: 'Find any chat or meeting. ⌘T tags it as context for your next prompt.' },
+    title: `Search  ${key('K')}`, body: `Find any chat or meeting. ${key('T')} tags it as context for your next prompt.` },
   { target: ['[data-tour=mode]', '.mode-seg'], mode: 'live',
     title: 'List', body: 'The same chats as a list, sorted into topics. Switch back to Board any time.' },
   { target: ['[data-tour=import]', '[data-testid=live-import]'], mode: 'live',

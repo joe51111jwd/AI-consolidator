@@ -10,12 +10,13 @@ import NotifySettings from '../components/NotifySettings';
 import ContextSettings from '../components/ContextSettings';
 import ClaudeAiImport from '../components/ClaudeAiImport';
 import { CONNECT_APPS, ConnectApp, ConnectState, ConnectSteps, useRelay } from '../components/ConnectAgents';
+import { HERE, isMac, isWindows } from '../lib/platform';
 
 type Kind = { kind: string; label: string; blurb: string };
 const KINDS: Kind[] = [
   { kind: 'claude-code', label: 'Claude account', blurb: 'Your Claude login, through Claude Code.' },
   { kind: 'gmail', label: 'Gmail', blurb: 'Read-only, with Google sign-in.' },
-  { kind: 'granola', label: 'Granola', blurb: 'Meeting notes on this Mac.' },
+  { kind: 'granola', label: 'Granola', blurb: `Meeting notes on ${HERE}.` },
 ];
 // Key-based and rarely used sources stay out of the way.
 const ADVANCED: Kind[] = [
@@ -30,7 +31,7 @@ const PERMISSIONS: [string, string][] = [['default', 'Ask first'], ['acceptEdits
 
 function grokText(sb: string) {
   return [
-    'You can reach my other AI agents on my Mac through Switchboard.',
+    `You can reach my other AI agents on my ${isMac ? 'Mac' : 'computer'} through Switchboard.`,
     `Run "${sb} cards" to list them, and "${sb} send --from grok-bot --wait <card name> <message>" to hand one a task and get its reply.`,
     `Add notes everyone should know with "${sb} brain append <note>".`,
   ].join('\n');
@@ -90,7 +91,11 @@ function ClaudeSignIn({ a, all }: { a: Account; all: Account[] }) {
         </>) : (<>
           <button className="btn accent" onClick={signIn}><LogIn size={13} />Sign in</button>
           <button className="btn" disabled={busy} onClick={check}><RefreshCw size={13} />Check</button>
-          <button className="btn ghost" title="Open Terminal in this account's folder and type /login" onClick={async () => { const cmd = await api.loginAccount(a.id); notify(window.sbBridge.platform === 'darwin' ? 'Opened Terminal. Type /login there.' : `Run: ${cmd}`); }}><Terminal size={13} />Terminal</button>
+          <button className="btn ghost" title={isMac ? "Open Terminal in this account's folder and type /login" : "Copy the command that starts Claude Code in this account's folder, then type /login"} onClick={async () => {
+            const cmd = await api.loginAccount(a.id);
+            if (isMac) { notify('Opened Terminal. Type /login there.'); return; }
+            api.copy(cmd); notify(`Copied. Run it in a terminal, then type /login: ${cmd}`);
+          }}><Terminal size={13} />Terminal</button>
         </>)}
       </div>
     </div>
@@ -182,10 +187,12 @@ export default function Accounts() {
   const [gmailBusy, setGmailBusy] = useState<string | null>(null);
   const [confirmDel, setConfirmDel] = useState<string | null>(null);
   const [bus, setBus] = useState<{ tokenFile: string; port: string | null } | null>(null);
-  const sbPath = '~/.switchboard/bin/sb';
+  const sbPath = isWindows ? '~\\.switchboard\\bin\\sb.cmd' : '~/.switchboard/bin/sb';
+  const [keysWhere, setKeysWhere] = useState('');
   useEffect(() => { useStore.getState().refresh(true); api.getSetting('splitUsage', true).then(setSplit); api.detect().then((d) => setDetected(d.claude)); api.busInfo().then(setBus);
     api.call('agentTools:get').then(setTools).catch(() => {});
     api.call('grokbot:status').then(setGrok).catch(() => {});
+    api.call<string>('secrets:where').then(setKeysWhere).catch(() => {});
     api.getSetting('grokAutoSend', true).then(setGrokAuto);
     const checkAx = () => api.call('perm:status').then((p: { accessibility: boolean }) => setAxOk(p.accessibility)).catch(() => {});
     checkAx(); window.addEventListener('focus', checkAx);
@@ -219,7 +226,7 @@ export default function Accounts() {
   return (
     <div className="page">
       <div className="page-h">
-        <span className="hint">Keys stay encrypted in your Keychain.</span>
+        <span className="hint" data-testid="keys-where">{keysWhere}</span>
         <span className="spacer" />
         <button className="btn" data-testid="accounts-tour" onClick={() => useTour.getState().start()}><Compass size={14} />Take the tour</button>
         <button className="btn primary" onClick={() => { setAdvanced(false); setEdit({ kind: '', config: {}, secretsIn: {} }); }}><Plus size={14} />Add account</button>
@@ -245,7 +252,7 @@ export default function Accounts() {
               {a.kind === 'claude-code' && <ClaudeSignIn a={a} all={accounts} />}
               {a.kind === 'claude-code' && <Dedicated a={a} map={dedicated} onChange={saveDedicated} />}
               {a.kind === 'grok-bot' && grok && (
-                <div className="hint">{!grok.installed ? 'Grok Bot app not found on this Mac.' : !grok.enabled ? 'Connection off.' : `${grok.bots} bot${grok.bots === 1 ? '' : 's'} · ${grok.running ? (grok.signedIn ? 'app running' : 'app running, not signed in') : 'app closed (showing last sync)'}`}</div>
+                <div className="hint">{!grok.installed ? (isMac ? 'Grok Bot app not found on this Mac.' : 'The Grok Bot app is only on macOS. Your bots can still reach Switchboard through the relay.') : !grok.enabled ? 'Connection off.' : `${grok.bots} bot${grok.bots === 1 ? '' : 's'} · ${grok.running ? (grok.signedIn ? 'app running' : 'app running, not signed in') : 'app closed (showing last sync)'}`}</div>
               )}
               {a.secrets && Object.keys(a.secrets).length > 0 && (
                 <div className="chips">{Object.entries(a.secrets).map(([k, v]) => <span key={k} className={`chip ${v ? 'green' : 'amber'}`}>{v ? <Check size={11} /> : <KeyRound size={11} />}{k === 'refresh' ? (v ? 'Signed in' : 'Not signed in') : k.replace('_', ' ')}</span>)}</div>
@@ -272,7 +279,8 @@ export default function Accounts() {
           <div className="txt"><b>Grok Bot</b><span className="hint">{grok && grok.enabled ? `${grok.bots} bot${grok.bots === 1 ? '' : 's'}${grok.running ? '' : ' · app closed'}` : 'Off'}</span></div>
           <Toggle label="Connect Grok Bot" on={grok ? grok.enabled : true} onChange={setGrokOn} />
         </div>
-        {(!grok || grok.enabled) && (<>
+        {/* Sending for you presses Return in Grok Bot with AppleScript, so these are macOS only. */}
+        {isMac && (!grok || grok.enabled) && (<>
           <div className="set-row">
             <div className="txt"><b>Send in background</b><span className="hint">Sends without leaving Switchboard.</span></div>
             <Toggle label="Send in background" on={grokAuto} onChange={(v) => { setGrokAuto(v); api.setSetting('grokAutoSend', v); }} />
@@ -291,11 +299,11 @@ export default function Accounts() {
           <Toggle label="Balance usage" on={split} onChange={(v) => { setSplit(v); api.setSetting('splitUsage', v); }} />
         </div>
         <ContextSettings />
-        <details className="more">
+        {(isMac || grok?.installed) && <details className="more">
           <summary>Let a Grok bot message your other agents (optional)</summary>
           <p className="hint">Needs "Execution on this computer" on in Grok Bot. Paste this into the bot once.</p>
           <button className="btn" onClick={() => { api.copy(grokText(sbPath)); notify('Copied'); }}><Copy size={13} />Copy note for Grok Bot</button>
-        </details>
+        </details>}
         <details className="more">
           <summary>The sb command</summary>
           <div className="well mono" style={{ whiteSpace: 'pre-wrap', lineHeight: 1.6 }}>{`${sbPath} cards\n${sbPath} send "client-site" "Fix the footer" --wait\n${sbPath} board "Plan" --json '{"nodes":[...],"edges":[...]}'\n${sbPath} brain append "Client wants Friday delivery"`}</div>
@@ -342,7 +350,7 @@ export default function Accounts() {
                   <div className="field"><label>Google OAuth client ID {edit.secrets?.client_id ? '(saved)' : ''}</label><input value={edit.secretsIn.client_id || ''} onChange={secret('client_id')} /></div>
                   <div className="field"><label>Client secret</label><input type="password" value={edit.secretsIn.client_secret || ''} onChange={secret('client_secret')} /><span className="hint">A Desktop-app client with the Gmail API on (steps in the README). Then Sign in with Google.</span></div>
                 </>)}
-                {edit.kind === 'grok-bot' && <p className="hint">Reads your bots from the Grok Bot app on this Mac. Messages go straight into the bot you send to.</p>}
+                {edit.kind === 'grok-bot' && <p className="hint">Reads your bots from the Grok Bot app on {HERE}. Messages go straight into the bot you send to.</p>}
                 <div style={{ display: 'flex', gap: 8 }}><button className="btn primary" onClick={save}>Save</button>{!edit.id && <button className="btn" onClick={() => setEdit({ ...edit, kind: '' })}>Back</button>}</div>
               </div>
             )}

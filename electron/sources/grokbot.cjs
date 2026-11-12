@@ -1,20 +1,22 @@
 'use strict';
-// Grok Bot (Cursor's desktop app for cloud bots). It has no local API, so:
+// Grok Bot (Cursor's desktop app for cloud bots, macOS only). It has no local API, so:
 // - Reading: the app keeps a plain-JSON cache of every bot and its conversation in
-//   ~/Library/Application Support/Grok Bot/sand-client-persistence/<base32(key)>.blob.
+//   ~/Library/Application Support/Grok Bot/sand-client-persistence/<base32(key)>.blob (read from
+//   the same place under appDataDir() elsewhere, should the app be there).
 //   Only the roster, cloud-agent runs and transcript replicas are read; every other key
 //   (and the app's secrets, cookies and tokens) is never opened.
 // - Sending: the app's own grokbot://app/v1/prompt link opens a bot with the text in its message
 //   box (opened with `open -g`, so it stays in the background), then a Return keypress (System
 //   Events, needs Accessibility permission) sends it: Grok Bot comes forward for that keypress
 //   only, is hidden again, and focus goes back to the app that had it. Sending with no window
-//   flash at all needs an MCP connector in Grok Bot plus a tunnel (not built yet).
+//   flash at all needs an MCP connector in Grok Bot plus a tunnel (not built yet). Pressing Return
+//   uses AppleScript, so on Linux and Windows the text is only put in the box.
 const fs = require('fs');
 const path = require('path');
-const { HOME, truncate, plain, run } = require('../util.cjs');
+const { HOME, IS_MAC, HERE, appDataDir, truncate, plain, run } = require('../util.cjs');
 const db = require('../db.cjs');
 
-const APP_SUPPORT = path.join(HOME, 'Library', 'Application Support', 'Grok Bot');
+const APP_SUPPORT = path.join(appDataDir(), 'Grok Bot');
 const PERSIST = path.join(APP_SUPPORT, 'sand-client-persistence');
 const STATUS_FILE = path.join(APP_SUPPORT, 'desktop-status.json');
 const MAX_TEXT = 1000;
@@ -73,7 +75,7 @@ function pidAlive(pid) { try { process.kill(pid, 0); return true; } catch (e) { 
 function status() {
   let s = null;
   try { s = JSON.parse(fs.readFileSync(STATUS_FILE, 'utf8')); } catch {}
-  const installed = fs.existsSync('/Applications/Grok Bot.app') || fs.existsSync(path.join(HOME, 'Applications', 'Grok Bot.app')) || fs.existsSync(APP_SUPPORT);
+  const installed = (IS_MAC && (fs.existsSync('/Applications/Grok Bot.app') || fs.existsSync(path.join(HOME, 'Applications', 'Grok Bot.app')))) || fs.existsSync(APP_SUPPORT);
   const roster = readKey(/\.roster\.last-roster$/);
   return {
     enabled: enabled(), installed,
@@ -380,6 +382,7 @@ function list(account) {
 function link(p) { return `grokbot://app${p}`; }
 function open(url) {
   if (process.env.SB_TEST_OPEN_LOG) { fs.appendFileSync(process.env.SB_TEST_OPEN_LOG, url + '\n'); return Promise.resolve(); }
+  if (!IS_MAC) return require('electron').shell.openExternal(url).catch(() => { throw new Error(`Grok Bot did not open. It is a Mac app; is it on ${HERE}?`); });
   return run('open', ['-g', url]).then((r) => { if (r.code !== 0) throw new Error(truncate(r.stderr || 'Grok Bot did not open', 200)); });
 }
 function openBot(agentId) { return open(ID_RE.test(agentId || '') ? link(`/v1/agent?id=${agentId}`) : link('/v1/open')); }
@@ -422,7 +425,8 @@ async function send(agentId, text, { prefillOnly } = {}) {
   const autoSend = !prefillOnly && db.getSetting('grokAutoSend', true) !== false;
   if (!autoSend) return { text: `Put it in ${name}'s message box in Grok Bot. Press Return there to send.` };
   if (!st.running) return { text: `Grok Bot was not running, so it is opening with the message in ${name}'s box. Press Return there to send.` };
-  if (process.platform !== 'darwin' || process.env.SB_TEST_OPEN_LOG) return { text: `Put it in ${name}'s message box in Grok Bot.` };
+  if (process.env.SB_TEST_OPEN_LOG) return { text: `Put it in ${name}'s message box in Grok Bot.` };
+  if (!IS_MAC) return { text: `Put it in ${name}'s message box in Grok Bot. Press Return there to send.` };
   await sleep(700);
   const r = await run('osascript', ['-e', PRESS_RETURN]).catch((e) => ({ code: 1, stderr: e.message }));
   if (r.code !== 0) {

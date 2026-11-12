@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Copy, Check, RefreshCw, TriangleAlert } from 'lucide-react';
 import { api } from '../lib/api';
+import { HERE } from '../lib/platform';
 import { useStore } from '../lib/store';
 import { ago } from '../lib/format';
 
@@ -23,7 +24,7 @@ const APPS: { id: string; label: string; steps: Step[] }[] = [
     { text: "So a Project's chats show under that Project, add this line to the Project's instructions (with its name):", value: 'When you report to Switchboard, use project "<Project name>".' },
   ] },
   { id: 'claude-code', label: 'Claude Code (cloud or other computers)', steps: [
-    { text: 'Run once. Claude Code on this Mac already shows up without it.', value: 'claude mcp add --transport http --scope user switchboard-relay "{MCP}?app=claude-code" --header "Authorization: Bearer {TOKEN}"' },
+    { text: `Run once. Claude Code on ${HERE} already shows up without it.`, value: 'claude mcp add --transport http --scope user switchboard-relay "{MCP}?app=claude-code" --header "Authorization: Bearer {TOKEN}"' },
   ] },
   { id: 'cursor', label: 'Cursor', steps: [
     { text: 'Add to ~/.cursor/mcp.json:', value: '{"mcpServers":{"switchboard-relay":{"url":"{MCP}?app=cursor","headers":{"Authorization":"Bearer {TOKEN}"}}}}' },
@@ -98,7 +99,7 @@ export default function RelaySettings() {
       <div className="set-row">
         <div className="txt">
           <b>Switchboard Relay</b>
-          <span className="hint">One always-on MCP connector for all your agents: Grok bots, Claude chats, Claude Code in the cloud, Cursor, Codex, ChatGPT. Their cards keep moving with this Mac or their apps closed, and messages you send them wait there until they check in. Agents can read a short summary of your board. Gmail and Granola connect through their own sign-ins above.</span>
+          <span className="hint">One always-on MCP connector for all your agents: Grok bots, Claude chats, Claude Code in the cloud, Cursor, Codex, ChatGPT. Their cards keep moving with {HERE} or their apps closed, and messages you send them wait there until they check in. Agents can read a short summary of your board. Gmail and Granola connect through their own sign-ins above.</span>
         </div>
         <button role="switch" aria-checked={on} aria-label="Switchboard Relay" data-testid="relay-toggle" className={`switch ${on ? 'on' : ''}`} disabled={busy} onClick={() => toggle(!on)} />
       </div>

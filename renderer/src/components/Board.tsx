@@ -17,6 +17,7 @@ import {
   GroupSpec, WeekTopic, WeekClient, TreeData, ARRANGED_KEY, GROK_TOPIC, GAP, PAD, HEAD, CARD_W, PILL_W,
 } from '../lib/layout';
 import { PROMPTABLE, colorOf } from '../lib/format';
+import { key } from '../lib/platform';
 import { CalendarDays, EyeOff, Maximize2, Sparkles, Trash2, Unlink, Group, Ungroup, StickyNote, Zap } from 'lucide-react';
 import './board.css';
 
@@ -647,7 +648,7 @@ export default function Board() {
               const allDel = cards.every((i) => i.startsWith('out:') || i.startsWith('nt:'));
               return (<>
                 <div className="board-menu-h">{ids.length} selected</div>
-                {cards.length > 1 && <button onClick={() => { groupSelected(cards); close(); }}><Group size={14} />Group selected <span className="hint" style={{ marginLeft: 'auto' }}>⌘G</span></button>}
+                {cards.length > 1 && <button onClick={() => { groupSelected(cards); close(); }}><Group size={14} />Group selected <span className="hint" style={{ marginLeft: 'auto' }}>{key('G')}</span></button>}
                 {cards.length > 0 && <button onClick={() => { set({ chiefOpen: true, chiefMin: false, selected: cards }); close(); }}><Sparkles size={14} />Ask the overall agent about these</button>}
                 <div className="sep" />
                 <button onClick={() => { hide(ids); close(); }}>{allDel ? <><Trash2 size={14} />Delete {ids.length}</> : <><EyeOff size={14} />Remove {ids.length} from board</>}</button>

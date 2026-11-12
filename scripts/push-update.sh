@@ -6,10 +6,12 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 # Quits every running Switchboard (whatever its bundle is called now) and waits until it has really
-# exited, force-quitting after 10 s. Without this the old process kept running under the new name.
+# exited, force-quitting after 20 s. Without this the old process kept running under the new name.
 quit_switchboard() {
   osascript -e 'tell application id "com.switchboard.desktop" to quit' >/dev/null 2>&1 || true
-  for _ in $(seq 1 20); do pgrep -f "/Applications/Switchboard v[^/]*\.app/Contents/MacOS/Switchboard" >/dev/null || return 0; sleep 0.5; done
+  # Every window, the Preview included, gets a normal quit and up to 20 s to save before force-quit.
+  pgrep -f "/Applications/Switchboard v[^/]*\.app/Contents/MacOS/Switchboard .*--preview" | xargs kill -TERM 2>/dev/null || true
+  for _ in $(seq 1 40); do pgrep -f "/Applications/Switchboard v[^/]*\.app/Contents/MacOS/Switchboard" >/dev/null || return 0; sleep 0.5; done
   pkill -9 -f "/Applications/Switchboard v[^/]*\.app/Contents/MacOS/Switchboard" 2>/dev/null || true; sleep 1
 }
 NEW="${1:?version, e.g. 3.8}"

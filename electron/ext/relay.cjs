@@ -335,8 +335,11 @@ async function importSetup() {
   if (!fs.existsSync(f)) return;
   let j = null;
   try { j = JSON.parse(fs.readFileSync(f, 'utf8')); } catch {}
-  if (j && j.url && j.appToken) await configure({ url: j.url, appToken: j.appToken, botToken: j.botToken, enabled: true });
-  fs.rmSync(f, { force: true });
+  // Keep the file until the tokens are really saved: it may be half-written, or saving may fail.
+  if (!j || !j.url || !j.appToken) { console.error('relay setup: relay-setup.json is incomplete; left in place'); return; }
+  await configure({ url: j.url, appToken: j.appToken, botToken: j.botToken, enabled: true });
+  await secrets.flush(10000);
+  if (secrets.get(APP_TOKEN) === j.appToken && db.get('SELECT 1 AS x FROM secrets WHERE key = ?', APP_TOKEN)) fs.rmSync(f, { force: true });
 }
 
 async function configure({ url: u, appToken, botToken, enabled: en } = {}) {

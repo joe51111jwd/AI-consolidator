@@ -83,7 +83,7 @@ function isJunk(e) {
   const cwd = String(m.cwd || '');
   if (cwd && path.resolve(cwd) === path.resolve(APP_DIR)) return true;
   const text = `${e.title || ''} ${e.preview || ''}`.trim();
-  return /^(API Error|Error:|Connection error|Request failed)/i.test(e.title || '') || (!!text && /^API Error\b/i.test(e.preview || '') && (m.messages || 0) <= 2);
+  return /^(API Error|Error:|Connection error|Request failed)/i.test(e.title || '') || (!!text && /^API Error\b/i.test(e.preview || '') && typeof m.messages === 'number' && m.messages <= 2);
 }
 
 function gather(all, now = Date.now()) {

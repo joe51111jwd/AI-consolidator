@@ -366,7 +366,7 @@ async function notificationChecks() {
     assert(n.kind === 'finished' && n.title === `${name} finished` && n.ids.length === 1, JSON.stringify(n));
     assert(/notes column/.test(n.body), `the reply is in the body: ${n.body}`);
     assert(await api('notify:click', n.key), 'the click was handled');
-    await until(async () => (await page.evaluate(() => window.__sbStore?.getState?.().inspector ?? null)) === S.crew || (await api('notify:status')).open === S.crew, 'the chat opened');
+    await until(async () => (await api('notify:status')).open === S.crew, 'the chat opened (the window reports it as the open chat)');
     await until(async () => (await api('notify:status')).open === S.crew, 'the window reported the open chat');
   });
 

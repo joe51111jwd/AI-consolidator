@@ -181,7 +181,9 @@ app.whenReady().then(() => {
   if (process.platform === 'linux' && !safeStorage.isEncryptionAvailable()) safeStorage.setUsePlainTextEncryption(true);
   // Saved sign-ins are read from the Keychain in the background (macOS may ask first); work that
   // needs a token picks up once they are in, and nothing waits on the prompt.
-  require('./secrets.cjs').warm().then(() => { hub.invalidate(); send({ type: 'entities-changed' }); }).catch((e) => console.error('secrets:', e.message));
+  const secrets = require('./secrets.cjs');
+  secrets.onUnreadable(() => send({ type: 'toast', text: "Switchboard couldn't read your saved sign-ins. Allow it in the Keychain prompt; it will try again in a minute." }));
+  secrets.warm().then(() => { hub.invalidate(); send({ type: 'entities-changed' }); }).catch((e) => console.error('secrets:', e.message));
   hub.firstRunSetup();
   bus.start(Number(process.env.SB_PORT || 47821));
   try { installCli(); } catch {}
@@ -199,3 +201,11 @@ app.whenReady().then(() => {
   app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 });
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
+// A token saved a moment ago may still be encrypting: let it reach the database before quitting.
+let flushed = false;
+app.on('before-quit', (e) => {
+  if (flushed) return;
+  e.preventDefault();
+  flushed = true;
+  require('./secrets.cjs').flush().finally(() => app.quit());
+});

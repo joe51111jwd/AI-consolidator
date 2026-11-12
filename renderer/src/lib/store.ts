@@ -73,6 +73,7 @@ export function wireEvents() {
   api.approvals().then((r) => useStore.setState({ approvals: r.approvals, approvalRules: r.rules })).catch(() => {});
   api.onEvent((e) => {
     const s = useStore.getState();
+    if (e.type === 'toast' && typeof e.text === 'string') s.notify(e.text);
     if (e.type === 'entities-changed') { clearTimeout(t); t = setTimeout(() => { t = null; s.refresh(); }, 250); }
     if (e.type === 'approvals') {
       useStore.setState({ approvals: e.approvals || [], approvalRules: e.rules || {} });

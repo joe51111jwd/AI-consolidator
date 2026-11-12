@@ -208,7 +208,20 @@ function ownerNames() {
   }
   return [db.getSetting('ownerName', ''), gitName].map((x) => String(x || '').trim()).filter((x) => x.length > 2);
 }
-const isOwner = (name) => { const n = String(name || '').toLowerCase().trim(); return !!n && ownerNames().some((o) => { const x = o.toLowerCase(); return n === x || n.includes(x) || x.includes(n) && n.split(/\s+/).length > 1; }); };
+// Whole-word match: the owner's full name inside the client ("James Camarota's studio"), or a
+// two-word client name that is the owner's name. A short git name like "Dan" never matches "Dante".
+const words = (t) => String(t || '').toLowerCase().replace(/['’]s\b/g, '').split(/[^a-z0-9]+/).filter(Boolean);
+const isOwner = (name) => {
+  const n = words(name);
+  if (!n.length) return false;
+  return ownerNames().some((o) => {
+    const x = words(o);
+    if (!x.length) return false;
+    if (n.join(' ') === x.join(' ')) return true;
+    if (x.length >= 2 && x.every((w) => n.includes(w))) return true;
+    return n.length >= 2 && n.every((w) => x.includes(w));
+  });
+};
 
 function promptFor(items, clients) {
   const names = (clients || []).map((c) => (c.company && c.company !== c.name ? `${c.name} (${c.company})` : c.name)).filter(Boolean).slice(0, 40);

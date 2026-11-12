@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  ReactFlow, Background, BackgroundVariant, Controls, MiniMap, Node, Edge, useNodesState, useEdgesState,
+  ReactFlow, Background, BackgroundVariant, Controls, MiniMap, Node, Edge, useNodesState,
   useReactFlow, Connection, NodeChange, OnSelectionChangeParams, Viewport, SelectionMode,
   getNodesBounds,
 } from '@xyflow/react';
@@ -9,7 +9,6 @@ import { api, BoardRow, Entity } from '../lib/api';
 import { nodeTypes, focusNote } from '../nodes/nodes';
 import { useDemo } from '../lib/demo';
 import { demoNodeTypes } from './demo/DemoNodes';
-import FlowEdge, { TreeEdge } from './FlowEdge';
 import BoardTools from './BoardTools';
 import { attentionIds, useSeen } from '../lib/attention';
 import {
@@ -21,7 +20,8 @@ import { PROMPTABLE, colorOf } from '../lib/format';
 import { CalendarDays, EyeOff, Maximize2, Sparkles, Trash2, Unlink, Group, Ungroup, StickyNote, Zap } from 'lucide-react';
 import './board.css';
 
-const edgeTypes = { flow: FlowEdge, tree: TreeEdge };
+// A board for seeing what's going on, not building workflows: no lines on it at all.
+const NO_EDGES: Edge[] = [];
 // Opens at a readable zoom in the top-left corner; zoom out to see everything.
 const START_VIEW = { x: 48, y: 104, zoom: 0.78 };
 const isGroup = (id: string) => id.startsWith('grp:');
@@ -83,21 +83,6 @@ function toNodes(rows: BoardRow[], byId: Record<string, Entity>, show: (e: Entit
 
 // Thin grey tree lines: client pill to each project pill, project pill to each of its chats still in the frame.
 // Drawn here only: never saved, never clickable, nothing sends along them.
-function treeEdges(nodes: Node[]): Edge[] {
-  const parentOf = new Map(nodes.map((n) => [n.id, n.parentId]));
-  const out: Edge[] = [];
-  const line = (source: string, target: string): Edge => ({ id: `tree:${source}>${target}`, source, target, type: 'tree', selectable: false, focusable: false, deletable: false, zIndex: 0 });
-  for (const n of nodes) {
-    const t = n.type === 'group' ? (n.data as any)?.tree as TreeData | undefined : undefined;
-    if (!t?.projects?.length) continue;
-    t.projects.forEach((p, i) => {
-      const pid = `pill:${n.id}:${i}`;
-      out.push(line(`pill:${n.id}:c`, pid));
-      for (const id of p.ids) if (parentOf.get(id) === n.id) out.push(line(pid, id));
-    });
-  }
-  return out;
-}
 
 const isRunning = (id: string) => {
   const { byId, liveByEntity } = useStore.getState();
@@ -140,9 +125,7 @@ const same = (a: Node, b: Node) => a.type === b.type && a.parentId === b.parentI
 export default function Board() {
   const { entities, byId, board, boardLoaded, edges: edgeRows, refreshBoard, open, set, addAttach, notify } = useStore();
   const [nodes, setNodes, onNodesChangeRaw] = useNodesState<Node>([]);
-  const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const demoNodes = useDemo((d) => d.nodes);
-  const demoEdges = useDemo((d) => d.edges);
   const allNodes = useMemo(() => (demoNodes.length ? [...nodes, ...demoNodes] : nodes), [nodes, demoNodes]);
   const [menu, setMenu] = useState<{ x: number; y: number; kind: 'node' | 'edge' | 'pane'; id?: string; ids?: string[]; at?: { x: number; y: number } } | null>(null);
   const [off, setOffState] = useState<string[]>([]);
@@ -352,18 +335,6 @@ export default function Board() {
     return next.length === prev.length && next.every((n, i) => n === prev[i]) ? prev : next;
   }); }, [board, byId, offSet]);
 
-  const nodeKey = nodes.map((n) => n.id).join('|');
-  const treeKey = nodes.map((n) => `${n.id}>${n.parentId || ''}`).join('|');
-  const tree = useMemo(() => treeEdges(nodes), [treeKey, board]);
-  useEffect(() => {
-    const ids = new Set(nodes.map((n) => n.id));
-    setEdges(edgeRows.filter((e) => ids.has(e.source) && ids.has(e.target)).map((e) => ({
-      id: e.id, source: e.source, target: e.target, type: 'flow', data: { ...e.data, kind: e.kind, auto: !!e.data?.autoForward },
-    })));
-  }, [edgeRows, nodeKey]);
-
-  // A board for seeing what's going on, not building workflows: no lines on it at all.
-  const allEdges = useMemo(() => [] as Edge[], []);
 
   // Cards grow after they're laid out; keep them from covering each other.
   const heights = nodes.map((n) => `${n.id}:${Math.round(n.measured?.height || 0)}`).join('|');
@@ -580,8 +551,6 @@ export default function Board() {
       if (e.key === 'Backspace' || e.key === 'Delete') {
         const ids = rf.getNodes().filter((n) => n.selected).map((n) => n.id);
         if (ids.length) { e.preventDefault(); hide(ids); }
-        const eds = rf.getEdges().filter((x) => x.selected && !isDemo(x.source) && !isDemo(x.target)).map((x) => x.id);
-        eds.forEach((id) => api.deleteEdge(id)); if (eds.length) refreshBoard();
       }
     };
     window.addEventListener('keydown', onKey);
@@ -632,8 +601,8 @@ export default function Board() {
       onPointerDownCapture={(e) => { down.current = { x: e.clientX, y: e.clientY }; }}
       >
       <ReactFlow
-        nodes={allNodes} edges={allEdges} nodeTypes={allNodeTypes as any} edgeTypes={edgeTypes}
-        onNodesChange={onNodesChange} onEdgesChange={onEdgesChange} onNodeDragStop={onNodeDragStop}
+        nodes={allNodes} edges={NO_EDGES} nodeTypes={allNodeTypes as any}
+        onNodesChange={onNodesChange} onNodeDragStop={onNodeDragStop}
         nodesConnectable={false} onSelectionChange={onSelectionChange}
         onSelectionStart={() => { marquee.current = true; }} onSelectionEnd={() => { marquee.current = false; }}
         onNodeClick={onNodeClick}

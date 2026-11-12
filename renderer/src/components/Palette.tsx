@@ -109,7 +109,13 @@ export default function Palette() {
   const list = useRef<HTMLDivElement>(null);
   const input = useRef<HTMLInputElement>(null);
 
-  useEffect(() => { if (paletteOpen) { setQ(''); setI(0); setRemote(null); } }, [paletteOpen]);
+  // Start empty each time it opens, in the render that opens it: an effect ran after the first keys
+  // could already be typed and wiped them (Enter then ran the first command, "Add example board").
+  const [wasOpen, setWasOpen] = useState(paletteOpen);
+  if (wasOpen !== paletteOpen) {
+    setWasOpen(paletteOpen);
+    if (paletteOpen) { setQ(''); setI(0); setRemote(null); }
+  }
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.altKey && !e.metaKey && !e.ctrlKey && e.code === 'Space') { e.preventDefault(); set({ paletteOpen: !useStore.getState().paletteOpen }); }

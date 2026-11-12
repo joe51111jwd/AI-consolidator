@@ -1360,20 +1360,20 @@ async function main() {
     const tr = await api('transcript', RD);
     assert(tr.some((m) => /Posted/.test(m.text)), 'opening the card shows what it reported');
   });
-  await check('sending to a Grok bot queues it on the relay; the bot picks it up once', async () => {
+  await check('with the relay on, a Grok bot on this Mac still gets messages through the Grok Bot app; a bot it does not have is queued and picked up once', async () => {
     fs.rmSync(OPENED, { force: true });
     await center(GB.mkt, 0.8);
     await sendFromCard(GB.mkt, 'Write the launch tweet');
-    await until(async () => /Queued for Marketing/.test(await node(GB.mkt).innerText()), 'the card says it was queued');
-    assert(!opened().some((u) => u.startsWith('grokbot://')), 'Grok Bot was not opened');
-    const got = await relay.call('get_tasks', { agent: 'Marketing' });
-    assert(/Write the launch tweet/.test(got), got);
-    assert(/No new messages/.test(await relay.call('get_tasks', { agent: 'Marketing' })), 'delivered only once');
-    await api('relay:sync');
-    await until(async () => (await ent(GB.mkt)).meta.actions.some((a) => /Picked up your message/.test(a.text)), 'the card shows the bot picked it up');
+    const url = await until(() => opened().find((u) => u.startsWith('grokbot://')), 'it went into Grok Bot, not the relay queue');
+    assert(url === `grokbot://app/v1/prompt?id=bot_mkt&text=${encodeURIComponent('Write the launch tweet')}`, url);
+    assert(/No new messages/.test(await relay.call('get_tasks', { agent: 'Marketing' })), 'nothing waits on the relay for it');
+    fs.rmSync(OPENED, { force: true });
     await api('prompt', RD, 'Start with Bean There');
-    await until(async () => /Start with Bean There/.test(await relay.call('get_tasks', { agent: 'Research Desk' })), 'a relay-only bot gets messages too');
-    assert(!opened().length, 'nothing opened in Grok Bot');
+    const got = await until(async () => { const r = await relay.call('get_tasks', { agent: 'Research Desk' }); return /Start with Bean There/.test(r) && r; }, 'a relay-only bot gets messages through the relay');
+    assert(/No new messages/.test(await relay.call('get_tasks', { agent: 'Research Desk' })), 'delivered only once: ' + got.slice(0, 80));
+    await api('relay:sync');
+    await until(async () => (await ent(RD)).meta.actions.some((a) => /Picked up your message/.test(a.text)), 'the card shows the bot picked it up');
+    assert(!opened().length, 'nothing opened in Grok Bot for it');
   });
   await check('a Claude chat connects with the address copied from Settings and gets its own card', async () => {
     await view('Accounts');

@@ -203,16 +203,26 @@ function target(id) {
   return null;
 }
 
-async function dispatch(id, text) {
+// A bot in the Grok Bot app on this computer, which a message can reach right away.
+function localBot(t) {
+  if (t.app !== 'grok-bot' || !grok.enabled() || !grok.status().installed) return null;
+  return grok.bots().find((b) => (t.agentId && b.id === t.agentId) || agentKey(b.name) === agentKey(t.name)) || null;
+}
+
+async function dispatch(id, text, opts = {}) {
   if (!enabled()) return undefined;
   const t = target(id);
   if (!t) return undefined;
+  // The relay can't wake a bot: a queued message waits until the bot runs again on its own. A bot
+  // in this computer's Grok Bot app gets it now, through the app (Grok Bot's own cards pass on to it).
+  const here = localBot(t);
+  if (here) return id.startsWith('rl:') ? grok.send(here.id, text, { prefillOnly: opts.prefillOnly }) : undefined;
   await request('POST', '/api/tasks', { agent: t.name, app: t.app, agentId: t.agentId || undefined, text });
   const a = agentFor(t.name, t.app, t.agentId);
   a.at = Math.max(a.at || 0, Date.now());
   act(a, 'message', `You: ${text}`, Date.now());
   save(); changed();
-  return { text: `Queued for ${t.name} on Switchboard Relay. ${t.name} picks it up the next time it checks in.` };
+  return { text: `Queued for ${t.name}. It gets it the next time it runs and checks Switchboard for messages.` };
 }
 
 // A relay card's conversation: what the agent reported, oldest first.

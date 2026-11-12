@@ -1438,7 +1438,8 @@ async function main() {
     await page.locator('.modal .due-item', { hasText: 'ChatGPT' }).click();
     const add = page.getByTestId('add-bot');
     await add.waitFor();
-    assert((await add.innerText()).includes(`${relay.url}/mcp?app=chatgpt`), 'shows its connector address');
+    // The address comes with the relay's status, a moment after the sheet opens.
+    await until(async () => (await add.innerText()).includes(`${relay.url}/mcp?app=chatgpt`), 'shows its connector address');
     assert(/Waiting for it to connect/.test(await add.getByTestId('connect-state').innerText()), 'waits for it');
     assert(await page.getByTestId('add-bot-done').isDisabled(), 'Done is off until it connects');
     await fetch(`${relay.url}/mcp?app=chatgpt&key=e2e-bot-token`, {

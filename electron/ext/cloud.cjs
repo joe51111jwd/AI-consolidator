@@ -288,8 +288,10 @@ async function dispatch(id, text, opts = {}) {
   const bin = acc.config.bin || which('claude');
   if (!bin) throw new Error("Claude Code (the `claude` command) isn't installed on this computer, and it's what sends a reply to a cloud session.");
   // Anthropic's documented way to post into a cloud session: one message, then it exits. The reply
-  // itself streams back in through the relay as the session works.
-  const r = await run(bin, ['-p', '--cloud', m.url || sid, '--output-format', 'json', '--', text], { env: claudeCode.childEnv(acc), cwd: HOME, signal: opts.signal });
+  // itself streams back in through the relay as the session works. The message goes in on stdin, as
+  // the CLI allows ("requires a prompt (positional or stdin)"): no length limit, and on Windows
+  // claude.cmd's cmd.exe never sees it, so line breaks, quotes, % and & arrive as typed.
+  const r = await run(bin, ['-p', '--cloud', m.url || sid, '--output-format', 'json'], { env: claudeCode.childEnv(acc), cwd: HOME, input: text, signal: opts.signal });
   let j = null; try { j = JSON.parse(String(r.stdout).trim().split('\n').filter(Boolean).pop()); } catch {}
   if (r.code !== 0 || (j && j.ok === false)) {
     const why = truncate(String((j && (j.error || j.message)) || r.stderr || r.stdout || `claude exited with ${r.code}`).trim(), 300);

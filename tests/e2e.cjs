@@ -47,7 +47,7 @@ const S = {
 // A Claude Code session file as the CLI writes it. `mtime` (ms) backdates the file. A turn's content
 // is text, or a list of blocks (tool_use, tool_result) for plans, steps and recaps.
 function writeSession(configDir, cwd, sid, turns, mtime) {
-  const f = path.join(HOME, configDir, 'projects', cwd.replace(/[/.]/g, '-'), `${sid}.jsonl`);
+  const f = path.join(HOME, configDir, 'projects', cwd.replace(/[\\/:.]/g, '-'), `${sid}.jsonl`);
   const ts = new Date(mtime || Date.now()).toISOString();
   fs.mkdirSync(path.dirname(f), { recursive: true });
   fs.writeFileSync(f, turns.map(([role, content], i) => JSON.stringify(role === 'user'
@@ -106,11 +106,26 @@ let mock, app, page;
 const api = (ch, ...args) => page.evaluate(([c, a]) => window.sbBridge.call(c, ...a), [ch, args]);
 const node = (id) => page.locator(`.react-flow__node[data-id="${id}"]`);
 
-async function launch() {
-  const env = {
-    ...process.env, HOME, PATH: `${BIN}:${process.env.PATH}`, SB_PORT: PORT,
-    SB_TEST_LOG: LOG, SB_TEST_LOGINS: LOGINS, SB_TEST_OPEN_LOG: OPENED, SB_TEST_NOTIFY_LOG: NOTIFY, SB_USER_DATA: path.join(HOME, 'electron-profile'), SB_TEST_ACCESSIBILITY: '0', ...mock.env,
+// The test home for a child process. Windows finds the home folder through USERPROFILE and app
+// data through APPDATA; its PATH is spelled Path, and two spellings in one environment would leave
+// which one wins to chance, so there is one PATH, with the stand-ins first.
+const WIN = process.platform === 'win32';
+function homeEnv(extra = {}) {
+  const env = { ...process.env };
+  const sys = env.PATH || env.Path || '';
+  for (const k of Object.keys(env)) if (k.toUpperCase() === 'PATH') delete env[k];
+  return {
+    ...env, HOME, USERPROFILE: HOME, PATH: `${BIN}${path.delimiter}${sys}`,
+    ...(WIN ? { APPDATA: APP_DATA, LOCALAPPDATA: path.join(HOME, 'AppData', 'Local') } : {}),
+    ...extra,
   };
+}
+
+async function launch() {
+  const env = homeEnv({
+    SB_PORT: PORT,
+    SB_TEST_LOG: LOG, SB_TEST_LOGINS: LOGINS, SB_TEST_OPEN_LOG: OPENED, SB_TEST_NOTIFY_LOG: NOTIFY, SB_USER_DATA: path.join(HOME, 'electron-profile'), SB_TEST_ACCESSIBILITY: '0', ...mock.env,
+  });
   delete env.ANTHROPIC_API_KEY; delete env.CLAUDE_CONFIG_DIR; delete env.ELECTRON_RUN_AS_NODE;
   if (process.platform === 'linux') env.XDG_CONFIG_HOME = APP_DATA;
   const args = [ROOT];
@@ -275,7 +290,7 @@ async function htmlDrag(sourceSelector, target) {
   }, [sourceSelector, target]);
 }
 function sb(...args) {
-  return execFileSync(process.execPath, [path.join(ROOT, 'electron', 'cli', 'sb.cjs'), ...args], { env: { ...process.env, HOME }, encoding: 'utf8', timeout: 30000 });
+  return execFileSync(process.execPath, [path.join(ROOT, 'electron', 'cli', 'sb.cjs'), ...args], { env: homeEnv(), encoding: 'utf8', timeout: 30000 });
 }
 
 // A fake Grok Bot app cache under the test HOME: the same <base32(key)>.blob JSON files the real
@@ -414,7 +429,11 @@ async function notificationChecks() {
     const box = page.getByTestId('notify-settings');
     await box.scrollIntoViewIfNeeded();
     assert(/Notifications/.test(await box.innerText()), 'the section is there');
-    for (const k of ['finished', 'waiting', 'grok', 'todo', 'onlyAway', 'badge']) assert((await box.getByTestId(`notify-${k}`).count()) === 1, `a switch for ${k}`);
+    for (const k of ['finished', 'waiting', 'grok', 'todo', 'onlyAway', 'badge']) {
+      // Windows taskbar icons have no count badge, so it has no switch there.
+      const want = k === 'badge' && WIN ? 0 : 1;
+      assert((await box.getByTestId(`notify-${k}`).count()) === want, `${want ? 'a' : 'no'} switch for ${k}`);
+    }
     assert((await box.getByTestId('notify-onlyAway').getAttribute('aria-checked')) === 'false', '"Only when not in front" starts off');
     const sw = box.getByTestId('notify-onlyAway');
     await until(async () => (await sw.isEnabled()), 'loaded');
@@ -562,7 +581,7 @@ async function main() {
   {
     const cwd = path.join(os.tmpdir(), 'scratch-workspaces', 'e2e', 'scratch-1');
     const sid = S.scratch.split(':')[2];
-    const f = path.join(HOME, '.claude', 'projects', cwd.replace(/[/.]/g, '-'), `${sid}.jsonl`);
+    const f = path.join(HOME, '.claude', 'projects', cwd.replace(/[\\/:.]/g, '-'), `${sid}.jsonl`);
     const ts = new Date().toISOString();
     fs.mkdirSync(path.dirname(f), { recursive: true });
     fs.writeFileSync(f, [
@@ -961,7 +980,7 @@ async function main() {
     const sid = S.news.split(':')[2];
     const cwd = path.join(HOME, 'code', 'newsletter');
     const ts = new Date().toISOString();
-    fs.appendFileSync(path.join(HOME, '.claude-3', 'projects', cwd.replace(/[/.]/g, '-'), `${sid}.jsonl`), [
+    fs.appendFileSync(path.join(HOME, '.claude-3', 'projects', cwd.replace(/[\\/:.]/g, '-'), `${sid}.jsonl`), [
       { type: 'user', sessionId: sid, cwd, timestamp: ts, uuid: `${sid}-ctx-1`, message: { role: 'user', content: 'Add a second example for Grant Landscaping.' } },
       { type: 'assistant', sessionId: sid, cwd, timestamp: ts, uuid: `${sid}-ctx-2`, message: { id: 'msg_ctx_news', role: 'assistant', model: 'claude-sonnet-5-5', content: [{ type: 'text', text: 'Added a Grant Landscaping example under the first one.' }], usage: { input_tokens: 10, output_tokens: 5 } } },
     ].map((x) => JSON.stringify(x)).join('\n') + '\n');
@@ -1471,12 +1490,17 @@ async function main() {
       const flag = path.join(box, '.switchboard-cloud', 'stop');
       await until(() => fs.existsSync(flag), 'the stop reached the session', 15000);
 
-      // A reply goes in with the documented `claude -p --cloud`, as the account the session runs as.
+      // A reply goes in with the documented `claude -p --cloud`, as the account the session runs as. It
+      // has two lines, quotes, & and %: on Windows, claude.cmd's cmd.exe would mangle those in an
+      // argument, so the message goes in on stdin and must arrive exactly as typed.
+      const reply = 'Use a single column below 480px.\nKeep "Order now" & the 100% width banner.';
       const input = page.locator('.inspector textarea');
-      await input.fill('Use a single column below 480px');
+      await input.fill(reply);
       await input.press('Enter');
       const sent = await until(() => calls().find((c) => c.cloud && /single column/.test(c.prompt)), 'the reply went to claude --cloud');
       assert(sent.cloud === 'https://claude.ai/code/session_01E2eCloud', `sent to ${sent.cloud}`);
+      assert(sent.prompt.trim() === reply, `the message arrived as typed: ${JSON.stringify(sent.prompt)}`);
+      assert(!sent.args.includes(reply), 'on stdin, not in the command line');
 
       // New lines show up about a second after the session writes them.
       fs.appendFileSync(main, L({ type: 'user', uuid: 'u2', message: { role: 'user', content: 'Use a single column below 480px' } })

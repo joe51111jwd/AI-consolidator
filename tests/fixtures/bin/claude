@@ -36,16 +36,22 @@ if (args[0] === 'auth' && (args[1] === 'login' || args[1] === 'logout')) {
   return;
 }
 if (args[0] === 'mcp') { log({ args, configDir: process.env.CLAUDE_CONFIG_DIR || null }); console.log('Added stdio MCP server switchboard'); process.exit(0); }
-// `claude -p --cloud <session or claude.ai link> --output-format json -- <message>` posts one message
-// into a cloud session and exits, printing { ok, session_id, url }.
+// `claude -p --cloud <session or claude.ai link> --output-format json` posts one message (the
+// positional prompt, else stdin) into a cloud session and exits, printing { ok, session_id, url }.
 if (args.includes('--cloud')) {
   const target = val('--cloud');
-  const i = args.indexOf('--');
-  const message = i >= 0 ? args.slice(i + 1).join(' ') : '';
-  log({ args, cloud: target, prompt: message, configDir: process.env.CLAUDE_CONFIG_DIR || null });
-  const sid = String(target).replace(/^https:\/\/claude\.ai\/code\//, '');
-  process.stdout.write(JSON.stringify({ ok: true, session_id: sid, url: `https://claude.ai/code/${sid}` }) + '\n');
-  process.exit(0);
+  let piped = '';
+  process.stdin.on('data', (d) => { piped += d; });
+  process.stdin.on('end', () => {
+    const i = args.indexOf('--');
+    const message = i >= 0 ? args.slice(i + 1).join(' ') : piped;
+    if (!message.trim()) { process.stderr.write('Error: non-interactive --cloud <session_id> requires a prompt (positional or stdin).\n'); process.exit(1); }
+    log({ args, cloud: target, prompt: message, configDir: process.env.CLAUDE_CONFIG_DIR || null });
+    const sid = String(target).replace(/^https:\/\/claude\.ai\/code\//, '');
+    process.stdout.write(JSON.stringify({ ok: true, session_id: sid, url: `https://claude.ai/code/${sid}` }) + '\n');
+    process.exit(0);
+  });
+  return;
 }
 
 // A prompt with "[slow]" in it is slow mode: it streams a first message, then keeps working for
@@ -72,7 +78,8 @@ async function answer() {
   });
   const first = said.join('\n').trim().split('\n').pop().slice(0, 120);
   const out = (o) => process.stdout.write(JSON.stringify(o) + '\n');
-  const file = path.join(dir, 'projects', cwd.replace(/[/.]/g, '-'), `${id}.jsonl`);
+  // Claude Code names the folder after the working folder, with separators, dots (and a drive's colon) as dashes.
+  const file = path.join(dir, 'projects', cwd.replace(/[\\/:.]/g, '-'), `${id}.jsonl`);
   fs.mkdirSync(path.dirname(file), { recursive: true });
   // Session rows are written in one go at the end, and before waiting on a permission answer so the
   // chat's card is there to answer on.

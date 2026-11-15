@@ -382,7 +382,7 @@ function ensureDaemon() {
   if (!config().relay) return;
   fs.mkdirSync(STATE, { recursive: true });
   const out = fs.openSync(LOG, 'a');
-  const child = spawn(process.execPath, [__filename, 'daemon'], { detached: true, stdio: ['ignore', out, out], env: process.env, cwd: HOME });
+  const child = spawn(process.execPath, [__filename, 'daemon'], { detached: true, windowsHide: true, stdio: ['ignore', out, out], env: process.env, cwd: HOME });
   fs.writeFileSync(PID, String(child.pid));
   child.unref();
 }

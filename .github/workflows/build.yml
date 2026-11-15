@@ -1,5 +1,5 @@
 # Builds the Linux (AppImage, deb) and Windows (NSIS) installers and runs the whole test suite on
-# Linux. Run it from the Actions tab (Run workflow) or by pushing a v* tag. Installers are uploaded
+# Linux and on Windows. Run it from the Actions tab (Run workflow) or by pushing a v* tag. Installers are uploaded
 # as workflow artifacts only: nothing is published as a GitHub Release.
 name: Build
 
@@ -53,6 +53,44 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: e2e-failure
+          path: ${{ runner.temp }}/e2e-shots
+          retention-days: 7
+
+  test-windows:
+    name: Tests (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            relay/package-lock.json
+      - run: npm ci
+      - run: npm run build
+      - name: Unit tests
+        run: node --test "tests/*.test.cjs"
+      - name: Relay tests
+        working-directory: relay
+        run: npm ci && npm test
+      # The stand-in claude and codex start through tests/fixtures/bin/*.cmd, the way npm's shims do.
+      - name: Whole suite, end to end (real Electron app)
+        shell: bash
+        env:
+          SB_SHOTS: ${{ runner.temp }}/e2e-shots
+          SB_APP_LOG: ${{ runner.temp }}/e2e-shots/app.log
+        run: |
+          mkdir -p "$SB_SHOTS"
+          node tests/build-if-stale.cjs
+          node tests/e2e.cjs
+      - name: Keep the screenshots and app log of a failed run
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-failure-windows
           path: ${{ runner.temp }}/e2e-shots
           retention-days: 7
 

@@ -1,0 +1,2 @@
+# The stand-in CLIs' Windows launchers keep Windows line endings.
+tests/fixtures/bin/*.cmd text eol=crlf

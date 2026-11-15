@@ -3,13 +3,14 @@ import { ArrowLeft } from 'lucide-react';
 import { AgentLogo } from './Logos';
 import './fullchat.css';
 
-type Sub = { id: string; title: string; status?: string; lastText?: string };
+type Sub = { id: string; title: string; status?: string; lastText?: string; kind?: string };
 type PlanItem = { content: string; status: string };
 
 // The open chat at full size, laid out like claude.ai: one centred conversation, plan and subagents on the side.
-export default function FullChat({ title, source, color, agentName, working, rows, streaming, plan, subs, composer, onClose }: {
+export default function FullChat({ title, source, color, agentName, working, rows, streaming, plan, subs, composer, onClose, onOpenSub }: {
   title: string; source: string; color?: string; agentName: string; working: boolean;
   rows: React.ReactNode[]; streaming: string; plan: PlanItem[] | null; subs: Sub[]; composer: React.ReactNode; onClose: () => void;
+  onOpenSub?: (s: Sub) => void;
 }) {
   const end = useRef<HTMLDivElement>(null);
   useEffect(() => { end.current?.scrollIntoView({ block: 'end' }); }, [rows.length, streaming]);
@@ -46,9 +47,9 @@ export default function FullChat({ title, source, color, agentName, working, row
               <section>
                 <h4>Subagents <span>{subs.filter((s) => s.status === 'running').length || subs.length}</span></h4>
                 {subs.map((s) => (
-                  <div key={s.id} className={`fc-sub ${s.status === 'running' ? 'on' : ''}`} title={s.lastText || ''}>
+                  <button key={s.id} className={`fc-sub ${s.status === 'running' ? 'on' : ''}`} title={s.lastText || ''} onClick={() => onOpenSub?.(s)} data-testid="fc-sub">
                     <i /><span className="pn-ell">{s.title}</span>
-                  </div>
+                  </button>
                 ))}
               </section>
             )}

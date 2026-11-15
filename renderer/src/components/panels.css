@@ -20,6 +20,9 @@
 .pn-acts { margin-left: auto; display: flex; gap: 1px; }
 .pn .pn-acts .icon-btn { width: 28px; height: 28px; border-radius: 8px; }
 .pn .icon-btn.on { color: var(--ink); background: var(--well-2); }
+.pn-parent { display: inline-flex; align-items: center; gap: 4px; margin: 2px 0 4px; padding: 0; background: none; border: 0; color: var(--ink-3); font-size: 11.5px; cursor: pointer; }
+.pn-parent:hover { color: var(--ink); }
+.pn-cloud-note { margin: 2px 0 4px; color: var(--ink-3); font-size: 11.5px; }
 .pn-meta { display: flex; align-items: center; gap: 10px; min-height: 20px; color: var(--ink-3); font-size: 11.5px; }
 .pn-meta .mono { font-family: ui-monospace, Menlo, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .pn-linked { margin-left: auto; display: flex; gap: 2px; }

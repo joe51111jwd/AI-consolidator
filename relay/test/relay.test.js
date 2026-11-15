@@ -319,5 +319,6 @@ test('the Postgres store creates its tables once and maps rows back to events', 
   assert.deepEqual(await s.eventsAfter(0, 10), [{ type: 'action', text: 'hi', id: 7 }]);
   assert.equal(await s.head(), 7);
   assert.deepEqual((await s.takeTasks('k')).map((t) => t.text), ['a', 'b']);
-  assert.equal(sent.filter((t) => t.startsWith('CREATE TABLE')).length, 3);
+  // events, tasks, kv, and the four cloud-session tables, each created once.
+  assert.equal(sent.filter((t) => t.startsWith('CREATE TABLE')).length, 7);
 });

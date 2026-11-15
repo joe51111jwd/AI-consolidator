@@ -62,13 +62,32 @@ Each app gets its own connector address, `https://<relay>/mcp?app=<app>`, so its
 | --- | --- |
 | Grok Bot | Plugins → Add custom MCP server. URL `https://<relay>/mcp?app=grok-bot`, header `Authorization: Bearer <BOT_TOKEN>`. |
 | Claude (app and claude.ai) | Settings → Connectors → Add custom connector. URL `https://<relay>/mcp?app=claude&key=<BOT_TOKEN>`. Turn it on for the chats that should report. In each Claude Project, add a line to the Project's instructions such as `When you report to Switchboard, use project "Harbor Coffee Launch".` so its chats land under that Project. |
-| Claude Code (cloud or other computers) | `claude mcp add --transport http --scope user switchboard-relay "https://<relay>/mcp?app=claude-code" --header "Authorization: Bearer <BOT_TOKEN>"`. Claude Code on the Mac that runs Switchboard already shows up without it. |
+| Claude Code (cloud or other computers) | For the whole conversation, live, see [Claude Code cloud sessions](#claude-code-cloud-sessions-claudeaicode-live). For status reports only: `claude mcp add --transport http --scope user switchboard-relay "https://<relay>/mcp?app=claude-code" --header "Authorization: Bearer <BOT_TOKEN>"`. Claude Code on the Mac that runs Switchboard already shows up without it. |
 | Cursor | In `~/.cursor/mcp.json`: `{"mcpServers":{"switchboard-relay":{"url":"https://<relay>/mcp?app=cursor","headers":{"Authorization":"Bearer <BOT_TOKEN>"}}}}` |
 | Codex | In `~/.codex/config.toml`: `[mcp_servers.switchboard-relay]` with `url = "https://<relay>/mcp?app=codex&key=<BOT_TOKEN>"` |
 | ChatGPT | A custom connector (developer mode), no authentication, URL `https://<relay>/mcp?app=chatgpt&key=<BOT_TOKEN>`. |
 | Anything else | `https://<relay>/mcp?app=other` with the header, or `&key=<BOT_TOKEN>` in the address. |
 
 The server tells agents to report each meaningful step on their own, without being asked. In Switchboard, Grok bots land on their Grok Bot cards when the Grok Bot app on that Mac knows them (matched by name); every other agent gets its own card.
+
+## Claude Code cloud sessions (claude.ai/code), live
+
+Every Claude Code session on claude.ai/code can stream its whole conversation here as Claude writes it, sub-agents included, and Switchboard shows each one as a full chat about a second behind: messages, steps, plan and sub-agents, with a reply box and Stop. Nothing has to happen in the chat itself, and Claude doesn't have to remember to report: [`cloud/switchboard-sync.cjs`](cloud/switchboard-sync.cjs) hooks into Claude Code (`SessionStart` starts a small streamer that follows the session's transcript files and sends new lines here in batches of up to 0.7 s; `PreToolUse`/`PostToolUse` end the turn when you press Stop in Switchboard).
+
+Set it up once per cloud environment (claude.ai/code → the environment's settings):
+
+1. **Setup script:** add this line (it runs as each session's container starts, before Claude does):
+
+   ```bash
+   mkdir -p ~/.switchboard-cloud && curl -fsSL https://<relay>/sync.cjs -o ~/.switchboard-cloud/switchboard-sync.cjs && node ~/.switchboard-cloud/switchboard-sync.cjs install --relay https://<relay>
+   ```
+
+2. **Network:** allow `<relay>` (the relay's host) unless the environment's network is unrestricted.
+3. **Network secret:** save `BOT_TOKEN` for `<relay>` as `Authorization: Bearer <BOT_TOKEN>`. The cloud adds it to each request to the relay, so the token is never in the container. (Elsewhere, set `SWITCHBOARD_RELAY_TOKEN` instead.)
+
+From then on every new session in that environment, and every older one whose container starts again, shows up in Switchboard by itself. `node ~/.switchboard-cloud/switchboard-sync.cjs status` in a session says what it sent. Only conversation lines leave the container: images become `[Image]`, thinking is left out and very long tool output is cut. Switchboard sends replies with Anthropic's own `claude -p --cloud <session>` on your Mac, signed in as the account the session runs as.
+
+The same works on any computer with Claude Code: run the `install` line there with `SWITCHBOARD_RELAY_TOKEN` set; those sessions show as read-only cards (reply where they run).
 
 ## Tools for agents (`/mcp`)
 
@@ -94,6 +113,12 @@ Apps: `grok-bot`, `claude`, `claude-code`, `cursor`, `codex`, `chatgpt`, `other`
 | `POST /api/tasks` `{ agent, app, text, agentId? }` | Queues a message for that agent of that app. |
 | `POST /api/board` `{ summary }` | Stores the board summary agents read. |
 | `GET /api/health` | `{ ok, storage, cursor, warnings }` |
+| `GET /api/cloud/changes?since=<cursor>` | `{ cursor, reset, more, sessions }`: cloud sessions that changed (and any that reported in the last few seconds), each with its details and the line count of each of its files. |
+| `POST /api/cloud/pull` `{ want: [{ session, file, from }] }` | `{ got: [{ session, file, from, lines }] }`: transcript lines from `from` on, up to about 3 MB per call. |
+| `POST /api/cloud/command` `{ session, type: "stop" }` | Asks the session to stop; its streamer picks it up with its next batch. |
+| `POST /api/cloud/forget` `{ session }` | Deletes the relay's copy of a session. |
+
+The cloud streamer itself uses `POST /api/cloud/ingest` and `GET /api/cloud/state?session=` with `BOT_TOKEN`; `GET /sync.cjs` serves it to setup scripts without a token. Cloud sessions are kept for 30 days after they last report.
 
 Missing or wrong tokens get 401, and tokens are compared in constant time. The app token only works in the header. The relay keeps the newest 5,000 events for up to 14 days; queued messages expire after 14 days.
 

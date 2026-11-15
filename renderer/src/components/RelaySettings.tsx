@@ -74,7 +74,7 @@ export default function RelaySettings() {
     await configure();
     try {
       const r = await api.call<{ storage: string; warnings: string[] }>('relay:test');
-      setCheck({ ok: true, text: `Connected · ${r.storage === 'upstash' ? 'Redis storage' : 'memory storage'}`, warnings: r.warnings });
+      setCheck({ ok: true, text: `Connected · ${r.storage === 'upstash' ? 'Redis storage' : r.storage === 'postgres' ? 'Postgres storage' : 'memory storage'}`, warnings: r.warnings });
     } catch (e: any) { setCheck({ ok: false, text: e.message }); }
   });
   const toggle = (on: boolean) => run(async () => {
@@ -145,7 +145,51 @@ export default function RelaySettings() {
             <button className="btn" style={{ background: 'var(--card)' }} data-testid="relay-bot-save" disabled={busy || !botToken.trim()} onClick={save}>Save</button>
           </div>
         </div>
+        {on && <CloudSetup />}
       </div>
+    </div>
+  );
+}
+
+type CloudStatus = {
+  enabled: boolean; relayHasCloud: boolean; lastPull: number; error: string | null; relayUrl: string | null; host: string | null; script: string | null;
+  sessions: { id: string; title: string; at: number; alive: boolean; cloud: boolean }[];
+};
+
+// Cloud sessions (claude.ai/code): each session streams its conversation to the relay as Claude writes
+// it. Set up once per cloud environment; after that every new session shows up on its own.
+function CloudSetup() {
+  const { notify } = useStore();
+  const [st, setSt] = useState<CloudStatus | null>(null);
+  useEffect(() => {
+    const load = () => api.call<CloudStatus>('cloud:status').then(setSt).catch(() => {});
+    load();
+    const t = setInterval(load, 5000);
+    return () => clearInterval(t);
+  }, []);
+  if (!st) return null;
+  const copy = (text: string) => { api.call('clipboard', text).then(() => notify('Copied')).catch((e: any) => notify(e.message)); };
+  const live = st.sessions.filter((x) => x.alive).length;
+  return (
+    <div className="well" data-testid="cloud-setup" style={{ display: 'grid', gap: 8 }}>
+      <b style={{ fontWeight: 600 }}>Claude Code cloud sessions (claude.ai/code), live</b>
+      <span className="hint">Each session sends its conversation, sub-agents included, to the relay as Claude writes it: a card per session, about a second behind, that you can reply to and stop. Set it up once per cloud environment (claude.ai/code → environment settings); nothing to do when you start a chat.</span>
+      {!st.relayHasCloud && <div className="hint" style={{ color: 'var(--amber)' }} data-testid="cloud-old-relay">Your relay is older than cloud sessions. Deploy relay/ again (vercel deploy --prod) to turn them on.</div>}
+      {st.script && (
+        <>
+          <span>1. Add this line to the environment's setup script:</span>
+          <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+            <span className="mono" style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={st.script}>{st.script}</span>
+            <button className="btn" style={{ background: 'var(--card)' }} data-testid="cloud-copy-script" onClick={() => copy(st.script!)}><Copy size={13} />Copy</button>
+          </div>
+          <span>2. Allow <span className="mono">{st.host}</span> in its network access.</span>
+          <span>3. Save the agent token (BOT_TOKEN) as a network secret for <span className="mono">{st.host}</span>, sent as <span className="mono">Authorization: Bearer</span>. The cloud adds it to each request, so the token never sits in the session.</span>
+        </>
+      )}
+      <span className="hint" data-testid="cloud-status">
+        {st.sessions.length ? `${st.sessions.length} cloud session${st.sessions.length === 1 ? '' : 's'}${live ? ` · ${live} running now` : ''} · last update ${ago(st.sessions[0].at)}` : 'No cloud session has reported yet.'}
+        {st.error && st.relayHasCloud ? ` · ${st.error}` : ''}
+      </span>
     </div>
   );
 }

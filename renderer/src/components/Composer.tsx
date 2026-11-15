@@ -53,6 +53,9 @@ export default function Composer({ id, placeholder, multiline = false, from, aut
   const notify = useStore((s) => s.notify);
   const live = useStore((s) => s.liveByEntity[id]);
   const busy = live && live.status === 'running';
+  // A cloud session works on claude.ai, not here: Stop reaches it through the relay, and a message
+  // sent while it works waits in the session's own queue, so nothing is held back here.
+  const remote = useStore((s) => !!s.byId[id]?.meta?.cloud && s.byId[id]?.status === 'running');
   const field = useRef<HTMLTextAreaElement & HTMLInputElement>(null);
   const showPins = pins.length > 0 && (multiline || focused);
   const byId = useStore.getState().byId;
@@ -106,7 +109,7 @@ export default function Composer({ id, placeholder, multiline = false, from, aut
 
   // Stop ends the running reply. Anything queued comes back into the box instead of being sent.
   const [stopping, setStopping] = useState(false);
-  useEffect(() => { if (!busy) setStopping(false); }, [busy]);
+  useEffect(() => { if (!busy && !remote) setStopping(false); }, [busy, remote]);
   const stop = async () => {
     if (stopping) return;
     setStopping(true);
@@ -185,8 +188,8 @@ export default function Composer({ id, placeholder, multiline = false, from, aut
             {MODELS.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
           </select>
         )}
-        {busy && (
-          <button className="stop" onClick={stop} disabled={stopping} title="Stop" aria-label="Stop" data-testid="stop-run">
+        {(busy || remote) && (
+          <button className="stop" onClick={stop} disabled={stopping} title={remote && !busy ? 'Stop (at its next step)' : 'Stop'} aria-label="Stop" data-testid="stop-run">
             <Square size={multiline ? 11 : 9} fill="currentColor" strokeWidth={0} />
           </button>
         )}

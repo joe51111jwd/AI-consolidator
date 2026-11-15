@@ -33,13 +33,17 @@ interface State {
   refreshBoard: () => Promise<void>;
   refreshDue: () => Promise<void>;
   open: (id: string | null) => void;
+  openAny: (id: string) => Promise<void>;
   addAttach: (target: string, a: Attach) => void;
   clearAttach: (target: string) => void;
   notify: (t: string) => void;
 }
 
+// Cards opened by id that the list doesn't carry (a sub-agent's own chat) are kept here, so a refresh
+// of the list doesn't close them.
+const extras: Record<string, Entity> = {};
 const index = (entities: Entity[]) => {
-  const byId: Record<string, Entity> = {};
+  const byId: Record<string, Entity> = { ...extras };
   for (const e of entities) byId[e.id] = e;
   return byId;
 };
@@ -60,6 +64,16 @@ export const useStore = create<State>((set, get) => ({
   refreshDue: async () => { try { set({ due: await api.due() }); } catch {} },
   // An open card takes the right-hand side, so it replaces the agent panel instead of hiding under it.
   open: (id) => set(id ? { inspector: id, chiefOpen: false } : { inspector: null }),
+  // Opens a card the list may not have (a sub-agent of a chat): it is fetched first.
+  openAny: async (id) => {
+    if (!get().byId[id]) {
+      const e = await api.entity(id).catch(() => null);
+      if (!e) { get().notify("Couldn't open that"); return; }
+      extras[id] = e;
+      set((s) => ({ byId: { ...s.byId, [id]: e } }));
+    }
+    set({ inspector: id, chiefOpen: false });
+  },
   addAttach: (target, a) => set((s) => ({ attach: { ...s.attach, [target]: [...(s.attach[target] || []), a] } })),
   clearAttach: (target) => set((s) => { const n = { ...s.attach }; delete n[target]; return { attach: n }; }),
   notify: (t) => { set({ toast: t }); setTimeout(() => { if (get().toast === t) set({ toast: null }); }, 3200); },

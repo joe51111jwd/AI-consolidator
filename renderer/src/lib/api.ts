@@ -40,6 +40,7 @@ export const api = {
   call: <T = any,>(ch: string, ...a: any[]): Promise<T> => c(ch, ...a),
   entities: (force = false): Promise<Entity[]> => c('entities', { force }),
   transcript: (id: string): Promise<Message[]> => c('transcript', id),
+  entity: (id: string): Promise<Entity | null> => c('entity:get', id),
   prompt: (id: string, text: string, opts: { attach?: Attach[]; includeBrain?: boolean; from?: string; model?: string } = {}): Promise<string> => c('prompt', id, text, opts),
   runs: (): Promise<Run[]> => c('runs'),
   stopRun: (id: string): Promise<{ stopped: number }> => c('run:stop', id),

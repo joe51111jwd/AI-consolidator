@@ -112,7 +112,10 @@ function LiveOrPreview({ id, preview, title }: { id: string; preview?: string; t
 }
 
 type Activity = { prompt?: string; tool?: string; text?: string; running?: boolean };
-type Sub = { id: string; title: string; status: 'running' | 'done'; updatedAt?: number; lastText?: string; prUrl?: string };
+type Sub = { id: string; title: string; status: 'running' | 'done'; updatedAt?: number; lastText?: string; prUrl?: string; kind?: string };
+// Sub-agents Claude Code wrote to their own file open as their own chat; helper agents a bot only
+// reported (through the relay) open the chat that started them.
+export const subChatId = (parent: string, s: { id: string; kind?: string }) => (s.kind === 'subagent' || s.kind === 'workflow') && /^(cc|cs|cd):/.test(parent) ? `sa:${s.id}@${parent}` : null;
 type Pill = 'running' | 'waiting' | 'done' | 'error' | null;
 const PILL_LABEL: Record<string, string> = { running: 'Working', waiting: 'Your turn', done: 'Done', error: 'Failed' };
 const RECENT = 120000;
@@ -145,7 +148,9 @@ function useLatest(id: string, preview?: string): { text: string; live: boolean;
   const live = useStore((s) => s.liveByEntity[id]);
   if (live && (live.status === 'running' || Date.now() - live.startedAt < RECENT)) {
     if (live.status === 'error') return { text: '', live: false, run: true, error: live.error || 'Failed' };
-    if (live.status === 'stopped' && !live.text) return { text: preview || '', live: false, run: true };
+    // A run that ended with nothing to say (stopped, or a message posted to a cloud session, whose
+    // reply streams in with the session) leaves the card on its latest message.
+    if (live.status !== 'running' && !live.text) return { text: preview || '', live: false, run: true };
     return { text: live.text || '', live: live.status === 'running', run: true };
   }
   return { text: preview || '', live: false };
@@ -206,10 +211,15 @@ function SubRows({ id, subs }: { id: string; subs: Sub[] }) {
   if (!subs.length) return null;
   const sorted = sortSubs(subs);
   const open = (ev: React.MouseEvent) => { ev.stopPropagation(); useStore.getState().open(id); };
+  const openSub = (ev: React.MouseEvent, s: Sub) => {
+    ev.stopPropagation();
+    const sub = subChatId(id, s);
+    if (sub) useStore.getState().openAny(sub); else useStore.getState().open(id);
+  };
   return (
     <div className="subagents">
       {sorted.slice(0, 4).map((s) => (
-        <button key={s.id} className="sub-row nodrag" onClick={open} title={s.lastText || s.title}>
+        <button key={s.id} className="sub-row nodrag" onClick={(ev) => openSub(ev, s)} title={s.lastText || s.title}>
           <i className={`sub-dot ${s.status}`} /><span className="sub-t">{s.title}</span>
           {s.prUrl && <a className="sub-pr" href={s.prUrl} target="_blank" rel="noreferrer" onClick={(ev) => ev.stopPropagation()} title="Pull request"><GitPullRequest size={11} /></a>}
           <span className="sub-age">{ago(s.updatedAt)}</span>
@@ -358,7 +368,7 @@ function AgentCard({ id, e, selected }: { id: string; e: Entity; selected?: bool
       now={asks.length
         ? <div className="card-now ap-now" data-testid="card-approval-line" title={asks[0].summary.line}>Needs your OK · {asks[0].summary.line}</div>
         : <NowLine running={running} now={now} fallback={latest.text} error={latest.error} about={about} />}
-      meta={<Meta parts={[acc?.label || src.label, cat && <span className={`kind-chip ${cat}`}>{cat === 'coding' ? 'Code' : 'Chat'}</span>, folder && <span className="mono" title={e.meta?.cwd}>{folder}{branch && <em> · {branch}</em>}</span>, ago(e.updatedAt)]} chip={subsLabel(subs)} />}>
+      meta={<Meta parts={[acc?.label || src.label, e.meta?.cloud && <span className="kind-chip cloud" title={e.meta.cloud.onCloud ? 'Runs on claude.ai/code' : 'Runs on another computer'} data-testid="cloud-chip">{e.meta.cloud.onCloud ? 'Cloud' : 'Remote'}</span>, cat && <span className={`kind-chip ${cat}`}>{cat === 'coding' ? 'Code' : 'Chat'}</span>, folder && <span className="mono" title={e.meta?.cwd}>{folder}{branch && <em> · {branch}</em>}</span>, ago(e.updatedAt)]} chip={subsLabel(subs)} />}>
       {asks.length > 0 && <ApprovalCard a={asks[0]} compact />}
       {asks.length > 1 && <button className="ap-more nodrag" onClick={(ev) => { ev.stopPropagation(); useStore.getState().open(id); }}>{asks.length - 1} more waiting · open the chat</button>}
       <Steps steps={[['For', forLine(ctx)], ['Asked', a?.prompt], ['Said', running && a?.tool ? a?.text : undefined],

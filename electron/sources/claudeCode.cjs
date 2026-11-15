@@ -97,23 +97,29 @@ function toolLabel(b) {
   }
 }
 
-function parseSession(file) {
+// `side` also reads sidechain lines: a sub-agent's own file is all sidechain.
+function parseSession(file, { side = false } = {}) {
   const st = fs.statSync(file);
-  const hit = cache.get(file);
+  const key = side ? `${file}\0side` : file;
+  const hit = cache.get(key);
   if (hit && hit.mtimeMs === st.mtimeMs && hit.size === st.size) return hit.parsed;
   const lines = readJsonl(file);
   const messages = [];
   const usage = []; // {ts, model, input, output}
   const seenUsage = new Set();
   let cwd = null, summary = null, gitBranch = null, sessionId = path.basename(file, '.jsonl');
+  // The title claude.ai and the Claude app show: one the user gave it, else the one Claude wrote.
+  let customTitle = null, aiTitle = null;
   const act = { prompt: '', tool: '', text: '', last: null, textAt: 0 };
   let plan = null; // [{ content, status }] — the latest plan, as the Claude app shows it
   for (const l of lines) {
     if (l.type === 'summary' && l.summary) summary = l.summary;
+    if (l.type === 'custom-title' && l.customTitle) customTitle = String(l.customTitle);
+    if (l.type === 'ai-title' && l.aiTitle) aiTitle = String(l.aiTitle);
     if (l.cwd) cwd = l.cwd;
     if (l.gitBranch) gitBranch = l.gitBranch;
     if (l.sessionId) sessionId = l.sessionId;
-    if ((l.type === 'user' || l.type === 'assistant') && l.message && !l.isSidechain) {
+    if ((l.type === 'user' || l.type === 'assistant') && l.message && (side || !l.isSidechain)) {
       const ts = l.timestamp ? Date.parse(l.timestamp) : st.mtimeMs;
       const m = l.message;
       if (l.type === 'assistant' && m.usage && m.id && !seenUsage.has(m.id)) {
@@ -155,7 +161,7 @@ function parseSession(file) {
   const shown = lastReply || lastText;
   const parsed = {
     sessionId, cwd, gitBranch, messages, usage,
-    title: truncate((firstUser && askOf(firstUser.text)) || summary || 'Untitled session', 80),
+    title: truncate(customTitle || aiTitle || (firstUser && askOf(firstUser.text)) || summary || 'Untitled session', 80),
     preview: shown ? truncate(plain(shown.text), 220) : '',
     previewAt: shown ? shown.ts : null,
     lastRole: lastText ? lastText.role : null,
@@ -163,7 +169,7 @@ function parseSession(file) {
     act,
     plan,
   };
-  cache.set(file, { mtimeMs: st.mtimeMs, size: st.size, parsed });
+  cache.set(key, { mtimeMs: st.mtimeMs, size: st.size, parsed });
   return parsed;
 }
 
@@ -242,6 +248,20 @@ function subagentsFor(file, sessionId) {
     out.push(s);
   }
   return out;
+}
+
+// The file of one sub-agent of a session (by the id subagentsFor gives it), or null.
+function subagentFile(file, sessionId, agentId) {
+  if (!/^[\w.-]+$/.test(String(agentId || ''))) return null;
+  const subDir = path.join(path.dirname(file), sessionId, 'subagents');
+  const cands = [path.join(subDir, `${agentId}.jsonl`), path.join(path.dirname(file), `${agentId}.jsonl`)];
+  let runs = []; try { runs = fs.readdirSync(path.join(subDir, 'workflows')); } catch {}
+  for (const r of runs) cands.push(path.join(subDir, 'workflows', r, `${agentId}.jsonl`));
+  return cands.find((f) => exists(f)) || null;
+}
+// A sub-agent's conversation: what it was asked, its steps and what it answered.
+function subagentTranscript(subFile) {
+  return parseSession(subFile, { side: true }).messages;
 }
 
 // Subagent and workflow side-threads are never cards, so skip them before parsing.
@@ -499,4 +519,4 @@ async function prompt(account, { sessionId, cwd, text, onText, signal, model, ex
   return { text: final || acc, sessionId: newSession, usage: usageOut };
 }
 
-module.exports = { orgOf, internalSessions, list, entityFor, sessionFiles, desktopList, desktopEntity, parseSession, transcript, usage, detect, prompt, MODELS, modelName, configDir, childEnv, authStatus, login, logout };
+module.exports = { orgOf, internalSessions, list, entityFor, sessionFiles, desktopList, desktopEntity, parseSession, transcript, subagentFile, subagentTranscript, subagentInfo, usage, detect, prompt, MODELS, modelName, configDir, childEnv, authStatus, login, logout };

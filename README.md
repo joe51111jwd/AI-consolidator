@@ -1,6 +1,6 @@
 # AI Consolidator (Switchboard)
 
-One place on your Mac to manage the AI chats you already have: every Claude Code session (across all your Claude accounts), your claude.ai and Claude app chats and Projects, Codex session, Grok Bot, Granola meeting, Gmail thread and Cursor cloud agent. See what each one is doing, answer the ones that need you, and then automate them.
+One place on your Mac to manage the AI chats you already have: every Claude Code session (across all your Claude accounts, on your Mac and in the cloud on claude.ai/code), your claude.ai and Claude app chats and Projects, Codex session, Grok Bot, Granola meeting, Gmail thread and Cursor cloud agent. See what each one is doing, answer the ones that need you, and then automate them.
 
 - **Chats home (⌘2).** All your chats in one list, grouped into topics by what they're doing. Each topic shows how many are working and how many need you; a blue dot marks a chat waiting on you. Filter and search the list at the top.
 - **Open and reply.** Click a chat to open it and talk. Hover a row to send a quick reply without opening it. Pick the model (Opus, Sonnet or Haiku) for a Claude chat next to the message box; each chat remembers its choice. **Stop** (the square button) ends a reply that's still running.
@@ -145,6 +145,17 @@ From then on Grok Bot can list your agents and hand them work, for example:
 The message and the reply show up as a live line on the board. Prompts you send to the Grok Bot card are copied for you and Grok Bot opens so you can paste them.
 
 To use Grok models directly (as a chat inside the app), add **Grok API or other model API** with an xAI API key.
+
+### Claude Code cloud sessions (claude.ai/code)
+
+Your claude.ai/code sessions show up as full chats, live, about a second behind: every message, step, plan and sub-agent, with a reply box, **Stop** and a link to open the session on claude.ai. They come through [Switchboard Relay](#switchboard-relay-all-your-agents-from-anywhere): each session streams its own conversation there from a Claude Code hook, so there is nothing to do when you start a chat, and Claude doesn't have to remember to report.
+
+Set it up once per cloud environment. With the relay on, Settings → Accounts → **Switchboard Relay** → **Claude Code cloud sessions** shows the three steps with a Copy button: a line for the environment's setup script, the relay's host for its network access, and your agent token (`BOT_TOKEN`) as a network secret for that host. The relay's README has [the details](relay/README.md#claude-code-cloud-sessions-claudeaicode-live).
+
+- **Reply:** Switchboard posts it with Anthropic's own `claude -p --cloud <session>`, using the Claude account whose email the session runs as. The reply streams back in like the rest.
+- **Stop:** goes to the session through the relay; its next step ends the turn, as Stop on claude.ai would.
+- **Sub-agents:** click one under a chat (on its card or in the expanded chat) to read its own conversation. This works for Claude Code sessions on this computer too.
+- A session whose container has gone to sleep shows as idle; your message wakes it.
 
 ### Switchboard Relay (all your agents, from anywhere)
 

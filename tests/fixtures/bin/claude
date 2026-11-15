@@ -36,6 +36,17 @@ if (args[0] === 'auth' && (args[1] === 'login' || args[1] === 'logout')) {
   return;
 }
 if (args[0] === 'mcp') { log({ args, configDir: process.env.CLAUDE_CONFIG_DIR || null }); console.log('Added stdio MCP server switchboard'); process.exit(0); }
+// `claude -p --cloud <session or claude.ai link> --output-format json -- <message>` posts one message
+// into a cloud session and exits, printing { ok, session_id, url }.
+if (args.includes('--cloud')) {
+  const target = val('--cloud');
+  const i = args.indexOf('--');
+  const message = i >= 0 ? args.slice(i + 1).join(' ') : '';
+  log({ args, cloud: target, prompt: message, configDir: process.env.CLAUDE_CONFIG_DIR || null });
+  const sid = String(target).replace(/^https:\/\/claude\.ai\/code\//, '');
+  process.stdout.write(JSON.stringify({ ok: true, session_id: sid, url: `https://claude.ai/code/${sid}` }) + '\n');
+  process.exit(0);
+}
 
 // A prompt with "[slow]" in it is slow mode: it streams a first message, then keeps working for
 // $SB_STUB_SLOW_MS (default 30 s) before the reply, so tests can press Stop. Being stopped (SIGTERM)

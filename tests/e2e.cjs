@@ -1431,6 +1431,79 @@ async function main() {
     await page.keyboard.press('Escape');
     await until(async () => (await box.count()) === 0, 'Escape closes it');
   });
+  // A claude.ai/code cloud session: the real streamer (relay/cloud/switchboard-sync.cjs) runs in a
+  // fake container (its own home folder with a Claude Code transcript) and sends to this relay.
+  await check('a cloud session streams in through the relay: a full chat with its sub-agent, a reply goes in with claude --cloud, and Stop reaches it', async () => {
+    const box = path.join(HOME, 'cloud-container');
+    const proj = path.join(box, '.claude', 'projects', '-home-user-harbor-site');
+    fs.mkdirSync(path.join(proj, 'cli-1', 'subagents'), { recursive: true });
+    const main = path.join(proj, 'cli-1.jsonl');
+    const L = (o) => `${JSON.stringify({ sessionId: 'cli-1', cwd: '/home/user/harbor-site', timestamp: new Date().toISOString(), ...o })}\n`;
+    fs.writeFileSync(main, L({ type: 'user', uuid: 'u1', message: { role: 'user', content: 'Fix the menu page on mobile' } })
+      + L({ type: 'assistant', uuid: 'a1', message: { id: 'm1', role: 'assistant', content: [{ type: 'text', text: 'Looking at the menu page styles now.' }] } })
+      + L({ type: 'assistant', uuid: 'a2', message: { id: 'm2', role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'Task', input: { description: 'Check the breakpoints', prompt: 'Find the CSS breakpoints' } }] } })
+      + L({ type: 'ai-title', aiTitle: 'Harbor menu page on mobile' }));
+    // The sub-agent finished five minutes ago: its dot is done, however recently its lines got here.
+    const earlier = new Date(Date.now() - 5 * 60000).toISOString();
+    fs.writeFileSync(path.join(proj, 'cli-1', 'subagents', 'agent-b1.jsonl'), L({ type: 'user', isSidechain: true, uuid: 's1', timestamp: earlier, message: { role: 'user', content: 'Find the CSS breakpoints' } })
+      + L({ type: 'assistant', isSidechain: true, uuid: 's2', timestamp: earlier, message: { id: 'm3', role: 'assistant', content: [{ type: 'text', text: 'The menu grid breaks below 480px.' }] } }));
+    const streamer = require('child_process').spawn(process.execPath, [path.join(ROOT, 'relay', 'cloud', 'switchboard-sync.cjs'), 'daemon'], {
+      env: { ...process.env, HOME: box, USERPROFILE: box, CLAUDE_CONFIG_DIR: path.join(box, '.claude'), SWITCHBOARD_RELAY_URL: relay.url, SWITCHBOARD_RELAY_TOKEN: 'e2e-bot-token',
+        CLAUDE_CODE_REMOTE_SESSION_ID: 'cse_01E2eCloud', CLAUDE_CODE_SESSION_ID: 'cli-1', CLAUDE_CODE_USER_EMAIL: 'owner@example.com', HTTPS_PROXY: '', https_proxy: '' },
+      stdio: 'ignore',
+    });
+    const id = 'cs:session_01E2eCloud';
+    try {
+      const e = await until(async () => { await api('cloud:sync'); const x = await ent(id); return x && x.meta.subagents && x.meta.subagents.length === 1 ? x : false; }, 'the cloud session has a card', 20000);
+      assert(e.title === 'Harbor menu page on mobile', `titled by Claude's own title (${e.title})`);
+      assert(e.status === 'running' && e.meta.cloud.alive && e.meta.url === 'https://claude.ai/code/session_01E2eCloud', JSON.stringify({ st: e.status, c: e.meta.cloud, url: e.meta.url }));
+      assert(e.meta.subagents[0].status === 'done' && e.meta.subagents[0].title === 'Find the CSS breakpoints', `the sub-agent that finished earlier is done (${JSON.stringify(e.meta.subagents[0])})`);
+      assert(/cloud/.test(e.meta.account) && e.meta.project === 'harbor-site' && e.meta.category === 'coding', `${e.meta.account} / ${e.meta.project} / ${e.meta.category}`);
+      await center(id, 0.8);
+      assert((await node(id).getByTestId('cloud-chip').innerText()) === 'Cloud', 'its card says it runs in the cloud');
+      await node(id).click();
+      await until(async () => /Looking at the menu page styles now/.test(await page.locator('.inspector').innerText()), 'the open chat shows the conversation');
+      assert((await page.locator('.inspector .insp-head button[title="Open in Claude"]').count()) === 1, 'it opens on claude.ai');
+      await shot('cloud-chat');
+
+      // It works on claude.ai, so its Stop goes through the relay to the session's streamer.
+      await page.locator('.inspector').getByTestId('stop-run').click();
+      const flag = path.join(box, '.switchboard-cloud', 'stop');
+      await until(() => fs.existsSync(flag), 'the stop reached the session', 15000);
+
+      // A reply goes in with the documented `claude -p --cloud`, as the account the session runs as.
+      const input = page.locator('.inspector textarea');
+      await input.fill('Use a single column below 480px');
+      await input.press('Enter');
+      const sent = await until(() => calls().find((c) => c.cloud && /single column/.test(c.prompt)), 'the reply went to claude --cloud');
+      assert(sent.cloud === 'https://claude.ai/code/session_01E2eCloud', `sent to ${sent.cloud}`);
+
+      // New lines show up about a second after the session writes them.
+      fs.appendFileSync(main, L({ type: 'user', uuid: 'u2', message: { role: 'user', content: 'Use a single column below 480px' } })
+        + L({ type: 'assistant', uuid: 'a3', message: { id: 'm4', role: 'assistant', content: [{ type: 'text', text: 'Switched the menu to one column on small screens.' }] } }));
+      await until(async () => /Switched the menu to one column/.test(await page.locator('.inspector').innerText()), 'a new reply streams into the open chat', 15000);
+      await until(async () => (await ent(id)).status !== 'running', 'a finished turn is no longer working', 15000);
+      await closeCard();
+      await center(id, 0.8);
+      // Its card shows the newest reply (or its summary), not an empty line from the posted message.
+      await until(async () => { const t = await node(id).innerText(); return !/Nothing yet/.test(t) && /Switched the menu to one column|Gist:/.test(t); }, 'its card shows what the chat said last');
+
+      // The sub-agent opens as its own chat, with a way back.
+      await closeCard();
+      await center(id, 0.8);
+      await node(id).locator('.sub-row').first().click();
+      await until(async () => /The menu grid breaks below 480px/.test(await page.locator('.inspector').innerText()), 'the sub-agent opens with its own conversation');
+      const back = page.locator('.inspector').getByTestId('sub-parent');
+      assert(/Harbor menu page on mobile/.test(await back.innerText()), 'it names the chat that started it');
+      assert((await page.locator('.inspector textarea').count()) === 0, 'a sub-agent takes no messages');
+      await shot('cloud-subagent');
+      await back.click();
+      await until(async () => (await page.locator('.inspector .insp-head .title').innerText()) === 'Harbor menu page on mobile', 'back to the chat');
+      await closeCard();
+    } finally {
+      streamer.kill();
+    }
+  });
   await check('adding a bot means adding the connector: Done waits until the bot connects', async () => {
     await view('Accounts');
     await page.locator('.page-h button', { hasText: 'Add account' }).click();

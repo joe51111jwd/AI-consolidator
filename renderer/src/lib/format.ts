@@ -54,7 +54,7 @@ export const SOURCE: Record<string, { label: string; color: string }> = {
   note: { label: 'Note', color: '#CA8A04' },
 };
 
-export const PROMPTABLE = (id: string) => /^(cc|cx|cu|lc|pj|ac|cl):/.test(id);
+export const PROMPTABLE = (id: string) => /^(cc|cx|cu|lc|pj|ac|cl|cs):/.test(id);
 
 export const baseName = (p?: string) => (p || '').replace(/\/+$/, '').split('/').pop() || '';
 

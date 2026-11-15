@@ -395,6 +395,8 @@ function copy(template) {
 }
 
 module.exports = {
+  // For ext/cloud.cjs, which pulls cloud sessions through the same relay and token.
+  request, enabled, status,
   handlers: {
     'relay:status': () => status(),
     'relay:configure': (opts) => configure(opts || {}),

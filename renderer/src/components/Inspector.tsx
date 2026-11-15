@@ -4,7 +4,7 @@ import { useStore } from '../lib/store';
 import { api, Message, Flow, Entity, Account } from '../lib/api';
 import { ago, md, SOURCE, PROMPTABLE } from '../lib/format';
 import { ClaudeAiProject } from './ClaudeAiImport';
-import { dragOutput } from '../nodes/nodes';
+import { dragOutput, subChatId } from '../nodes/nodes';
 import { AgentLogo } from './Logos';
 import Composer from './Composer';
 import FullChat from './FullChat';
@@ -285,7 +285,8 @@ export default function Inspector() {
     return (
       <>
         <FullChat title={e.title} source={e.source} color={agent.color} agentName={agent.name} working={working}
-          rows={tail} streaming={live?.text || ''} plan={latestPlan} subs={subs} composer={composer} onClose={() => setFull(false)} />
+          rows={tail} streaming={live?.text || ''} plan={latestPlan} subs={subs} composer={composer} onClose={() => setFull(false)}
+          onOpenSub={(s) => { const sub = subChatId(id, s); if (sub) useStore.getState().openAny(sub); }} />
         {sendMenuEl}
       </>
     );
@@ -302,14 +303,24 @@ export default function Inspector() {
           <span className="pn-when">{ago(e.updatedAt)}</span>
           <span className="pn-acts">
             {e.meta?.url && <button className="icon-btn" onClick={() => api.openExternal(e.meta.url)} title={`Open in ${src.label}`}><ExternalLink size={14} /></button>}
-            {e.meta?.cwd && <button className="icon-btn" onClick={() => api.openPath(e.meta.cwd)} title="Open folder"><FolderOpen size={14} /></button>}
-            {e.meta?.sessionId && e.source === 'claude-code' && <button className="icon-btn" onClick={() => { api.copy(`claude --resume ${e.meta.sessionId}`); notify('Resume command copied'); }} title="Copy resume command"><Terminal size={14} /></button>}
+            {e.meta?.cwd && !e.meta?.cloud && <button className="icon-btn" onClick={() => api.openPath(e.meta.cwd)} title="Open folder"><FolderOpen size={14} /></button>}
+            {e.meta?.cloud?.onCloud
+              ? <button className="icon-btn" onClick={() => { api.copy(`claude --teleport ${e.meta.cloud.id}`); notify('Teleport command copied: run it in the repo to continue here'); }} title="Copy the command that brings this session to your computer"><Terminal size={14} /></button>
+              : e.meta?.sessionId && e.source === 'claude-code' && !e.meta?.cloud && <button className="icon-btn" onClick={() => { api.copy(`claude --resume ${e.meta.sessionId}`); notify('Resume command copied'); }} title="Copy resume command"><Terminal size={14} /></button>}
             <button className="icon-btn" onClick={() => setFull(true)} title="Expand (F)" data-testid="expand-chat"><Maximize2 size={14} /></button>
             <button className={`icon-btn ${pinned ? 'on' : ''}`} onClick={togglePin} title={pinned ? 'Remove from context' : 'Tag as context'}><Tag size={14} /></button>
             <button className="icon-btn" onClick={() => open(null)} title="Close"><X size={16} /></button>
           </span>
         </div>
         <div className="title">{e.title}</div>
+        {e.meta?.subagentOf && (
+          <button className="pn-parent" onClick={() => open(e.meta.subagentOf)} data-testid="sub-parent">
+            Sub-agent of {byId[e.meta.subagentOf]?.title || e.meta.parentTitle || 'its chat'}<ArrowRight size={12} />
+          </button>
+        )}
+        {e.meta?.cloud && !e.meta.cloud.alive && e.meta.cloud.onCloud && (
+          <div className="pn-cloud-note">The session's container is asleep. A message wakes it.</div>
+        )}
         {e.source === 'claude-ai' && <ClaudeAiProject e={e} />}
         {(e.meta?.cwd || linked.length > 0) && (
           <div className="pn-meta">

@@ -17,6 +17,7 @@ const apiChat = require('./sources/apiChat.cjs');
 const grokbot = require('./sources/grokbot.cjs');
 const claudeDesktop = require('./sources/claudeDesktop.cjs');
 const approvals = require('./approvals.cjs');
+const onboarding = require('./onboarding.cjs');
 
 const events = new EventEmitter();
 const emit = (e) => events.emit('event', e);
@@ -116,13 +117,14 @@ async function claudeLogout(id) {
   return st;
 }
 
-function firstRunSetup() {
-  if (db.get('SELECT COUNT(*) AS n FROM accounts').n > 0) return;
-  claudeCode.detect().forEach((dir, i) => saveAccount({ kind: 'claude-code', label: i === 0 ? 'Claude' : `Claude ${i + 1}`, config: { configDir: dir } }));
-  if (codex.hasSessions()) saveAccount({ kind: 'codex', label: 'Codex', config: {} });
-  if (granola.detect().length) saveAccount({ kind: 'granola', label: 'Granola', config: {} });
-  // Grok Bot is a Mac app: elsewhere its card only comes when its data is there.
-  if (IS_MAC || grokbot.status().installed) saveAccount({ kind: 'grok-bot', label: 'Grok Bot', config: {} });
+// Nothing is connected by itself: onboarding offers what it finds here (see onboarding.cjs).
+function firstRunSetup() { onboarding.firstRun(); }
+function onboardingFound() {
+  let claudeApp = false; try { claudeApp = claudeDesktop.agentSessions().length > 0; } catch {}
+  return onboarding.items({
+    claude: claudeCode.detect(), codex: codex.hasSessions(), granola: granola.detect().length > 0,
+    grokBot: IS_MAC && grokbot.status().installed, claudeApp,
+  });
 }
 
 // ---------- entities ----------
@@ -908,7 +910,7 @@ function mcpConfigPath() {
 }
 
 module.exports = {
-  events, accounts, publicAccount, account, saveAccount, deleteAccount, firstRunSetup,
+  events, accounts, publicAccount, account, saveAccount, deleteAccount, firstRunSetup, onboardingFound,
   claudeStatus, claudeLogin, claudeLoginCancel, claudeLogout,
   entities, invalidate, transcriptFor, find, label,
   prompt, stopRun, runs, sentReplies, recordFlow, flowsFor, edges, saveEdge, deleteEdge, forwardFinished, makeBoard, quickAsk, internalArgs,

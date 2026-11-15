@@ -6,6 +6,7 @@ import { useStore } from '../lib/store';
 import { api } from '../lib/api';
 import { key } from '../lib/platform';
 import { useConnectAgents } from './ConnectAgents';
+import { useWelcome } from './Welcome';
 import './tour.css';
 
 const DONE_KEY = 'sb.tourDone';
@@ -107,7 +108,8 @@ export default function Tour() {
     const auto = !localStorage.getItem(DONE_KEY) && !(window as any).__sbNoTour && !navigator.webdriver;
     if (!auto) return;
     const t = setTimeout(() => {
-      if (!localStorage.getItem(DONE_KEY) && !(window as any).__sbNoTour) useTour.getState().start();
+      // First launch shows Welcome first; it starts the tour when it closes.
+      if (!localStorage.getItem(DONE_KEY) && !(window as any).__sbNoTour && !useWelcome.getState().open) useTour.getState().start();
     }, 1400);
     return () => clearTimeout(t);
   }, []);

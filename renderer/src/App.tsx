@@ -9,7 +9,8 @@ import Inspector from './components/Inspector';
 import Chief from './components/Chief';
 import Palette from './components/Palette';
 import Onboarding from './components/Onboarding';
-import Tour from './components/Tour';
+import Welcome from './components/Welcome';
+import Tour, { useTour } from './components/Tour';
 import ImportChats from './components/ImportChats';
 import VersionTag from './components/VersionTag';
 import Outputs from './components/Outputs';
@@ -102,6 +103,7 @@ export default function App() {
         <Palette />
         <Onboarding />
         <Tour />
+        <Welcome onDone={() => { if (!localStorage.getItem('sb.tourDone')) useTour.getState().start(); }} />
         <ImportChats />
         <VersionTag />
         <Settings />

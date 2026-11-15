@@ -1,5 +1,5 @@
-# Builds the Linux (AppImage, deb) and Windows (NSIS) installers and runs the whole test suite on
-# Linux and on Windows. Run it from the Actions tab (Run workflow) or by pushing a v* tag. Installers are uploaded
+# Builds the Mac app (dmg, Apple silicon and Intel), the Linux (AppImage, deb) and Windows (NSIS)
+# installers, and runs the whole test suite on macOS and Linux. Run it from the Actions tab (Run workflow) or by pushing a v* tag. Installers are uploaded
 # as workflow artifacts only: nothing is published as a GitHub Release.
 name: Build
 
@@ -56,9 +56,9 @@ jobs:
           path: ${{ runner.temp }}/e2e-shots
           retention-days: 7
 
-  test-windows:
-    name: Tests (Windows)
-    runs-on: windows-latest
+  test-mac:
+    name: Tests (macOS)
+    runs-on: macos-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
@@ -70,27 +70,25 @@ jobs:
             package-lock.json
             relay/package-lock.json
       - run: npm ci
+      - run: npm run typecheck
       - run: npm run build
       - name: Unit tests
         run: node --test "tests/*.test.cjs"
       - name: Relay tests
         working-directory: relay
         run: npm ci && npm test
-      # The stand-in claude and codex start through tests/fixtures/bin/*.cmd, the way npm's shims do.
       - name: Whole suite, end to end (real Electron app)
-        shell: bash
         env:
           SB_SHOTS: ${{ runner.temp }}/e2e-shots
           SB_APP_LOG: ${{ runner.temp }}/e2e-shots/app.log
         run: |
           mkdir -p "$SB_SHOTS"
-          node tests/build-if-stale.cjs
-          node tests/e2e.cjs
+          npm test
       - name: Keep the screenshots and app log of a failed run
         if: failure()
         uses: actions/upload-artifact@v7
         with:
-          name: e2e-failure-windows
+          name: e2e-failure-mac
           path: ${{ runner.temp }}/e2e-shots
           retention-days: 7
 
@@ -109,6 +107,12 @@ jobs:
             files: |
               release/*.AppImage
               release/*.deb
+          - name: macOS
+            os: macos-latest
+            targets: --mac dmg --arm64 --x64
+            artifact: switchboard-mac
+            files: |
+              release/*.dmg
           - name: Windows
             os: windows-latest
             targets: --win nsis
@@ -129,7 +133,13 @@ jobs:
       - run: npm ci
       - run: npm run build
       - name: Build the installer
+        # Not signed with an Apple developer certificate: the first open is right-click → Open.
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
         run: npx electron-builder ${{ matrix.targets }} --publish never
+      - name: Open the Mac app
+        if: runner.os == 'macOS'
+        run: SB_SMOKE_SHOT="$RUNNER_TEMP/mac-window.png" node tests/smoke.cjs "release/mac-arm64/Switchboard.app/Contents/MacOS/Switchboard"
       # tests/smoke.cjs: the window loads with the version tag in the corner, the top bar doesn't
       # overlap at any width, and a saved key reads back after a restart.
       - name: Open the AppImage

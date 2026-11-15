@@ -22,6 +22,8 @@ Everything runs on your computer. Nothing is sent anywhere except to the AI serv
 
 ## Install
 
+**On your Mac, the quick way:** have Claude Code on the Mac follow [MAC_SETUP.md](MAC_SETUP.md). It builds the app, puts it in Applications, connects your Relay and turns on cloud sessions.
+
 Switchboard runs on macOS, Linux and Windows. To run it from source you need [Node.js 22.13 or newer](https://nodejs.org) and Git.
 
 ```bash

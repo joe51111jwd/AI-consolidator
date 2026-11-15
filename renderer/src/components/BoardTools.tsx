@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Funnel, Sparkles, Check, ChevronDown, Plus, Save, X, Loader2, Eye, CalendarDays, Rows3 } from 'lucide-react';
 import { useStore } from '../lib/store';
 import { api } from '../lib/api';
@@ -123,8 +123,34 @@ export default function BoardTools({ busy, onSmart, onWeek, onArranged, off, set
   const [groupBy, setGroupBy] = useState(false);
   const [rules, setRules] = useState(false);
   const toggle = (k: string) => setOff(off.includes(k) ? off.filter((x) => x !== k) : [...off, k]);
+  // The tools sit centred in the top bar. Where they would run into the corners (brand, search and
+  // Board | List on the left, usage and settings on the right), they first drop their names (kept in
+  // the tooltips), then move under the top bar. Measured, not guessed from the width: the left corner
+  // is wider on a Mac (the window buttons) and with "Ctrl+K" elsewhere. Each resize starts over.
+  const box = useRef<HTMLDivElement>(null);
+  const [fit, setFit] = useState<'full' | 'icons' | 'below'>('full');
+  const [, remeasure] = useState(0);
+  useEffect(() => {
+    const again = () => { setFit('full'); remeasure((n) => n + 1); };
+    window.addEventListener('resize', again);
+    // A corner that grows (a longer name, fonts loading late) is measured again too.
+    const ro = new ResizeObserver(() => remeasure((n) => n + 1));
+    document.querySelectorAll('.float.tl, .float.tr').forEach((n) => ro.observe(n));
+    const t = setTimeout(again, 500);
+    return () => { window.removeEventListener('resize', again); ro.disconnect(); clearTimeout(t); };
+  }, []);
+  useLayoutEffect(() => {
+    const el = box.current;
+    if (!el || fit === 'below') return;
+    const t = el.getBoundingClientRect();
+    const hit = Array.from(document.querySelectorAll('.float.tl, .float.tr')).some((n) => {
+      const r = n.getBoundingClientRect();
+      return r.width > 0 && r.left < t.right + 8 && t.left - 8 < r.right && r.top < t.bottom && t.top < r.bottom;
+    });
+    if (hit) setFit(fit === 'full' ? 'icons' : 'below');
+  });
   return (
-    <div className="board-tools" onClick={(e) => e.stopPropagation()}>
+    <div ref={box} className={`board-tools ${fit === 'full' ? '' : `fit-${fit}`}`} data-fit={fit} onClick={(e) => e.stopPropagation()}>
       <BoardSwitcher onArranged={onArranged} />
       <button className="bt-btn bt-week" data-testid="week-board" onClick={onWeek} disabled={busy} title="Lay out everything from this week, by what it's about">
         <CalendarDays size={14} /><span>This week</span>

@@ -138,6 +138,11 @@
    1366 px screens) the centred tools would slide under Board | List, so there they keep only their
    icons (the names are in the tooltips). */
 @media (min-width: 1181px) and (max-width: 1470px) { .shell:not(.mac) .board-tools .bt-btn > span:not(.bt-board-name) { display: none; } }
+/* And wherever they still run into a corner (a Mac's window buttons make the left one wider), BoardTools
+   measures it: names off first, then under the top bar. */
+.board-tools.fit-icons .bt-btn > span:not(.bt-board-name) { display: none; }
+.board-tools.fit-below { left: auto; right: 16px; top: 52px; transform: none; }
+.board-tools.fit-below .bt-panel { left: auto; right: 0; transform-origin: top right; }
 .bt-wrap { position: relative; }
 .bt-btn {
   height: 32px; min-width: 32px; padding: 0 9px; border-radius: 999px; display: inline-flex; align-items: center; justify-content: center; gap: 7px;

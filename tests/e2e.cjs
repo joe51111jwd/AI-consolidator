@@ -135,6 +135,13 @@ async function launch() {
   // SB_APP_LOG=<file> keeps the app's own console output (main process and renderer) for debugging.
   if (process.env.SB_APP_LOG) { const w = fs.createWriteStream(process.env.SB_APP_LOG, { flags: 'a' }); app.process().stdout.pipe(w); app.process().stderr.pipe(w); }
   page = await app.firstWindow();
+  // macOS fits a new window to the screen, and CI Macs have a 1024 px one: give the window the size it
+  // asks for (1480×940, as it gets on Linux) so every system tests the same layout. Narrow windows
+  // have their own checks.
+  if (process.platform === 'darwin') {
+    await app.evaluate(({ BrowserWindow }) => { const w = BrowserWindow.getAllWindows()[0]; w.setBounds({ x: 0, y: 0, width: 1480, height: 940 }); });
+    await page.waitForFunction(() => window.innerWidth >= 1400, null, { timeout: 5000 }).catch(() => {});
+  }
   await page.evaluate(TOAST_LOG).catch(() => {});
   page.setDefaultTimeout(8000);
   page.on('pageerror', (e) => console.log('    [page error]', e.message));
@@ -2333,6 +2340,20 @@ async function main() {
     await until(async () => (await tag.innerText()).trim() === `v${v}`, `shows v${v}`);
     const r = await tag.boundingBox(); const vp = page.viewportSize() || await page.evaluate(() => ({ width: innerWidth, height: innerHeight }));
     assert(r.x > vp.width / 2 && r.y > vp.height / 2, `bottom-right (${Math.round(r.x)},${Math.round(r.y)})`);
+  });
+  await check('in a narrow window the board tools go under an open card, so its Close button works', async () => {
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1100, 900));
+    await page.waitForFunction(() => window.innerWidth <= 1120, null, { timeout: 5000 });
+    try {
+      await center(S.menu, 0.8);
+      await node(S.menu).click();
+      await page.locator('.inspector').waitFor();
+      await page.locator('.inspector .insp-head button[title="Close"]').click({ timeout: 4000 });
+      await until(async () => (await page.locator('.inspector').count()) === 0, 'the card closed');
+    } finally {
+      await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1480, 940));
+      await page.waitForFunction(() => window.innerWidth >= 1400, null, { timeout: 5000 }).catch(() => {});
+    }
   });
   await check('Settings opens from the gear and Escape closes it', async () => {
     await page.getByTestId('settings-btn').click();

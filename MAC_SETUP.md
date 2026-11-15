@@ -58,7 +58,7 @@ node -e '
 rm /tmp/relay.env
 ```
 
-Quit and reopen Switchboard. It moves both keys into the Keychain and deletes `relay-setup.json`. Check Settings (gear, top right) → **Accounts** → **Switchboard Relay**: it should be on and say **Synced**.
+Quit and reopen Switchboard. It moves both keys into the Keychain (if macOS asks whether Switchboard may use its Keychain item, choose **Always Allow**) and deletes `relay-setup.json`. Check Settings (gear, top right) → **Accounts** → **Switchboard Relay**: it should be on and say **Synced**.
 
 ## 4. Turn on cloud sessions (claude.ai/code)
 

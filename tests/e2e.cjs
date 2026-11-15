@@ -383,6 +383,9 @@ async function notificationChecks() {
   await check('a chat that finishes while Switchboard is in the back notifies; clicking it opens that chat', async () => {
     await view('Board');
     await closeInspector();
+    // To-dos already due (Gmail threads, the CRM) are counted first, so none of them lands in the same
+    // moment as this chat's reply and turns its notification into a summary (seen on a CI Mac).
+    await nt({ check: true });
     await nt({ front: false, reset: true });
     const n0 = notes().length;
     const title = await titleOf(S.crew);

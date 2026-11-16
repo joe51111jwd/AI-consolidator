@@ -107,11 +107,15 @@ export default function Tour() {
     (window as any).__sbTour = (on: boolean = true) => { if (on) useTour.getState().start(); else useTour.getState().stop(); };
     const auto = !localStorage.getItem(DONE_KEY) && !(window as any).__sbNoTour && !navigator.webdriver;
     if (!auto) return;
+    // First launch shows Welcome first and starts the tour when it closes. Wait for Welcome's check to
+    // answer, so a slow one can't let the tour open underneath it.
+    let unsub = () => {};
+    const go = () => { if (!localStorage.getItem(DONE_KEY) && !(window as any).__sbNoTour && !useWelcome.getState().open) useTour.getState().start(); };
     const t = setTimeout(() => {
-      // First launch shows Welcome first; it starts the tour when it closes.
-      if (!localStorage.getItem(DONE_KEY) && !(window as any).__sbNoTour && !useWelcome.getState().open) useTour.getState().start();
+      if (useWelcome.getState().checked) go();
+      else unsub = useWelcome.subscribe((s) => { if (s.checked) { unsub(); go(); } });
     }, 1400);
-    return () => clearTimeout(t);
+    return () => { clearTimeout(t); unsub(); };
   }, []);
 
   useEffect(() => {

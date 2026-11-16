@@ -181,6 +181,7 @@ export default function Accounts() {
   const [toolsBusy, setToolsBusy] = useState(false);
   const [grok, setGrok] = useState<GrokStatus | null>(null);
   const [grokAuto, setGrokAuto] = useState(true);
+  const [claudeApp, setClaudeApp] = useState(true);
   const [axOk, setAxOk] = useState<boolean | null>(null);
   const [dedicated, setDedicated] = useState<Record<string, string>>({});
   const [detected, setDetected] = useState<string[]>([]);
@@ -194,6 +195,7 @@ export default function Accounts() {
     api.call('grokbot:status').then(setGrok).catch(() => {});
     api.call<string>('secrets:where').then(setKeysWhere).catch(() => {});
     api.getSetting('grokAutoSend', true).then(setGrokAuto);
+    api.getSetting('claudeAppSessions', true).then((v) => setClaudeApp(v !== false));
     const checkAx = () => api.call('perm:status').then((p: { accessibility: boolean }) => setAxOk(p.accessibility)).catch(() => {});
     checkAx(); window.addEventListener('focus', checkAx);
     api.getSetting<Record<string, string>>('accountForPath', {}).then((m) => setDedicated(m || {}));
@@ -275,6 +277,11 @@ export default function Accounts() {
         {tools && tools.results.length > 0 && <div className="well" data-testid="agent-tools-results">{tools.results.map((r) => <div key={r}>{r}</div>)}</div>}
         <RelaySettings />
         <ClaudeAiImport />
+        {/* Off on a new install until it's turned on here or in Welcome (electron/onboarding.cjs). */}
+        <div className="set-row" data-testid="claude-app-sessions">
+          <div className="txt"><b>Claude desktop app</b><span className="hint">Show agent sessions from the Claude app, read-only.</span></div>
+          <Toggle label="Show Claude desktop app sessions" on={claudeApp} onChange={async (v) => { setClaudeApp(v); await api.setSetting('claudeAppSessions', v); await refresh(); useStore.getState().refreshBoard(); }} />
+        </div>
         <div className="set-row">
           <div className="txt"><b>Grok Bot</b><span className="hint">{grok && grok.enabled ? `${grok.bots} bot${grok.bots === 1 ? '' : 's'}${grok.running ? '' : ' · app closed'}` : 'Off'}</span></div>
           <Toggle label="Connect Grok Bot" on={grok ? grok.enabled : true} onChange={setGrokOn} />

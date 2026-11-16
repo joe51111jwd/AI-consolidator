@@ -157,7 +157,8 @@ const handlers = {
   'claude:loginCancel': (id) => hub.claudeLoginCancel(id),
   'claude:logout': (id) => hub.claudeLogout(id),
   'account:detect': () => ({ claude: claudeCode.detect() }),
-  'onboard:status': () => ({ pending: require('./onboarding.cjs').pending(), found: hub.onboardingFound() }),
+  // Only looks around the computer while onboarding is open; every later launch skips the scan.
+  'onboard:status': () => { const pending = require('./onboarding.cjs').pending(); return { pending, found: pending ? hub.onboardingFound() : [] }; },
   'onboard:finish': () => require('./onboarding.cjs').finish(),
   'gmail:connect': (id) => hub.gmailConnect(id),
   'board': () => hub.board(),

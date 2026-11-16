@@ -123,7 +123,8 @@ function onboardingFound() {
   let claudeApp = false; try { claudeApp = claudeDesktop.agentSessions().length > 0; } catch {}
   return onboarding.items({
     claude: claudeCode.detect(), codex: codex.hasSessions(), granola: granola.detect().length > 0,
-    grokBot: IS_MAC && grokbot.status().installed, claudeApp,
+    // The app on a Mac, or its data anywhere (as the old first run did on other systems).
+    grokBot: grokbot.status().installed, claudeApp,
   });
 }
 

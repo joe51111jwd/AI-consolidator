@@ -9,7 +9,10 @@ import './connect.css';
 
 export type FoundItem = { id: string; kind: string; label: string; detail: string; account?: { kind: string; label: string; config: any }; setting?: string };
 
-export const useWelcome = create<{ open: boolean; set: (open: boolean) => void }>((set) => ({ open: false, set: (open) => set({ open }) }));
+// checked: the first-launch check has answered, so the tour knows whether to wait for Done.
+export const useWelcome = create<{ open: boolean; checked: boolean; set: (s: { open?: boolean; checked?: boolean }) => void }>((set) => ({
+  open: false, checked: false, set: (s) => set(s),
+}));
 
 const icon = (kind: string) => {
   if (kind === 'granola') return <NotebookPen size={16} />;
@@ -26,19 +29,34 @@ const isConnected = (item: FoundItem, accounts: Account[], settings: Record<stri
 
 // First launch: nothing is connected until it's clicked here. Finishing hands over to the guided tour.
 export default function Welcome({ onDone }: { onDone: () => void }) {
-  const { open, set: setOpen } = useWelcome();
+  const open = useWelcome((s) => s.open);
   const accounts = useStore((s) => s.accounts);
   const { set, refresh, notify } = useStore.getState();
   const [found, setFound] = useState<FoundItem[]>([]);
   const [settings, setSettings] = useState<Record<string, boolean>>({});
   const [busy, setBusy] = useState<string | null>(null);
 
+  // Opens only while onboarding is pending (a brand-new install that hasn't pressed Done).
+  const check = async () => {
+    try {
+      const s = await api.call<{ pending: boolean; found: FoundItem[] }>('onboard:status');
+      if (s.pending) {
+        const keys = [...new Set(s.found.map((i) => i.setting).filter(Boolean))] as string[];
+        const vals = await Promise.all(keys.map((k) => api.getSetting<boolean>(k, false).catch(() => false)));
+        setSettings(Object.fromEntries(keys.map((k, i) => [k, vals[i] === true])));
+        setFound(s.found);
+      }
+      useWelcome.getState().set({ open: s.pending, checked: true });
+      return s.pending;
+    } catch { useWelcome.getState().set({ checked: true }); return false; }
+  };
+
   useEffect(() => {
+    // Tests drive the app with navigator.webdriver set, so it stays out of their way unless asked:
+    // window.__sbWelcome() runs the first-launch check (resolves true if it opened), (false) closes it.
+    (window as any).__sbWelcome = (on: boolean = true) => (on ? check() : (useWelcome.getState().set({ open: false }), Promise.resolve(false)));
     if ((window as any).__sbNoTour || navigator.webdriver) return;
-    api.call<{ pending: boolean; found: FoundItem[] }>('onboard:status').then((s) => {
-      setFound(s.found);
-      if (s.pending) setOpen(true);
-    }).catch(() => {});
+    check();
   }, []);
 
   const connect = async (item: FoundItem) => {
@@ -53,7 +71,7 @@ export default function Welcome({ onDone }: { onDone: () => void }) {
 
   const finish = async (then?: () => void) => {
     await api.call('onboard:finish').catch(() => {});
-    setOpen(false);
+    useWelcome.getState().set({ open: false });
     if (then) then(); else onDone();
   };
 
@@ -89,8 +107,8 @@ export default function Welcome({ onDone }: { onDone: () => void }) {
             </div>
           </div>
         </div>
-        <div className="ca-head" style={{ paddingBottom: 14 }}>
-          <button className="ca-btn" style={{ marginLeft: 'auto' }} data-testid="welcome-done" onClick={() => finish()}>Done</button>
+        <div className="ca-foot">
+          <button className="ca-btn" data-testid="welcome-done" onClick={() => finish()}>Done</button>
         </div>
       </div>
     </div>,

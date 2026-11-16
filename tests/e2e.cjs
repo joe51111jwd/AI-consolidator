@@ -28,7 +28,9 @@ const OPENED = path.join(os.tmpdir(), `switchboard-e2e-${RUN}-opened.log`);
 const NOTIFY = path.join(os.tmpdir(), `switchboard-e2e-${RUN}-notify.log`);
 // Own folder and port per run, so two runs (or a run beside the installed app) never collide.
 const PORT = String(47911 + (process.pid % 2000));
-process.on('exit', () => { if (!process.env.SB_KEEP) for (const p of [HOME, LOG, LOGINS, OPENED, NOTIFY]) { try { fs.rmSync(p, { recursive: true, force: true }); } catch {} } });
+// A second, empty home for the first-launch (Welcome) checks: a brand-new install.
+const FRESH = path.join(os.tmpdir(), `switchboard-e2e-${RUN}-fresh`);
+process.on('exit', () => { if (!process.env.SB_KEEP) for (const p of [HOME, FRESH, LOG, LOGINS, OPENED, NOTIFY]) { try { fs.rmSync(p, { recursive: true, force: true }); } catch {} } });
 const shot = async (name) => { if (process.env.SB_SHOTS && page) await page.screenshot({ path: path.join(process.env.SB_SHOTS, `${name}.png`) }).catch(() => {}); };
 
 const S = {
@@ -121,13 +123,16 @@ function homeEnv(extra = {}) {
   };
 }
 
-async function launch() {
+// home: another home folder (the fresh-install checks); there the board may have no cards to wait for.
+async function launch({ home = HOME } = {}) {
+  const appData = home === HOME ? APP_DATA : require('../electron/util.cjs').appDataDir(home);
   const env = homeEnv({
+    ...(home === HOME ? {} : { HOME: home, USERPROFILE: home, ...(WIN ? { APPDATA: appData, LOCALAPPDATA: path.join(home, 'AppData', 'Local') } : {}) }),
     SB_PORT: PORT,
-    SB_TEST_LOG: LOG, SB_TEST_LOGINS: LOGINS, SB_TEST_OPEN_LOG: OPENED, SB_TEST_NOTIFY_LOG: NOTIFY, SB_USER_DATA: path.join(HOME, 'electron-profile'), SB_TEST_ACCESSIBILITY: '0', ...mock.env,
+    SB_TEST_LOG: LOG, SB_TEST_LOGINS: LOGINS, SB_TEST_OPEN_LOG: OPENED, SB_TEST_NOTIFY_LOG: NOTIFY, SB_USER_DATA: path.join(home, 'electron-profile'), SB_TEST_ACCESSIBILITY: '0', ...mock.env,
   });
   delete env.ANTHROPIC_API_KEY; delete env.CLAUDE_CONFIG_DIR; delete env.ELECTRON_RUN_AS_NODE;
-  if (process.platform === 'linux') env.XDG_CONFIG_HOME = APP_DATA;
+  if (process.platform === 'linux') env.XDG_CONFIG_HOME = appData;
   const args = [ROOT];
   if (process.platform === 'linux') args.unshift('--no-sandbox', '--password-store=basic');
   if (process.platform === 'darwin') args.unshift('--use-mock-keychain');
@@ -147,8 +152,9 @@ async function launch() {
   page.on('pageerror', (e) => console.log('    [page error]', e.message));
   // The guided tour starts by itself on first launch and blocks clicks; the tour has its own check.
   await page.evaluate(() => { localStorage.setItem('sb.tourDone', 'test'); window.__sbTour?.(false); });
-  // The board is the home: ready once its cards are on screen.
-  await page.locator('.react-flow__node').first().waitFor({ state: 'visible', timeout: 30000 });
+  // The board is the home: ready once its cards are on screen (an empty home has none: ready once drawn).
+  if (home === HOME) await page.locator('.react-flow__node').first().waitFor({ state: 'visible', timeout: 30000 });
+  else await page.waitForFunction(() => typeof window.__sbWelcome === 'function' && !!document.querySelector('.react-flow'), null, { timeout: 30000 });
   await page.evaluate(() => window.__sbTour?.(false));
 }
 async function quit() { if (app) await app.close().catch(() => {}); app = null; }
@@ -2383,12 +2389,81 @@ async function main() {
   });
 
   await chatControls();
+  await freshInstall();
 
   await quit();
   mock.close();
   const failed = results.filter((r) => !r.ok);
   console.log(`\n${results.length - failed.length} passed, ${failed.length} failed in ${Math.round((Date.now() - T0) / 1000)}s`);
   if (failed.length) { for (const f of failed) console.log(`  ✗ ${f.name}: ${f.err.split('\n')[0]}`); process.exit(1); }
+}
+
+// A brand-new install (an empty home with Claude Code and Codex data, and no Switchboard database):
+// nothing is connected until it's clicked in Welcome, and Welcome is shown once. Welcome, like the
+// tour, stays out of the way of a webdriver-driven app; window.__sbWelcome() runs its first-launch check.
+async function freshInstall() {
+  console.log('\nFirst launch on a new install');
+  await quit();
+  fs.rmSync(FRESH, { recursive: true, force: true });
+  for (const dir of ['.claude', '.claude-2']) fs.mkdirSync(path.join(FRESH, dir, 'projects'), { recursive: true });
+  fs.mkdirSync(path.join(FRESH, '.codex', 'sessions', '2026', '11', '16'), { recursive: true });
+  fs.writeFileSync(path.join(FRESH, '.codex', 'sessions', '2026', '11', '16', 'rollout-e2e.jsonl'), '');
+  await launch({ home: FRESH });
+  const welcome = () => page.getByTestId('welcome'); // page is a new one after a relaunch
+  const accounts = () => api('accounts');
+  const row = (id) => page.getByTestId(`welcome-${id}`);
+
+  await check('a new install connects nothing and opens Welcome with what it found; only the clicked one is added', async () => {
+    assert((await accounts()).length === 0, `no accounts on first launch (${(await accounts()).map((a) => a.kind).join(', ')})`);
+    assert((await api('settings:get', 'claudeAppSessions', true)) === false, 'Claude desktop app sessions start off');
+    assert((await welcome().count()) === 0, 'not shown to a webdriver-driven app by itself');
+    assert(await page.evaluate(() => window.__sbWelcome()), 'the first-launch check says it opened');
+    await until(async () => (await welcome().count()) === 1, 'Welcome opened');
+    for (const id of ['claude-code:~/.claude', 'claude-code:~/.claude-2', 'codex']) {
+      await until(async () => (await row(id).count()) === 1, `offers ${id}`);
+      assert((await row(id).locator('button', { hasText: 'Connect' }).count()) === 1, `${id} waits for a click`);
+    }
+    await sleep(800);
+    await shot('welcome');
+    assert((await accounts()).length === 0, 'still nothing connected while Welcome is open');
+    await row('codex').locator('button', { hasText: 'Connect' }).click();
+    await until(async () => (await row('codex').innerText()).includes('Connected'), 'Codex shows as connected');
+    const list = await until(async () => { const a = await accounts(); return a.length ? a : false; }, 'an account was added');
+    assert(list.length === 1 && list[0].kind === 'codex', `exactly the clicked one (${list.map((a) => a.kind).join(', ')})`);
+    for (const id of ['claude-code:~/.claude', 'claude-code:~/.claude-2']) assert((await row(id).locator('button', { hasText: 'Connect' }).count()) === 1, `${id} is still not connected`);
+    await row('claude-code:~/.claude-2').locator('button', { hasText: 'Connect' }).click();
+    await until(async () => (await row('claude-code:~/.claude-2').innerText()).includes('Connected'), 'the second Claude Code folder shows as connected');
+    const two = await accounts();
+    assert(two.length === 2 && two.some((a) => a.kind === 'claude-code' && a.config.configDir === '~/.claude-2'), `added ~/.claude-2 only (${JSON.stringify(two.map((a) => [a.kind, a.config.configDir]))})`);
+    assert((await row('claude-code:~/.claude').locator('button', { hasText: 'Connect' }).count()) === 1, '~/.claude is left alone');
+  });
+
+  await check('Done closes Welcome, starts the tour, and Welcome is not shown again after a relaunch', async () => {
+    await page.evaluate(() => localStorage.removeItem('sb.tourDone'));
+    await page.getByTestId('welcome-done').click();
+    await until(async () => (await welcome().count()) === 0, 'Welcome closed');
+    assert((await api('onboard:status')).pending === false, 'remembered as finished');
+    await until(async () => (await page.getByTestId('tour').count()) === 1, 'the tour starts after Done');
+    await page.keyboard.press('Escape');
+    await until(async () => (await page.getByTestId('tour').count()) === 0, 'Escape closes the tour');
+    await quit();
+    await launch({ home: FRESH });
+    assert((await page.evaluate(() => window.__sbWelcome())) === false, 'the first-launch check does not open it again');
+    await sleep(500);
+    assert((await welcome().count()) === 0, 'Welcome stays closed');
+    const after = await accounts();
+    assert(after.length === 2 && after.every((a) => a.kind === 'codex' || a.config.configDir === '~/.claude-2'), `the same two accounts (${after.map((a) => a.kind).join(', ')})`);
+  });
+
+  await check('Claude desktop app sessions, off on a new install, can be turned on later in Settings → Accounts', async () => {
+    await view('Accounts');
+    const sw = page.locator('[data-testid="claude-app-sessions"] [role="switch"]');
+    await until(async () => (await sw.getAttribute('aria-checked')) === 'false', 'the switch shows off');
+    await sw.click();
+    await until(async () => (await api('settings:get', 'claudeAppSessions', false)) === true, 'turning it on is saved');
+    await until(async () => (await sw.getAttribute('aria-checked')) === 'true', 'the switch shows on');
+    await view('Board');
+  });
 }
 
 // Stop and the model picker in the open chat, on a chat of its own so nothing else depends on it.

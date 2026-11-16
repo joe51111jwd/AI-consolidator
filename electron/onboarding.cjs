@@ -1,17 +1,38 @@
 'use strict';
 // First launch connects nothing. Onboarding lists what is on this computer and connects only what the
 // person picks; until they turn it on, the Claude desktop app's sessions stay off too.
+const fs = require('fs');
+const path = require('path');
 const db = require('./db.cjs');
 
 const PENDING = 'onboardingPending';
+const BUILD = 'onboardingBuild';
 
-// Runs on every launch; only the very first one (no accounts, never onboarded) opens onboarding.
-// Installs that already have accounts are left exactly as they were.
-function firstRun() {
-  if (db.getSetting(PENDING, null) !== null) return;
-  const fresh = db.get('SELECT COUNT(*) AS n FROM accounts').n === 0;
-  db.setSetting(PENDING, fresh);
-  if (fresh && db.getSetting('claudeAppSessions', null) === null) db.setSetting('claudeAppSessions', false);
+// While the app is being built: every new build opens Welcome (and then the tour) again, as a new
+// person would see it, without touching connected accounts. Set to false to show it only on a
+// brand-new install.
+const EVERY_BUILD = true;
+
+// The id `npm run build` stamps into dist-renderer/build.json (see vite.config.mjs). A run with no
+// build (npm run dev) has none. SB_TEST_BUILD_ID stands in for a new build in the e2e tests.
+function buildId() {
+  if (process.env.SB_TEST_BUILD_ID) return process.env.SB_TEST_BUILD_ID;
+  try { return JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'dist-renderer', 'build.json'), 'utf8')).id || null; } catch { return null; }
+}
+
+// Runs on every launch. Onboarding opens on a brand-new install (no accounts, never onboarded) and,
+// with EVERY_BUILD, the first time each new build opens. Accounts are never added or removed here,
+// and the Claude desktop app setting is only changed on a brand-new install.
+function firstRun({ build = buildId(), everyBuild = EVERY_BUILD } = {}) {
+  if (db.getSetting(PENDING, null) === null) {
+    const fresh = db.get('SELECT COUNT(*) AS n FROM accounts').n === 0;
+    db.setSetting(PENDING, fresh);
+    if (fresh && db.getSetting('claudeAppSessions', null) === null) db.setSetting('claudeAppSessions', false);
+  }
+  if (everyBuild && build && db.getSetting(BUILD, null) !== build) {
+    db.setSetting(BUILD, build);
+    db.setSetting(PENDING, true);
+  }
 }
 
 const pending = () => db.getSetting(PENDING, false) === true;
@@ -31,4 +52,4 @@ function items(found) {
   return out;
 }
 
-module.exports = { PENDING, firstRun, pending, finish, items };
+module.exports = { PENDING, BUILD, EVERY_BUILD, buildId, firstRun, pending, finish, items };

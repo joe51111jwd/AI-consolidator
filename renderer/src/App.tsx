@@ -103,7 +103,8 @@ export default function App() {
         <Palette />
         <Onboarding />
         <Tour />
-        <Welcome onDone={() => { if (!localStorage.getItem('sb.tourDone')) useTour.getState().start(); }} />
+        {/* Welcome only opens on a new install or a new build, so Done always hands over to the tour. */}
+        <Welcome onDone={() => useTour.getState().start()} />
         <ImportChats />
         <VersionTag />
         <Settings />

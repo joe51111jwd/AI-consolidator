@@ -1,7 +1,7 @@
 'use strict';
 // node --test tests/*.test.cjs — first launch connects nothing (electron/onboarding.cjs): onboarding
-// opens only on a brand-new install, existing installs are left alone, and what it offers matches
-// what was found on the computer.
+// opens on a brand-new install and (while EVERY_BUILD is on) once per new build, never adds or
+// removes accounts by itself, and what it offers matches what was found on the computer.
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -21,37 +21,69 @@ beforeEach(() => db.open(path.join(HOME, `db-${n++}.sqlite`)));
 const addAccount = () => db.exec("INSERT INTO accounts(id, kind, label, config) VALUES('a1', 'claude-code', 'Claude', '{}')");
 const accountCount = () => db.get('SELECT COUNT(*) AS n FROM accounts').n;
 
+// Each launch passes its build id; `once` is onboarding without EVERY_BUILD (only a brand-new install).
+const launch = (build = 'b1') => onboarding.firstRun({ build, everyBuild: true });
+const once = (build = 'b1') => onboarding.firstRun({ build, everyBuild: false });
+
 test('first launch on a new install opens onboarding and connects nothing', () => {
-  onboarding.firstRun();
+  launch();
   assert.equal(onboarding.pending(), true);
   assert.equal(accountCount(), 0);
   assert.equal(db.getSetting('claudeAppSessions', true), false);
 });
 
-test('an install that already has accounts never sees onboarding and keeps its settings', () => {
+test('shown only on a new install: an install that already has accounts never sees it and keeps its settings', () => {
   addAccount();
-  onboarding.firstRun();
+  once();
   assert.equal(onboarding.pending(), false);
   assert.equal(db.getSetting('claudeAppSessions', 'unset'), 'unset');
 });
 
-test('finishing onboarding is remembered, even if every account is removed later', () => {
-  onboarding.firstRun();
+test('finishing onboarding is remembered for that build, even if every account is removed later', () => {
+  launch();
   onboarding.finish();
-  onboarding.firstRun();
+  launch();
+  assert.equal(onboarding.pending(), false);
+});
+
+test('each new build opens onboarding again, keeping the accounts and the Claude desktop app setting', () => {
+  addAccount();
+  db.setSetting('claudeAppSessions', true);
+  launch('b1');
+  assert.equal(onboarding.pending(), true, 'the first build seen opens it, accounts or not');
+  onboarding.finish();
+  launch('b1');
+  assert.equal(onboarding.pending(), false, 'a relaunch of the same build does not');
+  launch('b2');
+  assert.equal(onboarding.pending(), true, 'the next build does');
+  assert.equal(accountCount(), 1);
+  assert.equal(db.getSetting('claudeAppSessions', false), true);
+});
+
+test('shown only on a new install: a new build does not open it again', () => {
+  once('b1');
+  onboarding.finish();
+  once('b2');
+  assert.equal(onboarding.pending(), false);
+});
+
+test('a run with no build (npm run dev) does not open it again', () => {
+  launch(null);
+  onboarding.finish();
+  launch(null);
   assert.equal(onboarding.pending(), false);
 });
 
 test('connecting an account during onboarding does not close it on the next launch', () => {
-  onboarding.firstRun();
+  launch();
   addAccount();
-  onboarding.firstRun();
+  launch();
   assert.equal(onboarding.pending(), true);
 });
 
 test('a Claude desktop app choice made before onboarding is kept', () => {
   db.setSetting('claudeAppSessions', true);
-  onboarding.firstRun();
+  launch();
   assert.equal(db.getSetting('claudeAppSessions', false), true);
 });
 

@@ -27,7 +27,8 @@ const isConnected = (item: FoundItem, accounts: Account[], settings: Record<stri
   return accounts.some((b) => b.kind === a.kind && (a.kind !== 'claude-code' || (b.config?.configDir || '~/.claude') === a.config?.configDir));
 };
 
-// First launch: nothing is connected until it's clicked here. Finishing hands over to the guided tour.
+// First launch (and, while onboarding.cjs has EVERY_BUILD on, each new build): nothing is connected
+// until it's clicked here. Finishing hands over to the guided tour.
 export default function Welcome({ onDone }: { onDone: () => void }) {
   const open = useWelcome((s) => s.open);
   const accounts = useStore((s) => s.accounts);
@@ -80,7 +81,9 @@ export default function Welcome({ onDone }: { onDone: () => void }) {
     <div className="ca-back">
       <div className="ca" role="dialog" aria-label="Welcome to Switchboard" data-testid="welcome">
         <div className="ca-head"><b>Welcome to Switchboard</b></div>
-        <p className="ca-lede">Nothing is connected yet. Pick what Switchboard should show; you can change any of it later in Settings → Accounts.</p>
+        <p className="ca-lede">{accounts.length
+          ? 'Here’s what Switchboard found on this computer. Connect anything else it should show; you can change any of it later in Settings → Accounts.'
+          : 'Nothing is connected yet. Pick what Switchboard should show; you can change any of it later in Settings → Accounts.'}</p>
         <div className="ca-list">
           {found.length === 0 && <div className="ca-row"><span className="ca-step">No Claude Code, Codex, Granola or Grok Bot data found on this computer. Add accounts in Settings.</span></div>}
           {found.map((item) => {

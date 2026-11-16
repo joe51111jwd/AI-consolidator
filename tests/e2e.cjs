@@ -124,12 +124,12 @@ function homeEnv(extra = {}) {
 }
 
 // home: another home folder (the fresh-install checks); there the board may have no cards to wait for.
-async function launch({ home = HOME } = {}) {
+async function launch({ home = HOME, extraEnv = {} } = {}) {
   const appData = home === HOME ? APP_DATA : require('../electron/util.cjs').appDataDir(home);
   const env = homeEnv({
     ...(home === HOME ? {} : { HOME: home, USERPROFILE: home, ...(WIN ? { APPDATA: appData, LOCALAPPDATA: path.join(home, 'AppData', 'Local') } : {}) }),
     SB_PORT: PORT,
-    SB_TEST_LOG: LOG, SB_TEST_LOGINS: LOGINS, SB_TEST_OPEN_LOG: OPENED, SB_TEST_NOTIFY_LOG: NOTIFY, SB_USER_DATA: path.join(home, 'electron-profile'), SB_TEST_ACCESSIBILITY: '0', ...mock.env,
+    SB_TEST_LOG: LOG, SB_TEST_LOGINS: LOGINS, SB_TEST_OPEN_LOG: OPENED, SB_TEST_NOTIFY_LOG: NOTIFY, SB_USER_DATA: path.join(home, 'electron-profile'), SB_TEST_ACCESSIBILITY: '0', ...mock.env, ...extraEnv,
   });
   delete env.ANTHROPIC_API_KEY; delete env.CLAUDE_CONFIG_DIR; delete env.ELECTRON_RUN_AS_NODE;
   if (process.platform === 'linux') env.XDG_CONFIG_HOME = appData;
@@ -2399,7 +2399,7 @@ async function main() {
 }
 
 // A brand-new install (an empty home with Claude Code and Codex data, and no Switchboard database):
-// nothing is connected until it's clicked in Welcome, and Welcome is shown once. Welcome, like the
+// nothing is connected until it's clicked in Welcome, which is shown once per build. Welcome, like the
 // tour, stays out of the way of a webdriver-driven app; window.__sbWelcome() runs its first-launch check.
 async function freshInstall() {
   console.log('\nFirst launch on a new install');
@@ -2439,7 +2439,7 @@ async function freshInstall() {
   });
 
   await check('Done closes Welcome, starts the tour, and Welcome is not shown again after a relaunch', async () => {
-    await page.evaluate(() => localStorage.removeItem('sb.tourDone'));
+    // launch() marked the tour as done; Welcome's Done starts it all the same.
     await page.getByTestId('welcome-done').click();
     await until(async () => (await welcome().count()) === 0, 'Welcome closed');
     assert((await api('onboard:status')).pending === false, 'remembered as finished');
@@ -2453,6 +2453,24 @@ async function freshInstall() {
     assert((await welcome().count()) === 0, 'Welcome stays closed');
     const after = await accounts();
     assert(after.length === 2 && after.every((a) => a.kind === 'codex' || a.config.configDir === '~/.claude-2'), `the same two accounts (${after.map((a) => a.kind).join(', ')})`);
+  });
+
+  await check('a new build opens Welcome again, keeping the connected accounts', async () => {
+    await quit();
+    await launch({ home: FRESH, extraEnv: { SB_TEST_BUILD_ID: 'e2e-next-build' } });
+    assert(await page.evaluate(() => window.__sbWelcome()), 'the first-launch check opens it for the new build');
+    await until(async () => (await welcome().count()) === 1, 'Welcome opened');
+    await until(async () => (await row('codex').innerText()).includes('Connected'), 'Codex is still connected');
+    await until(async () => (await row('claude-code:~/.claude-2').innerText()).includes('Connected'), '~/.claude-2 is still connected');
+    assert((await row('claude-code:~/.claude').locator('button', { hasText: 'Connect' }).count()) === 1, '~/.claude still offers Connect');
+    assert(!/Nothing is connected yet/.test(await welcome().innerText()), 'it does not say nothing is connected');
+    assert((await accounts()).length === 2, 'the same two accounts');
+    await page.getByTestId('welcome-done').click();
+    await until(async () => (await welcome().count()) === 0, 'Welcome closed');
+    await until(async () => (await page.getByTestId('tour').count()) === 1, 'the tour starts after Done');
+    await page.keyboard.press('Escape');
+    await until(async () => (await page.getByTestId('tour').count()) === 0, 'Escape closes the tour');
+    assert((await page.evaluate(() => window.__sbWelcome())) === false, 'and it stays closed for this build');
   });
 
   await check('Claude desktop app sessions, off on a new install, can be turned on later in Settings → Accounts', async () => {
